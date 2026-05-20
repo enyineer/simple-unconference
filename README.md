@@ -26,6 +26,39 @@ bun run start  # Bun serves API + dist/ at :3000
 
 Want a populated demo conference for screenshots? Run `bun scripts/seed-synthetic.ts` after `db push`.
 
+## Deploy with Docker
+
+Each release is published to GitHub Container Registry at [`ghcr.io/enyineer/simple-unconference`](https://ghcr.io/enyineer/simple-unconference). Tags: `latest`, the semver version (`x.y.z`), the major (`x`), the major.minor (`x.y`), and a short commit sha. Images are built for `linux/amd64` and `linux/arm64`.
+
+The SQLite database lives at `/app/data/prod.sqlite` inside the container. Mount a volume there so it survives container restarts and image upgrades. On startup the container runs `prisma migrate deploy`, so upgrading is just a `docker pull` + restart.
+
+```bash
+docker run -d \
+  --name simple-unconference \
+  -p 3000:3000 \
+  -v simple-unconference-data:/app/data \
+  --restart unless-stopped \
+  ghcr.io/enyineer/simple-unconference:latest
+```
+
+Or with Compose:
+
+```yaml
+services:
+  app:
+    image: ghcr.io/enyineer/simple-unconference:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - data:/app/data
+    restart: unless-stopped
+
+volumes:
+  data:
+```
+
+Override `DATABASE_URL` if you want to point at libSQL/Turso instead of the bundled SQLite file. Override `PORT` to bind a different port inside the container. The image exposes a healthcheck at `GET /api/health`.
+
 ## Features
 
 ### Sessions
@@ -134,6 +167,16 @@ The assignment algorithm is a pure function and the most heavily covered piece (
 3. Add the id to the allowlist in the conference update handler ([`src/server/rpc.ts`](src/server/rpc.ts)).
 
 Each plugin ships as its own dynamic-import chunk — the unused one never loads.
+
+## Releases
+
+Versioning is driven by [changesets](https://github.com/changesets/changesets). When you open a PR with user-visible changes, add one with:
+
+```bash
+bun run changeset
+```
+
+On merge to `main`, the `Release` workflow opens a `Version Packages` PR that bumps `package.json` and updates `CHANGELOG.md`. Merging that PR creates a git tag + GitHub release and pushes a new Docker image to GHCR.
 
 ## License
 
