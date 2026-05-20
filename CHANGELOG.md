@@ -1,5 +1,11 @@
 # simple-unconference
 
+## 0.2.1
+
+### Patch Changes
+
+- [`785ecd0`](https://github.com/enyineer/simple-unconference/commit/785ecd0b0442eeaf73825a496fafce83e421fbad) Thanks [@enyineer](https://github.com/enyineer)! - Prune the production Docker image: install only `dependencies` (no `vite`, `@types/*`, or changesets tooling) in the runtime stage. `prisma` is now a regular dependency so `prisma migrate deploy` still runs at boot.
+
 ## 0.2.0
 
 ### Minor Changes
