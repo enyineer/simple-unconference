@@ -1,0 +1,40 @@
+// Small pure helpers shared by the conference tabs. No React, no DOM —
+// keep this importable from anywhere (tests too).
+
+import { formatInTz } from "../../shared/tz";
+
+/**
+ * Pick the most useful identifier for a submitter:
+ *   - their display name if set,
+ *   - else their email (which is only non-null for moderator/owner viewers),
+ *   - else null (caller decides what to render).
+ */
+export function submitterLabel(s: {
+  submitter_name: string | null;
+  submitter_email: string | null;
+}): string | null {
+  if (s.submitter_name && s.submitter_name.trim()) return s.submitter_name;
+  if (s.submitter_email) return s.submitter_email;
+  return null;
+}
+
+/**
+ * Parse a comma-separated label list (tags, requirements, speakers etc.) into
+ * trimmed, lowercased, deduped values. Empty entries are dropped.
+ */
+export function parseLabels(raw: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const piece of raw.split(",")) {
+    const v = piece.trim().toLowerCase();
+    if (!v || seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+/** Format an epoch instant as "HH:MM" in the conference timezone. */
+export function fmtTimeShort(ms: number, timeZone: string): string {
+  return formatInTz(ms, timeZone, { hour: "2-digit", minute: "2-digit" });
+}

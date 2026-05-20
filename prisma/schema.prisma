@@ -1,0 +1,630 @@
+// Prisma schema — see https://pris.ly/d/prisma-schema
+// Source of truth for the DB. Auto-migrations via `bunx prisma migrate dev`.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// URL is configured in /prisma.config.ts (Prisma 7+).
+datasource db {
+  provider = "sqlite"
+}
+
+// Global account. Reserved for conference *owners*. Participants and moderators
+// use ConferenceIdentity, which is scoped per-conference and never leaks across
+// conferences.
+model User {
+  id            Int      @id @default(autoincrement())
+  email         String   @unique
+  name          String?
+  passwordHash  String   @map("password_hash")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  sessions             Session[]
+  ownedConferences     Conference[]         @relation("ConferenceOwner")
+  conferenceIdentities ConferenceIdentity[]
+
+  @@map("users")
+}
+
+// A session belongs to exactly one principal — either a global User (owner)
+// or a ConferenceIdentity (participant/moderator). Enforced in code, not by
+// the DB (sqlite has no native CHECK across nullable FKs at the cost we want).
+model Session {
+  token                String   @id
+  userId               Int?     @map("user_id")
+  conferenceIdentityId Int?     @map("conference_identity_id")
+  createdAt            DateTime @default(now()) @map("created_at")
+  expiresAt            DateTime @map("expires_at")
+
+  user     User?               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  identity ConferenceIdentity? @relation(fields: [conferenceIdentityId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([conferenceIdentityId])
+  @@map("sessions")
+}
+
+model Conference {
+  id            Int      @id @default(autoincrement())
+  name          String
+  slug          String   @unique
+  ownerId       Int      @map("owner_id")
+  owner         User     @relation("ConferenceOwner", fields: [ownerId], references: [id])
+  designSystem  String   @default("github") @map("design_system")
+  // IANA timezone (e.g. "Europe/Berlin"). All slot wall-clock times are
+  // interpreted in this zone — separate from where the organizer happens to
+  // sit when scheduling.
+  timezone      String   @default("UTC")
+  // Default avoid-repeats mode for mixer slots in this conference. When true
+  // (the default), new mixer slots inherit "exclusive mix" — the algorithm
+  // tries not to put two participants in the same room across mixers. Owners
+  // can flip this from the Settings tab; per-slot overrides live on AgendaSlot.
+  mixerAvoidRepeatsDefault Boolean @default(true) @map("mixer_avoid_repeats_default")
+  // Default cap on how many times a published submission can be placed
+  // (counts both static TrackAssignments and unconference placements).
+  // `null` = unlimited reuse; `1` (the default) = each session is used once
+  // and then drops out of the assignment pool and the participant Sessions
+  // overview. Mods/owners override per submission via Submission.maxPlacements.
+  submissionMaxPlacementsDefault Int? @default(1) @map("submission_max_placements_default")
+  // When false, only owners + moderators can create new submissions in this
+  // conference. Participants get a 403 from submissions.create and the UI
+  // hides the "Submit a session" button for them. Default true so the
+  // out-of-the-box behaviour matches an open unconference.
+  participantSubmissionsEnabled Boolean @default(true) @map("participant_submissions_enabled")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  identities   ConferenceIdentity[]
+  invites      ConferenceInvite[]
+  joinLink     ConferenceJoinLink?
+  rooms        Room[]
+  submissions  Submission[]
+  agendaSlots  AgendaSlot[]
+  expertPools  ExpertRoomPool[]
+  experts      Expert[]
+
+  @@map("conferences")
+}
+
+// Roles within a conference. "owner" is implied by Conference.ownerId and is
+// never stored here — an owner who participates in their own conference gets
+// an identity row with role=moderator and ownerUserId set.
+enum IdentityRole {
+  participant
+  moderator
+}
+
+// Per-conference identity. `email` is unique within a conference only — the
+// same address may exist in multiple conferences as completely independent
+// accounts (different passwords, names, calendar feeds, color-mode prefs).
+model ConferenceIdentity {
+  id            Int          @id @default(autoincrement())
+  conferenceId  Int          @map("conference_id")
+  email         String
+  // Null until the participant claims their invite (or completes signup via
+  // join link). A null passwordHash means the identity exists but cannot log in.
+  passwordHash  String?      @map("password_hash")
+  name          String?
+  role          IdentityRole @default(participant)
+  // Per-identity light/dark preference (was on User pre-migration).
+  colorMode     String       @default("auto") @map("color_mode")
+  // Opaque token for this identity's iCal feed. Per-conference, so no
+  // cross-conference schedule leak.
+  calendarToken String?      @unique @map("calendar_token")
+  // Set when this identity was auto-minted for the conference owner so they
+  // can submit/star/get-assigned in their own conference.
+  ownerUserId   Int?         @map("owner_user_id")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  claimedAt     DateTime?    @map("claimed_at")
+
+  conference Conference @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
+  ownerUser  User?      @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+
+  sessions        Session[]
+  submissions     Submission[]
+  stars           Star[]
+  staticStars     StaticStar[]
+  userAssignments UserAssignment[]
+  claimedInvites  ConferenceInvite[] @relation("ClaimedInvite")
+  expertProfile   Expert?
+  expertBookings  ExpertBooking[]    @relation("ExpertBookingBooker")
+  notifications   Notification[]
+
+  @@unique([conferenceId, email])
+  @@index([conferenceId])
+  @@index([ownerUserId])
+  @@map("conference_identities")
+}
+
+// Moderator-issued one-time invite. The participant clicks the link and sets
+// their own password to mint a ConferenceIdentity. Tokens are opaque hex.
+model ConferenceInvite {
+  id                  Int          @id @default(autoincrement())
+  conferenceId        Int          @map("conference_id")
+  email               String
+  token               String       @unique
+  role                IdentityRole @default(participant)
+  createdAt           DateTime     @default(now()) @map("created_at")
+  expiresAt           DateTime     @map("expires_at")
+  claimedAt           DateTime?    @map("claimed_at")
+  claimedByIdentityId Int?         @map("claimed_by_identity_id")
+
+  conference        Conference          @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
+  claimedByIdentity ConferenceIdentity? @relation("ClaimedInvite", fields: [claimedByIdentityId], references: [id], onDelete: SetNull)
+
+  @@index([conferenceId])
+  @@index([conferenceId, email])
+  @@map("conference_invites")
+}
+
+// Owner-managed secret URL for open self-signup per conference. One row per
+// conference (the conferenceId is the primary key). Rotating issues a new
+// token, invalidating any previously shared link.
+model ConferenceJoinLink {
+  conferenceId Int       @id @map("conference_id")
+  token        String    @unique
+  enabled      Boolean   @default(false)
+  expiresAt    DateTime? @map("expires_at")
+  maxUses      Int?      @map("max_uses")
+  usedCount    Int       @default(0) @map("used_count")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  rotatedAt    DateTime? @map("rotated_at")
+
+  conference Conference @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
+
+  @@map("conference_join_links")
+}
+
+model Room {
+  id           Int    @id @default(autoincrement())
+  conferenceId Int    @map("conference_id")
+  name         String
+  capacity     Int
+  // Free-text description (where to find the room, accessibility notes, etc.)
+  description  String?
+
+  conference            Conference              @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
+  trackAssignments      TrackAssignment[]
+  unconferencePlacements UnconferencePlacement[]
+  slotMemberships       SlotRoom[]
+  tags                  RoomTag[]
+  userAssignments       UserAssignment[]
+  expertPoolMemberships ExpertRoomPoolRoom[]
+  expertRoomMemberships ExpertRoom[]
+  expertBookings        ExpertBooking[]
+
+  @@index([conferenceId])
+  @@map("rooms")
+}
+
+// Per-room labels (e.g. "projector", "ground floor", "wheelchair-accessible").
+model RoomTag {
+  id     Int    @id @default(autoincrement())
+  roomId Int    @map("room_id")
+  value  String
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, value])
+  @@index([roomId])
+  @@map("room_tags")
+}
+
+enum SubmissionStatus {
+  submitted
+  published
+  rejected
+}
+
+model Submission {
+  id           Int              @id @default(autoincrement())
+  conferenceId Int              @map("conference_id")
+  // FK to ConferenceIdentity.id (was User.id pre-migration). Column name kept
+  // as submitter_id to reduce churn in query code; the *relation* now resolves
+  // to a per-conference identity.
+  submitterId  Int              @map("submitter_id")
+  title        String
+  description  String           @default("")
+  status       SubmissionStatus @default(submitted)
+  // Per-submission override of the conference's max-placements cap. `null`
+  // means inherit Conference.submissionMaxPlacementsDefault. A submission
+  // counts as "finished" when its placement count reaches the effective cap;
+  // finished submissions are excluded from unconference pool selection and
+  // hidden from the participant Sessions overview.
+  maxPlacements    Int?    @map("max_placements")
+  // Manual moderator override — when true, the submission is finished
+  // regardless of placement count (e.g. speaker withdrew; talk already
+  // delivered externally). Mods/owners flip this from the Sessions tab.
+  manuallyFinished Boolean @default(false) @map("manually_finished")
+  createdAt    DateTime         @default(now()) @map("created_at")
+
+  conference          Conference              @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
+  submitter           ConferenceIdentity      @relation(fields: [submitterId], references: [id])
+  stars               Star[]
+  trackAssignments    TrackAssignment[]
+  placements          UnconferencePlacement[]
+  userAssignments     UserAssignment[]
+  tags                SubmissionTag[]
+  requirements        SubmissionRequirement[]
+  slotMemberships     SlotSubmission[]
+
+  @@index([conferenceId])
+  @@index([conferenceId, status])
+  @@map("submissions")
+}
+
+// Free-form labels the submitter (or a moderator) attaches to a talk.
+// Examples: "workshop", "discussion", "lightning". Unique per submission.
+model SubmissionTag {
+  id           Int    @id @default(autoincrement())
+  submissionId Int    @map("submission_id")
+  value        String
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, value])
+  @@index([submissionId])
+  @@map("submission_tags")
+}
+
+// Things attendees need to bring/have. Examples: "laptop", "github account".
+model SubmissionRequirement {
+  id           Int    @id @default(autoincrement())
+  submissionId Int    @map("submission_id")
+  value        String
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, value])
+  @@index([submissionId])
+  @@map("submission_requirements")
+}
+
+model Star {
+  // FK to ConferenceIdentity.id (was User.id pre-migration). Column kept as
+  // user_id; relation accessor is `identity`.
+  userId       Int      @map("user_id")
+  submissionId Int      @map("submission_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  identity   ConferenceIdentity @relation(fields: [userId], references: [id], onDelete: Cascade)
+  submission Submission         @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@id([userId, submissionId])
+  @@index([submissionId])
+  @@map("stars")
+}
+
+enum SlotType {
+  normal
+  unconference
+  // Mixer: pick rooms, every participant auto-assigned to a room (capacity-aware
+  // even split). Reuses `unconfUseAllRooms` / `selectedRooms` for room selection
+  // — same mechanic, different output (no submission, just room).
+  mixer
+}
+
+model AgendaSlot {
+  id           Int      @id @default(autoincrement())
+  conferenceId Int      @map("conference_id")
+  type         SlotType
+  title        String?
+  description  String?
+  startsAt     DateTime @map("starts_at")
+  endsAt       DateTime @map("ends_at")
+
+  // Per-slot assignment configuration. `unconfUseAllRooms` is shared between
+  // unconference + mixer slots (both need a room scope). `unconfUseAllSubmissions`
+  // is unconference-only. When useAll* is true, assignment uses every room /
+  // every published submission in the conference; when false, only the
+  // explicitly selected ones in the join tables below.
+  unconfUseAllRooms       Boolean @default(true) @map("unconf_use_all_rooms")
+  unconfUseAllSubmissions Boolean @default(true) @map("unconf_use_all_submissions")
+  // When true (default), an unconference assignment won't put a user in the
+  // same submission they've already attended in an earlier unconference slot
+  // in this conference. Submitters are always assigned to their own session
+  // when it's placed, regardless of this flag.
+  unconfAvoidRepeats      Boolean @default(true) @map("unconf_avoid_repeats")
+  // Mixer-only override of Conference.mixerAvoidRepeatsDefault. Null means
+  // "inherit the conference default"; true forces "exclusive mix" (avoid
+  // re-pairing against other exclusive mixers); false forces a fresh shuffle
+  // that ignores prior mixers entirely.
+  mixerAvoidRepeats       Boolean? @map("mixer_avoid_repeats")
+
+  conference              Conference              @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
+  trackAssignments        TrackAssignment[]
+  unconferencePlacements  UnconferencePlacement[]
+  userAssignments         UserAssignment[]
+  selectedRooms           SlotRoom[]
+  selectedSubmissions     SlotSubmission[]
+
+  @@index([conferenceId, startsAt])
+  @@map("agenda_slots")
+}
+
+// Restricts which rooms participate in an unconference slot's assignment.
+// Empty (when useAllRooms = false) means "no rooms" — assignment will produce
+// no placements. Ignored when useAllRooms = true.
+model SlotRoom {
+  slotId Int @map("slot_id")
+  roomId Int @map("room_id")
+
+  slot AgendaSlot @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  room Room       @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@id([slotId, roomId])
+  @@map("slot_rooms")
+}
+
+// Restricts which submissions are eligible for an unconference slot.
+model SlotSubmission {
+  slotId       Int @map("slot_id")
+  submissionId Int @map("submission_id")
+
+  slot       AgendaSlot @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@id([slotId, submissionId])
+  @@map("slot_submissions")
+}
+
+// Static slot (type=normal): admin picks which talk runs in which room.
+// `submissionId` links a published submission; `title` is an ad-hoc label when
+// there's no submission (e.g. a keynote by an invited guest). `speakers` is a
+// free-text comma-separated list of speaker names (so external speakers without
+// accounts can be credited).
+model TrackAssignment {
+  id           Int     @id @default(autoincrement())
+  slotId       Int     @map("slot_id")
+  roomId       Int     @map("room_id")
+  submissionId Int?    @map("submission_id")
+  title        String?
+  speakers     String?
+  // When true, this static track is force-attended: it shows up in every
+  // participant's myAssignments + iCal feed regardless of StaticStar state,
+  // and the star toggle is disabled on the client. Used for keynotes,
+  // opening/closing ceremonies, etc. Only valid on normal-type slots
+  // (server enforces this in setTrack).
+  mandatory    Boolean @default(false)
+
+  slot         AgendaSlot           @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  room         Room                 @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  submission   Submission?          @relation(fields: [submissionId], references: [id], onDelete: SetNull)
+  stars        StaticStar[]
+  requirements TrackRequirement[]
+
+  @@unique([slotId, roomId])
+  @@map("track_assignments")
+}
+
+// Per-track requirements (e.g. "laptop", "github account"). Separate from
+// SubmissionRequirement so a mod can attach prerequisites to a static track
+// that has no linked submission (or to override the linked submission's set).
+model TrackRequirement {
+  id      Int    @id @default(autoincrement())
+  trackId Int    @map("track_id")
+  value   String
+
+  track TrackAssignment @relation(fields: [trackId], references: [id], onDelete: Cascade)
+
+  @@unique([trackId, value])
+  @@index([trackId])
+  @@map("track_requirements")
+}
+
+// Attendees can "star" a static talk (a TrackAssignment) so it appears on
+// their personal schedule. Distinct from `Star` (which stars Submissions for
+// the unconference algorithm).
+model StaticStar {
+  // FK to ConferenceIdentity.id (was User.id pre-migration). Column kept as
+  // user_id; relation accessor is `identity`.
+  userId  Int @map("user_id")
+  trackId Int @map("track_id")
+
+  identity ConferenceIdentity @relation(fields: [userId], references: [id], onDelete: Cascade)
+  track    TrackAssignment    @relation(fields: [trackId], references: [id], onDelete: Cascade)
+
+  @@id([userId, trackId])
+  @@index([trackId])
+  @@map("static_stars")
+}
+
+// Output of the unconference assignment algorithm: which submission lives in which room.
+model UnconferencePlacement {
+  slotId       Int @map("slot_id")
+  submissionId Int @map("submission_id")
+  roomId       Int @map("room_id")
+
+  slot       AgendaSlot @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  room       Room       @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@id([slotId, submissionId])
+  @@unique([slotId, roomId])
+  @@map("unconference_placements")
+}
+
+// Per-slot output of an assignment algorithm: which identity ends up where.
+// - For unconference slots: `submissionId` set, `roomId` derived (denormalized
+//   alongside for cheap reads).
+// - For mixer slots: `roomId` set, `submissionId` null (no talk; just a room).
+// - Future slot types can use either combination.
+model UserAssignment {
+  slotId       Int     @map("slot_id")
+  // FK to ConferenceIdentity.id (was User.id pre-migration). Column kept as
+  // user_id; relation accessor is `identity`.
+  userId       Int     @map("user_id")
+  submissionId Int?    @map("submission_id")
+  roomId       Int?    @map("room_id")
+  // True when the identity picked this session themselves (vs being placed by
+  // the algorithm). Manual picks are preserved across re-runs — the algorithm
+  // treats them as fixed inputs rather than reshuffling.
+  manual       Boolean @default(false)
+
+  slot       AgendaSlot         @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  identity   ConferenceIdentity @relation(fields: [userId], references: [id], onDelete: Cascade)
+  submission Submission?        @relation(fields: [submissionId], references: [id], onDelete: SetNull)
+  room       Room?              @relation(fields: [roomId], references: [id], onDelete: SetNull)
+
+  @@id([slotId, userId])
+  @@index([userId])
+  @@index([userId, submissionId])
+  @@map("user_assignments")
+}
+
+// ===========================================================================
+// EXPERT BOOKINGS
+//
+// Participants can book a 1:1 chat with an "expert" — any ConferenceIdentity
+// in the conference that an owner/moderator has promoted. Experts define one
+// or more bookable timeframes (start/end + slot duration); the system derives
+// the individual bookable slots from those. A booking is an ExpertBooking row
+// that pins a single slot + room at creation time.
+// ===========================================================================
+
+// Conference-scoped, named pool of rooms reserved for expert conversations.
+// Owners/mods can create multiple pools and either assign an expert to a pool
+// (any room from the pool can host a booking) or to a specific set of rooms
+// via ExpertRoom.
+model ExpertRoomPool {
+  id           Int      @id @default(autoincrement())
+  conferenceId Int      @map("conference_id")
+  name         String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  conference Conference           @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
+  rooms      ExpertRoomPoolRoom[]
+  experts    Expert[]
+
+  @@unique([conferenceId, name])
+  @@index([conferenceId])
+  @@map("expert_room_pools")
+}
+
+model ExpertRoomPoolRoom {
+  poolId Int @map("pool_id")
+  roomId Int @map("room_id")
+
+  pool ExpertRoomPool @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  room Room           @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@id([poolId, roomId])
+  @@map("expert_room_pool_rooms")
+}
+
+// Per-conference expert promotion. One Expert per identity. When `poolId` is
+// set, bookings draw rooms from the pool; when null, bookings draw from the
+// `ExpertRoom` rows; when both are empty, the expert cannot be booked.
+model Expert {
+  id           Int      @id @default(autoincrement())
+  conferenceId Int      @map("conference_id")
+  identityId   Int      @unique @map("identity_id")
+  poolId       Int?     @map("pool_id")
+  // Free-text expertise blurb shown to participants on the Experts tab.
+  bio          String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  conference Conference         @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
+  identity   ConferenceIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+  pool       ExpertRoomPool?    @relation(fields: [poolId], references: [id], onDelete: SetNull)
+  rooms      ExpertRoom[]
+  timeframes ExpertTimeframe[]
+  bookings   ExpertBooking[]
+
+  @@index([conferenceId])
+  @@map("experts")
+}
+
+// Per-expert room overrides. Only consulted when Expert.poolId is null.
+model ExpertRoom {
+  expertId Int @map("expert_id")
+  roomId   Int @map("room_id")
+
+  expert Expert @relation(fields: [expertId], references: [id], onDelete: Cascade)
+  room   Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@id([expertId, roomId])
+  @@map("expert_rooms")
+}
+
+// A bookable window. Slots are derived deterministically:
+//   for (t = startsAt; t + slotDurationMinutes*60s <= endsAt; t += slotDurationMinutes*60s)
+//     yield { startsAt: t, endsAt: t + slotDurationMinutes*60s };
+// A booking pins one such derived slot to a single ExpertBooking row.
+model ExpertTimeframe {
+  id                  Int      @id @default(autoincrement())
+  expertId            Int      @map("expert_id")
+  startsAt            DateTime @map("starts_at")
+  endsAt              DateTime @map("ends_at")
+  slotDurationMinutes Int      @map("slot_duration_minutes")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  expert   Expert          @relation(fields: [expertId], references: [id], onDelete: Cascade)
+  bookings ExpertBooking[]
+
+  @@index([expertId])
+  @@map("expert_timeframes")
+}
+
+// A confirmed booking. The room is locked in at booking time (first available
+// in the expert's pool/list) and stays even if the expert's room config later
+// changes — cancelling/recreating is the way to reshuffle.
+model ExpertBooking {
+  id          Int      @id @default(autoincrement())
+  expertId    Int      @map("expert_id")
+  timeframeId Int      @map("timeframe_id")
+  // Booker is a ConferenceIdentity in the same conference. Names/emails are
+  // masked from non-mods (privacy parity with Submissions.submitter_email).
+  bookerId    Int      @map("booker_id")
+  roomId      Int      @map("room_id")
+  startsAt    DateTime @map("starts_at")
+  endsAt      DateTime @map("ends_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  expert    Expert             @relation(fields: [expertId], references: [id], onDelete: Cascade)
+  timeframe ExpertTimeframe    @relation(fields: [timeframeId], references: [id], onDelete: Cascade)
+  booker    ConferenceIdentity @relation("ExpertBookingBooker", fields: [bookerId], references: [id], onDelete: Cascade)
+  room      Room               @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  // One booking per (expert, exact slot start). Enforces "no double-booking
+  // the same expert at the same time" at the DB level.
+  @@unique([expertId, startsAt])
+  // Enforces "the same room cannot host two overlapping bookings" only via
+  // index lookup (full overlap check is in code); index speeds it up.
+  @@index([roomId, startsAt])
+  @@index([expertId])
+  @@index([bookerId])
+  @@map("expert_bookings")
+}
+
+// ===========================================================================
+// NOTIFICATIONS
+//
+// Simple in-app notifications targeted at a ConferenceIdentity (so they are
+// per-conference: an owner who participates in multiple conferences gets a
+// separate inbox per conference). Each row carries an optional CTA — the
+// frontend renders `ctaLabel` as a button that navigates to `ctaHref`.
+// Hrefs use the custom `tab:<key>` form to switch tabs within the current
+// conference page (no full navigation needed for in-app jumps).
+// ===========================================================================
+model Notification {
+  id         Int       @id @default(autoincrement())
+  identityId Int       @map("identity_id")
+  // Discriminator for icon/styling on the client.
+  // Known kinds: "submission_published", "submission_rejected",
+  // "submission_received" (mod-side), "unconf_assigned", "mixer_assigned",
+  // "expert_booked", "expert_booking_cancelled".
+  kind       String
+  title      String
+  body       String?
+  ctaLabel   String?   @map("cta_label")
+  ctaHref    String?   @map("cta_href")
+  readAt     DateTime? @map("read_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  identity ConferenceIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  @@index([identityId, readAt])
+  @@index([identityId, createdAt])
+  @@map("notifications")
+}
