@@ -13,6 +13,7 @@
         "@prisma/adapter-libsql": "^7.8.0",
         "@prisma/client": "^7.8.0",
         "hono": "^4.6.14",
+        "prisma": "^7.8.0",
         "react": "^19.0.0",
         "react-dom": "^19.0.0",
         "styled-components": "^6.1.13",
@@ -25,7 +26,6 @@
         "@types/react": "^19.0.0",
         "@types/react-dom": "^19.0.0",
         "@vitejs/plugin-react": "^6.0.2",
-        "prisma": "^7.8.0",
         "vite": "^8.0.13",
       },
       "peerDependencies": {
