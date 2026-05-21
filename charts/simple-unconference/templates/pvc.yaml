@@ -5,6 +5,12 @@ metadata:
   name: {{ include "simple-unconference.pvcName" . }}
   labels:
     {{- include "simple-unconference.labels" . | nindent 4 }}
+  annotations:
+    # The SQLite file lives in this PVC. `helm uninstall` would normally
+    # delete it (and on storage classes with reclaimPolicy=Delete the PV +
+    # data with it), so we opt this PVC out of release lifecycle. If you
+    # really want to drop the data, `kubectl delete pvc` it explicitly.
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - {{ .Values.database.sqlite.persistence.accessMode | quote }}
