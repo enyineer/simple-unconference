@@ -169,6 +169,16 @@ async function runCluster(count: number): Promise<void> {
   const workers = new Map<number, SupervisedWorker>();
   let shuttingDown = false;
   let bailout = false;
+  let graceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Exit the launcher process as soon as every worker has exited during
+  // shutdown. The grace timer below is the upper bound; this is the
+  // fast path for the common case where workers honor SIGTERM promptly.
+  function maybeFinishShutdown() {
+    if (!shuttingDown || workers.size > 0) return;
+    if (graceTimer) { clearTimeout(graceTimer); graceTimer = null; }
+    process.exit(bailout ? 1 : 0);
+  }
 
   function spawnWorker(id: number, prevRestarts: number[] = []): SupervisedWorker {
     const prefix = `[w${id}] `;
@@ -180,7 +190,10 @@ async function runCluster(count: number): Promise<void> {
         const w = workers.get(id);
         if (!w) return;
         workers.delete(id);
-        if (shuttingDown) return;
+        if (shuttingDown) {
+          maybeFinishShutdown();
+          return;
+        }
         console.error(
           `[cluster] worker ${id} exited (code=${exitCode} signal=${signalCode}); restarting in ${RESTART_DELAY_MS}ms`,
         );
@@ -222,12 +235,20 @@ async function runCluster(count: number): Promise<void> {
     for (const { proc } of workers.values()) {
       try { proc.kill(signal); } catch { /* already dead */ }
     }
-    setTimeout(() => {
-      for (const { proc } of workers.values()) {
-        try { proc.kill("SIGKILL"); } catch { /* already dead */ }
+    graceTimer = setTimeout(() => {
+      if (workers.size > 0) {
+        console.warn(
+          `[cluster] ${workers.size} worker(s) still alive after ${SHUTDOWN_GRACE_MS}ms; SIGKILL`,
+        );
+        for (const { proc } of workers.values()) {
+          try { proc.kill("SIGKILL"); } catch { /* already dead */ }
+        }
       }
       process.exit(bailout ? 1 : 0);
     }, SHUTDOWN_GRACE_MS);
+    // Edge case: workers already empty (e.g. crash-loop bailout fired during
+    // a transient empty moment between exit and restart) — exit immediately.
+    maybeFinishShutdown();
   }
 
   process.on("SIGTERM", () => shutdown("SIGTERM"));
