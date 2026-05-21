@@ -90,6 +90,10 @@ spec:
             - name: TURNSTILE_SECRET_KEY
               value: {{ .Values.turnstile.secretKey | quote }}
             {{- end }}
+            {{- if and .Values.metrics .Values.metrics.token }}
+            - name: METRICS_TOKEN
+              value: {{ .Values.metrics.token | quote }}
+            {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

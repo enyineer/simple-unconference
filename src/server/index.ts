@@ -5,12 +5,20 @@ import { join } from "node:path";
 import { getPrisma } from "./db";
 import { calendarRoutes } from "./routes/calendar";
 import { handleRpc } from "./rpc";
+import { metricsResponse } from "./lib/metrics";
 
 export function buildApp(prisma = getPrisma()) {
   const app = new Hono();
   app.use("*", logger());
 
   app.get("/api/health", (c) => c.json({ ok: true }));
+
+  // Prometheus scrape endpoint. Mounted BEFORE the oRPC catch-all so it
+  // owns `/api/metrics`. Auth is internal to metricsResponse (no-op when
+  // METRICS_TOKEN is unset, Bearer-token when set).
+  app.get("/api/metrics", async (c) => {
+    return await metricsResponse(c.req.raw, prisma);
+  });
 
   // The only resource served as plain HTTP — calendar apps need a stable
   // text/calendar URL with no JSON envelope. Mounted BEFORE the oRPC

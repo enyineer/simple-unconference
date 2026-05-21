@@ -1,0 +1,39 @@
+{{- if and .Values.metrics .Values.metrics.serviceMonitor .Values.metrics.serviceMonitor.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "simple-unconference.fullname" . }}
+  labels:
+    {{- include "simple-unconference.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "simple-unconference.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /api/metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval | default "30s" }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout | default "10s" }}
+      {{- if .Values.metrics.token }}
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ include "simple-unconference.fullname" . }}-metrics
+          key: token
+      {{- end }}
+{{- if .Values.metrics.token }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "simple-unconference.fullname" . }}-metrics
+  labels:
+    {{- include "simple-unconference.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  token: {{ .Values.metrics.token | quote }}
+{{- end }}
+{{- end }}

@@ -46,7 +46,11 @@ database:
   sqlite:
     persistence:
       enabled: true
-      size: 1Gi
+      # 5Gi gives a public instance comfortable headroom — ~150 fully-saturated
+      # 2000-attendee events at the per-row math in docs/loadtest-results.md.
+      # Bump higher if your event mix skews bigger or you keep historical
+      # conferences around.
+      size: 5Gi
       storageClass: ""
       accessMode: ReadWriteOnce
       # Reuse an existing PVC instead of creating one.
@@ -121,6 +125,19 @@ limits:
 turnstile:
   siteKey: ""    # TURNSTILE_SITE_KEY (sent to clients; safe to expose)
   secretKey: ""  # TURNSTILE_SECRET_KEY (used server-side to verify tokens)
+
+# Prometheus-compatible /api/metrics endpoint. Open by default (intended for
+# in-cluster scraping where the Service is not exposed via Ingress); set
+# `token` to require `Authorization: Bearer <token>` if you're scraping
+# across a less-trusted network. Enable serviceMonitor when you run the
+# prometheus-operator and want a chart-managed ServiceMonitor object.
+metrics:
+  token: ""              # METRICS_TOKEN (empty = open endpoint)
+  serviceMonitor:
+    enabled: false       # set true only if prometheus-operator is installed
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}           # extra labels for the ServiceMonitor (e.g. release: kube-prometheus-stack)
 
 # Extra env vars appended to the container.
 # Example: [{ name: SERVE_STATIC, value: "1" }]

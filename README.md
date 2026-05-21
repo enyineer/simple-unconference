@@ -354,6 +354,60 @@ Why per-IP is **not** in the list: hundreds of attendees share one outbound IP f
 
 Every individual layer can be disabled by setting its env var to `0` (or leaving Turnstile's keys empty), so private deployments where you trust your users can run wide-open. The Helm chart's [`limits:`](charts/simple-unconference/values.yaml) and [`turnstile:`](charts/simple-unconference/values.yaml) blocks emit these env vars on the container.
 
+## Metrics (Prometheus)
+
+`GET /api/metrics` exposes a Prometheus-compatible text-format snapshot of the instance. Cheap to scrape (a handful of indexed counts + one `statfs` call), computed on demand — no background goroutine. By default the endpoint is **open** (intended for in-cluster scraping where the Service is not reachable via Ingress); set `METRICS_TOKEN` to require `Authorization: Bearer <token>` if you're scraping across a less trusted network.
+
+Exposed metrics:
+
+| Metric | Description |
+| --- | --- |
+| `app_uptime_seconds` | Seconds since this worker started. |
+| `app_worker_id` | Worker index within the cluster (0 in single-process mode). |
+| `users_total` | Global owner accounts on the instance. |
+| `conferences_total` | Conferences on the instance. |
+| `conference_identities_total` | Per-conference identities (participants + moderators + auto-minted owners). |
+| `submissions_total` | All submissions, every status. |
+| `submissions_by_status_total{status="…"}` | Per-status breakdown (`submitted`, `published`, `rejected`). |
+| `stars_total` | Sum of stars across all sessions. |
+| `notifications_total` | Stored notifications across all identities. |
+| `rooms_total` | Rooms across all conferences. |
+| `invites_total` / `invites_unclaimed_total` | Conference invites (all / pending). |
+| `experts_total` / `expert_bookings_total` | Expert roster and 1:1 bookings. |
+| `storage_pvc_total_bytes` / `storage_pvc_free_bytes` / `storage_pvc_used_bytes` | Data volume from `statfs`. |
+| `storage_db_file_bytes` | SQLite file size on disk (WAL/SHM excluded). |
+
+The chart's `metrics:` block configures this:
+
+```yaml
+metrics:
+  token: ""              # METRICS_TOKEN — empty = open endpoint
+  serviceMonitor:
+    enabled: true        # render a ServiceMonitor for prometheus-operator
+    interval: 30s
+    scrapeTimeout: 10s
+    labels:
+      release: kube-prometheus-stack
+```
+
+When `metrics.token` is set, the chart also renders a `Secret` named `<release>-simple-unconference-metrics` carrying the token, and the ServiceMonitor references it via `spec.endpoints[].authorization` — no manual Secret wiring required.
+
+For non-operator Prometheus setups, scrape manually:
+
+```yaml
+scrape_configs:
+  - job_name: simple-unconference
+    metrics_path: /api/metrics
+    static_configs:
+      - targets: ["unconf-simple-unconference.unconference.svc:80"]
+    # optional, when METRICS_TOKEN is set:
+    authorization:
+      type: Bearer
+      credentials: "<your-token>"
+```
+
+The endpoint also resolves a sensible `DATA_DIR` for local development — falling back to `./data` (and then CWD) when `/app/data` isn't mounted — and logs a startup warning when it does so, so the zeros in `storage_*` gauges never mystify someone running `bun dev`.
+
 ## Adding a design system
 
 1. Implement [`DesignSystem`](src/web/design-system/core/contract.tsx) in `src/web/design-system/<id>/index.tsx`.
