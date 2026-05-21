@@ -21,11 +21,11 @@ import { RPCLink } from "@orpc/client/fetch";
 import type { RouterClient } from "@orpc/server";
 import type { AppRouter } from "../src/server/rpc";
 
-const OWNER_EMAIL = "loadtest-owner@simple-unconference.invalid";
-const OWNER_PASSWORD = "loadtest-secret-do-not-reuse";
-const CONF_NAME = "Loadtest Conference";
-const CONF_SLUG = "loadtest-conference";
-const TARGET_SESSIONS = 8;
+export const OWNER_EMAIL = "loadtest-owner@simple-unconference.invalid";
+export const OWNER_PASSWORD = "loadtest-secret-do-not-reuse";
+export const CONF_NAME = "Loadtest Conference";
+export const CONF_SLUG = "loadtest-conference";
+export const TARGET_SESSIONS = 8;
 
 interface Args {
   base: string;
@@ -102,7 +102,7 @@ function createSession(baseUrl: string) {
 
 // ---------- bootstrap (idempotent) ----------
 
-async function bootstrap(baseUrl: string): Promise<{ rpc: RouterClient<AppRouter> }> {
+export async function bootstrap(baseUrl: string): Promise<{ rpc: RouterClient<AppRouter> }> {
   const s = createSession(baseUrl);
 
   // Signup-or-login the owner. Existing accounts return CONFLICT email_taken.
@@ -156,7 +156,7 @@ async function bootstrap(baseUrl: string): Promise<{ rpc: RouterClient<AppRouter
 
 // ---------- load runner ----------
 
-interface Sample { endpoint: string; ms: number; ok: boolean; }
+export interface Sample { endpoint: string; ms: number; ok: boolean; }
 
 // Read paths that mirror what a logged-in attendee actually hits while a
 // conference is running. Weights roughly reflect frequency. Notifications
@@ -170,7 +170,7 @@ function pickEndpoint(): "conferences.get" | "submissions.list" | "agenda.get" |
   return "auth.me";
 }
 
-async function runVU(
+export async function runVU(
   rpc: RouterClient<AppRouter>,
   slug: string,
   deadline: number,
@@ -197,65 +197,102 @@ async function runVU(
 
 // ---------- stats + report ----------
 
-function percentile(sorted: number[], p: number): number {
+export function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
   const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
   return sorted[idx] ?? 0;
 }
 
-function fmtMs(ms: number): string {
+export function fmtMs(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms.toFixed(0)}ms`;
 }
 
-function printReport(args: Args, samples: Sample[], elapsedMs: number) {
+export interface Summary {
+  totalRequests: number;
+  errorCount: number;
+  errorRate: number;
+  throughputRps: number;
+  elapsedMs: number;
+  p50: number;
+  p95: number;
+  p99: number;
+  perEndpoint: Array<{ endpoint: string; count: number; p50: number; p95: number; p99: number }>;
+  verdict: "HEALTHY" | "STRESSED" | "OVERLOADED";
+  estimatedActiveUsers: number;
+}
+
+const REQS_PER_ACTIVE_USER_PER_SEC = 0.5;
+
+export function summarize(samples: Sample[], elapsedMs: number): Summary {
   const total = samples.length;
   const errors = samples.filter((s) => !s.ok).length;
+  const errorRate = total === 0 ? 0 : errors / total;
   const throughput = total / (elapsedMs / 1000);
-
   const all = samples.map((s) => s.ms).sort((a, b) => a - b);
-  const overallP50 = percentile(all, 50);
-  const overallP95 = percentile(all, 95);
-  const overallP99 = percentile(all, 99);
 
+  const eps = [...new Set(samples.map((s) => s.endpoint))].sort();
+  const perEndpoint = eps.map((ep) => {
+    const lats = samples.filter((s) => s.endpoint === ep).map((s) => s.ms).sort((a, b) => a - b);
+    return {
+      endpoint: ep,
+      count: lats.length,
+      p50: percentile(lats, 50),
+      p95: percentile(lats, 95),
+      p99: percentile(lats, 99),
+    };
+  });
+
+  const p95 = percentile(all, 95);
+  const verdict: Summary["verdict"] =
+    errorRate > 0.01 || p95 > 500 ? "OVERLOADED"
+      : p95 > 100 ? "STRESSED"
+      : "HEALTHY";
+
+  return {
+    totalRequests: total,
+    errorCount: errors,
+    errorRate,
+    throughputRps: throughput,
+    elapsedMs,
+    p50: percentile(all, 50),
+    p95,
+    p99: percentile(all, 99),
+    perEndpoint,
+    verdict,
+    estimatedActiveUsers: Math.round(throughput / REQS_PER_ACTIVE_USER_PER_SEC),
+  };
+}
+
+const VERDICT_NOTES: Record<Summary["verdict"], string> = {
+  OVERLOADED: "P95 high or errors above 1%. Reduce concurrency or scale up.",
+  STRESSED: "Comfortable ceiling at this concurrency. Doubling load risks degraded latency.",
+  HEALTHY: "Plenty of headroom. Try 2x concurrency to find the actual ceiling.",
+};
+
+function printReport(args: Args, samples: Sample[], elapsedMs: number) {
+  const s = summarize(samples, elapsedMs);
   console.log("\n=== Results ===");
   console.log(`Target:      ${args.base}`);
   console.log(`Concurrency: ${args.users}  Duration: ${fmtMs(elapsedMs)}  Think: ${args.thinkMs}ms`);
-  console.log(`Requests:    ${total}   Throughput: ${throughput.toFixed(1)} req/s`);
-  console.log(`Errors:      ${errors} (${((errors / Math.max(1, total)) * 100).toFixed(2)}%)`);
-  console.log(`Latency:     P50 ${fmtMs(overallP50)}   P95 ${fmtMs(overallP95)}   P99 ${fmtMs(overallP99)}`);
+  console.log(`Requests:    ${s.totalRequests}   Throughput: ${s.throughputRps.toFixed(1)} req/s`);
+  console.log(`Errors:      ${s.errorCount} (${(s.errorRate * 100).toFixed(2)}%)`);
+  console.log(`Latency:     P50 ${fmtMs(s.p50)}   P95 ${fmtMs(s.p95)}   P99 ${fmtMs(s.p99)}`);
 
   console.log("\nPer endpoint:");
-  const eps = [...new Set(samples.map((s) => s.endpoint))].sort();
   console.log("  endpoint              count   P50      P95      P99");
-  for (const ep of eps) {
-    const lats = samples.filter((s) => s.endpoint === ep).map((s) => s.ms).sort((a, b) => a - b);
+  for (const ep of s.perEndpoint) {
     console.log(
-      `  ${ep.padEnd(20)}  ${String(lats.length).padStart(5)}   ` +
-        `${fmtMs(percentile(lats, 50)).padStart(7)}  ` +
-        `${fmtMs(percentile(lats, 95)).padStart(7)}  ` +
-        `${fmtMs(percentile(lats, 99)).padStart(7)}`,
+      `  ${ep.endpoint.padEnd(20)}  ${String(ep.count).padStart(5)}   ` +
+        `${fmtMs(ep.p50).padStart(7)}  ` +
+        `${fmtMs(ep.p95).padStart(7)}  ` +
+        `${fmtMs(ep.p99).padStart(7)}`,
     );
   }
 
-  // Capacity recommendation. Heuristic: a typical active attendee generates
-  // ~0.5 req/s while in the app (notification poll every 30s + light
-  // interactive clicks). So sustained throughput T req/s comfortably
-  // supports ~T/0.5 active users — at the latency profile we just measured.
-  const errorRate = errors / Math.max(1, total);
-  const verdict =
-    errorRate > 0.01 || overallP95 > 500
-      ? { state: "OVERLOADED", note: "P95 high or errors above 1%. Reduce concurrency or scale up." }
-      : overallP95 > 100
-        ? { state: "STRESSED", note: "Comfortable ceiling at this concurrency. Doubling load risks degraded latency." }
-        : { state: "HEALTHY", note: "Plenty of headroom. Try 2x concurrency to find the actual ceiling." };
-
-  const REQS_PER_ACTIVE_USER_PER_SEC = 0.5;
-  const estimatedActiveUsers = Math.round(throughput / REQS_PER_ACTIVE_USER_PER_SEC);
-
   console.log("\n=== Capacity ===");
-  console.log(`State:                ${verdict.state}`);
-  console.log(`Estimated capacity:   ~${estimatedActiveUsers} active users at this configuration`);
-  console.log(`Note:                 ${verdict.note}`);
+  console.log(`State:                ${s.verdict}`);
+  console.log(`Estimated capacity:   ~${s.estimatedActiveUsers} active users at this configuration`);
+  console.log(`Note:                 ${VERDICT_NOTES[s.verdict]}`);
   console.log("");
   console.log("Active-user estimate assumes ~0.5 req/s per user (NotificationBell");
   console.log("polls every 30s + light interactive traffic). Adjust if your event's");

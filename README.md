@@ -295,6 +295,32 @@ The active-user estimate assumes ~0.5 req/s per attendee (the `NotificationBell`
 
 If `DISABLE_SIGNUP` is set on the target, the script tries `auth.login` directly so re-runs against locked-down instances still work as long as the owner account already exists.
 
+### Sweep multiple configs in Docker
+
+For "which `workers.count` + `resources.limits` combo do I actually need" answers, use the sweep runner. It builds the image, then for each config in the matrix it spins up a fresh container with the right `--cpus`/`--memory`/`WORKERS=` and runs the same load logic, then prints a comparison table:
+
+```bash
+bun run loadtest:sweep                                       # default matrix (6 configs, ~4 min)
+bun run loadtest:sweep -- --users 200 --duration 30s
+bun run loadtest:sweep -- --configs "1@0.5/512m 4@2/2g"      # custom matrix
+bun run loadtest:sweep -- --image simple-unconference:dev --no-build
+```
+
+The default matrix walks `1w/0.5c/512Mi` (chart default) up to `4w/4c/2Gi`. Output shape:
+
+```
+=== Sweep results ===
+  config                  thrpt    P50      P95      P99     err   state        users
+  1w / 0.5c / 512Mi       180r/s    8ms     22ms     35ms    0.0%  HEALTHY      ~360
+  1w / 1.0c / 512Mi       340r/s    5ms     14ms     22ms    0.0%  HEALTHY      ~680
+  2w / 1.0c / 1Gi         420r/s    5ms     16ms     28ms    0.0%  HEALTHY      ~840
+* 2w / 2.0c / 1Gi         720r/s    3ms     12ms     20ms    0.0%  HEALTHY     ~1440
+  4w / 2.0c / 1Gi         750r/s    3ms     11ms     19ms    0.0%  HEALTHY     ~1500
+  4w / 4.0c / 2Gi        1100r/s    2ms      9ms     15ms    0.0%  HEALTHY     ~2200
+```
+
+Requires `docker` on `PATH` (a `docker`-aliased `podman` also works). Each iteration uses an ephemeral container with no mounted volume, so the database is fresh per run — no carry-over between configs. Press Ctrl-C and the in-flight container is stopped before exit.
+
 ## Adding a design system
 
 1. Implement [`DesignSystem`](src/web/design-system/core/contract.tsx) in `src/web/design-system/<id>/index.tsx`.
