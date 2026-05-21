@@ -1,0 +1,123 @@
+# Default values for simple-unconference.
+
+image:
+  repository: ghcr.io/enyineer/simple-unconference
+  # If empty, defaults to .Chart.AppVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Replicas. NOTE: with sqlite + an RWO PVC this MUST stay at 1.
+replicaCount: 1
+
+# Recreate is required for sqlite so the old pod releases the volume before
+# the new one starts. Switch to RollingUpdate when running on postgres.
+strategy:
+  type: Recreate
+
+service:
+  type: ClusterIP
+  port: 80
+  # Container listens on 3000 (see Dockerfile / src/server/index.ts).
+  targetPort: 3000
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: unconference.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+database:
+  # "sqlite" or "postgres".
+  #
+  # WARNING: the app currently uses @prisma/adapter-libsql and the Prisma
+  # schema is pinned to provider = "sqlite". Setting type=postgres wires
+  # DATABASE_URL only; you must also switch the adapter (e.g. to
+  # @prisma/adapter-pg) and regenerate migrations for the postgres provider.
+  type: sqlite
+
+  sqlite:
+    persistence:
+      enabled: true
+      size: 1Gi
+      storageClass: ""
+      accessMode: ReadWriteOnce
+      # Reuse an existing PVC instead of creating one.
+      existingClaim: ""
+    # Mount path inside the container. Matches the Dockerfile VOLUME.
+    mountPath: /app/data
+    # SQLite file name inside mountPath.
+    fileName: prod.sqlite
+
+  postgres:
+    # Provide one of:
+    #   1) url:               full DATABASE_URL (e.g. postgresql://u:p@h:5432/db?sslmode=require)
+    #   2) host/port/...:     chart will assemble the URL
+    #   3) existingSecret:    pull the URL from a pre-existing Secret
+    url: ""
+    host: ""
+    port: 5432
+    user: ""
+    password: ""
+    database: ""
+    sslmode: require
+    existingSecret: ""
+    existingSecretKey: DATABASE_URL
+
+# Extra env vars appended to the container.
+# Example: [{ name: SERVE_STATIC, value: "1" }]
+env: []
+
+resources: {}
+  # limits:
+  #   cpu: 500m
+  #   memory: 512Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  readOnlyRootFilesystem: false
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Probes hit /api/health (mirrors the Dockerfile HEALTHCHECK).
+probes:
+  liveness:
+    enabled: true
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3

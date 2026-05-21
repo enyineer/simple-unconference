@@ -1,0 +1,17 @@
+{{- if and (eq .Values.database.type "sqlite") .Values.database.sqlite.persistence.enabled (not .Values.database.sqlite.persistence.existingClaim) -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "simple-unconference.pvcName" . }}
+  labels:
+    {{- include "simple-unconference.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.database.sqlite.persistence.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.database.sqlite.persistence.size | quote }}
+  {{- with .Values.database.sqlite.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}

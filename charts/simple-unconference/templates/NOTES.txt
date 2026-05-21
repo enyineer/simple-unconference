@@ -1,0 +1,32 @@
+{{ .Chart.Name }} {{ .Chart.AppVersion }} is installed.
+
+Database: {{ .Values.database.type }}
+{{- if eq .Values.database.type "sqlite" }}
+  Persistence: {{ .Values.database.sqlite.persistence.enabled }}
+  {{- if .Values.database.sqlite.persistence.enabled }}
+  PVC: {{ include "simple-unconference.pvcName" . }} ({{ .Values.database.sqlite.persistence.size }})
+  {{- else }}
+  WARNING: sqlite persistence is DISABLED — the database lives on the pod's
+  ephemeral filesystem and will be lost on restart. Set
+  database.sqlite.persistence.enabled=true for any real deployment.
+  {{- end }}
+{{- else if eq .Values.database.type "postgres" }}
+  WARNING: the application currently uses @prisma/adapter-libsql and the
+  Prisma schema is pinned to provider = "sqlite". This chart wires
+  DATABASE_URL only; you must also switch the adapter (e.g. to
+  @prisma/adapter-pg) and regenerate migrations for the postgres provider
+  before postgres mode will actually work.
+{{- end }}
+
+{{- if .Values.ingress.enabled }}
+
+The app is exposed via Ingress at:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- else if eq .Values.service.type "ClusterIP" }}
+
+To reach the app locally:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "simple-unconference.fullname" . }} 8080:{{ .Values.service.port }}
+  # then open http://localhost:8080
+{{- end }}
