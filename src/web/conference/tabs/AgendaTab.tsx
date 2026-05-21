@@ -3,7 +3,7 @@
 // tightly coupled (they all read/write the same agenda payload), so we keep
 // them in a single module for cohesion and avoid premature fragmentation.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Badge,
   Banner,
@@ -20,10 +20,9 @@ import {
   TextInput,
   Textarea,
 } from "../../design-system";
-import { api, ApiError, errorCode } from "../../api";
+import { api, errorCode } from "../../api";
 import type {
   AgendaData,
-  MyAssignments,
   Room,
   Slot,
   Submission,
@@ -93,21 +92,30 @@ export function AgendaTab({
   const [adding, setAdding] = useState(false);
   const [selectedSlotId, setSelectedSlotId] = useState<number | null>(null);
 
+  const fetchAgenda = useCallback(() => Promise.all([
+    api.agenda.get({ slug }),
+    api.rooms.list({ slug }),
+    api.submissions.list({ slug, status: "published" }),
+  ]), [slug]);
   async function refresh() {
-    const [a, r, s] = await Promise.all([
-      api.agenda.get({ slug }),
-      api.rooms.list({ slug }),
-      api.submissions.list({ slug, status: "published" }),
-    ]);
+    const [a, r, s] = await fetchAgenda();
     setData(a);
     setRooms(r);
     setSubs(s);
   }
   useEffect(() => {
-    refresh().catch(() =>
-      setData({ slots: [], tracks: [], placements: [], mixer_placements: [] }),
-    );
-  }, [slug]);
+    let cancelled = false;
+    fetchAgenda()
+      .then(([a, r, s]) => {
+        if (cancelled) return;
+        setData(a); setRooms(r); setSubs(s);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setData({ slots: [], tracks: [], placements: [], mixer_placements: [] });
+      });
+    return () => { cancelled = true; };
+  }, [fetchAgenda]);
 
   async function moveSlot(id: number, starts_at: number, ends_at: number) {
     try {
@@ -1069,7 +1077,7 @@ function TrackEditor({
                   fontSize: 12,
                 }}
               >
-                — adds to every schedule, can't be unstarred (use for keynotes,
+                — adds to every schedule, can&apos;t be unstarred (use for keynotes,
                 opening/closing)
               </span>
             </label>
@@ -1800,7 +1808,7 @@ function SlotConfigure({
               <strong>Repeat avoidance</strong>
             </Text>
             <Tip>
-              When on, attendees won't be assigned to a session they've already
+              When on, attendees won&apos;t be assigned to a session they&apos;ve already
               been placed in. Session creators always lead their own session
               regardless.
             </Tip>
@@ -1856,7 +1864,7 @@ type ResolveAction =
 
 function ResolveConflictsPanel({
   slug,
-  slot,
+  slot: _slot,
   rooms,
   subs,
   conflicts,

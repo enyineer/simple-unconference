@@ -95,7 +95,7 @@ export function SessionPicker({
     {requirementsConfirm.modal}
     <Sheet open={open} onClose={onClose} title="Pick a session">
       <Tip>
-        Your pick is locked in — moderators re-running assignment won't move you out.
+        Your pick is locked in — moderators re-running assignment won&apos;t move you out.
         Sessions that are already full are dimmed.
       </Tip>
       {error && <Banner variant="critical">{error}</Banner>}

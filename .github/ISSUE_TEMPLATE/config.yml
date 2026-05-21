@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/enyineer/simple-unconference#readme
+    about: Check out our documentation before opening an issue
+  - name: Public instance
+    url: https://unconference.enking.dev
+    about: Try the public instance to see if your issue reproduces there

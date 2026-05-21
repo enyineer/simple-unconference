@@ -16,6 +16,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { SearchableSelect } from "../ui/SearchableSelect";
 import { Tip } from "../ui/Tip";
 import { formatInTz } from "../../../shared/tz";
+import { useNow } from "../../useNow";
 
 interface ExpertSlot {
   starts_at: number;
@@ -423,7 +424,8 @@ function SlotChip({
   onCancel: () => void;
 }) {
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
-  const isPast = s.starts_at <= Date.now();
+  const now = useNow();
+  const isPast = s.starts_at <= now;
   const isBooked = s.booking_id !== null;
 
   const bg = s.is_mine
@@ -504,12 +506,17 @@ function PromoteExpertSheet({
     [people, existingExpertIdentityIds],
   );
 
-  useEffect(() => {
+  // Reset fields when the sheet closes. Detected via the "previous value"
+  // pattern (adjusting state during render) rather than an effect so the
+  // next render already shows the cleared values when the user reopens.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (wasOpen !== open) {
+    setWasOpen(open);
     if (!open) {
       setIdentityId(""); setBio(""); setMode("pool");
       setPoolId(""); setRoomIds(new Set()); setError(null);
     }
-  }, [open]);
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -685,10 +692,12 @@ function TimeframeSheet({
   onClose: () => void;
   onDone: () => void;
 }) {
-  const now = Date.now();
-  const nextHour = Math.ceil(now / 3_600_000) * 3_600_000;
-  const [startsAt, setStartsAt] = useState<number>(nextHour);
-  const [endsAt, setEndsAt] = useState<number>(nextHour + 60 * 60_000);
+  const [startsAt, setStartsAt] = useState<number>(() => {
+    return Math.ceil(Date.now() / 3_600_000) * 3_600_000;
+  });
+  const [endsAt, setEndsAt] = useState<number>(() => {
+    return Math.ceil(Date.now() / 3_600_000) * 3_600_000 + 60 * 60_000;
+  });
   const [duration, setDuration] = useState<string>("15");
   const [error, setError] = useState<string | null>(null);
 

@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-  Banner, Button, Heading, Spinner, Stack, Text,
+  Banner, Button, Heading, Spinner, Stack,
 } from "../../design-system";
-import { api, ApiError, errorCode } from "../../api";
+import { api, errorCode } from "../../api";
 import { formatInTz } from "../../../shared/tz";
 import { fmtTimeShort } from "../helpers";
 import type { AgendaData, MyAssignments, Room, Slot, Submission } from "../types";
@@ -10,7 +10,6 @@ import { EmptyState } from "../ui/EmptyState";
 import { Pill } from "../ui/Pill";
 import { RoomInfoSheet } from "../ui/RoomInfoSheet";
 import { SessionPicker } from "../ui/SessionPicker";
-import { Tip } from "../ui/Tip";
 
 export function MyAssignmentsTab({
   slug, timeZone,
@@ -26,22 +25,31 @@ export function MyAssignmentsTab({
   // across "Pick a session" (unplaced) and "Change session" (placed).
   const [pickerSlotId, setPickerSlotId] = useState<number | null>(null);
 
+  const fetchAll = useCallback(() => Promise.all([
+    api.agenda.myAssignments({ slug }),
+    api.agenda.get({ slug }),
+    api.rooms.list({ slug }),
+    api.submissions.list({ slug, status: "published" }),
+  ]), [slug]);
   async function refresh() {
-    const [m, a, r, s] = await Promise.all([
-      api.agenda.myAssignments({ slug }),
-      api.agenda.get({ slug }),
-      api.rooms.list({ slug }),
-      api.submissions.list({ slug, status: "published" }),
-    ]);
+    const [m, a, r, s] = await fetchAll();
     setData(m); setAgenda(a); setRooms(r); setSubs(s);
   }
 
   useEffect(() => {
-    refresh().catch(() => {
-      setData({ assignments: [], unplaced_slots: [] });
-      setAgenda({ slots: [], tracks: [], placements: [], mixer_placements: [] });
-    });
-  }, [slug]);
+    let cancelled = false;
+    fetchAll()
+      .then(([m, a, r, s]) => {
+        if (cancelled) return;
+        setData(m); setAgenda(a); setRooms(r); setSubs(s);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setData({ assignments: [], unplaced_slots: [] });
+        setAgenda({ slots: [], tracks: [], placements: [], mixer_placements: [] });
+      });
+    return () => { cancelled = true; };
+  }, [fetchAll]);
 
   if (!data || !agenda) return <Spinner label="Loading…" />;
 

@@ -46,20 +46,38 @@ export function ConferencePage({
   slug, confMe, onBack, onDesignSystemChange,
   colorMode, onColorModeChange, onLoggedOut,
 }: ConferencePageProps) {
-  const [conf, setConf] = useState<ConferenceDetail | null>(null);
+  const [fetchedConf, setFetchedConf] = useState<ConferenceDetail | null>(null);
+  const [fetchedError, setFetchedError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("sessions");
-  const [error, setError] = useState<string | null>(null);
+  // Track which slug `fetchedConf` / `fetchedError` were last set for.
+  // Deriving `conf` / `error` from this lets us reset on slug change without
+  // a synchronous setState in the effect.
+  const [loadedSlug, setLoadedSlug] = useState<string | null>(null);
   // Instance-wide per-user submission cap, surfaced via the public config
   // endpoint so SessionsTab can render an "X / N" hint. null = cap disabled
   // on this instance; undefined = still loading.
   const [maxSessionsPerUser, setMaxSessionsPerUser] = useState<number | null | undefined>(undefined);
 
   useEffect(() => {
-    setError(null);
+    let cancelled = false;
     api.conferences.get({ slug })
-      .then(setConf)
-      .catch((e: unknown) => setError(e instanceof ApiError ? errorCode(e) : "error"));
+      .then((c) => {
+        if (cancelled) return;
+        setFetchedConf(c);
+        setFetchedError(null);
+        setLoadedSlug(slug);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setFetchedError(e instanceof ApiError ? errorCode(e) : "error");
+        setLoadedSlug(slug);
+      });
+    return () => { cancelled = true; };
   }, [slug]);
+
+  // Hide stale data + error while a new slug is in flight.
+  const conf = loadedSlug === slug ? fetchedConf : null;
+  const error = loadedSlug === slug ? fetchedError : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -121,7 +139,7 @@ export function ConferencePage({
             maxSessionsPerUser={maxSessionsPerUser ?? null}
             onSessionMutated={() => {
               // refetch the conference so my_session_count stays accurate.
-              api.conferences.get({ slug }).then(setConf).catch(() => { /* keep current */ });
+              api.conferences.get({ slug }).then(setFetchedConf).catch(() => { /* keep current */ });
             }}
           />
         )}
@@ -138,20 +156,20 @@ export function ConferencePage({
             currentSubmissionMaxPlacements={conf.submission_max_placements_default}
             currentParticipantSubmissionsEnabled={conf.participant_submissions_enabled}
             usage={conf.usage}
-            onNameChange={(name) => setConf({ ...conf, name })}
+            onNameChange={(name) => setFetchedConf({ ...conf, name })}
             onDsChange={(id) => {
-              setConf({ ...conf, design_system: id });
+              setFetchedConf({ ...conf, design_system: id });
               onDesignSystemChange?.(id);
             }}
-            onTzChange={(tz) => setConf({ ...conf, timezone: tz })}
+            onTzChange={(tz) => setFetchedConf({ ...conf, timezone: tz })}
             onMixerAvoidRepeatsChange={(v) =>
-              setConf({ ...conf, mixer_avoid_repeats_default: v })
+              setFetchedConf({ ...conf, mixer_avoid_repeats_default: v })
             }
             onSubmissionMaxPlacementsChange={(v) =>
-              setConf({ ...conf, submission_max_placements_default: v })
+              setFetchedConf({ ...conf, submission_max_placements_default: v })
             }
             onParticipantSubmissionsEnabledChange={(v) =>
-              setConf({ ...conf, participant_submissions_enabled: v })
+              setFetchedConf({ ...conf, participant_submissions_enabled: v })
             }
             onDeleted={onBack}
           />

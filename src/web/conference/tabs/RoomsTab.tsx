@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import {
   Banner, Button, Form, Heading, Sheet, Spinner, Stack, TextInput, Textarea,
 } from "../../design-system";
-import { api, ApiError, errorCode } from "../../api";
+import { api, errorCode } from "../../api";
 import { quotaErrorMessage } from "../../quotaErrors";
 import type { Room } from "../types";
 import { parseLabels } from "../helpers";
@@ -23,7 +23,13 @@ export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
   async function refresh() {
     setRooms(await api.rooms.list({ slug }));
   }
-  useEffect(() => { refresh().catch(() => setRooms([])); }, [slug]);
+  useEffect(() => {
+    let cancelled = false;
+    api.rooms.list({ slug })
+      .then((rs) => { if (!cancelled) setRooms(rs); })
+      .catch(() => { if (!cancelled) setRooms([]); });
+    return () => { cancelled = true; };
+  }, [slug]);
 
   async function addRoom(e: React.FormEvent) {
     e.preventDefault();

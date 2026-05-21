@@ -112,11 +112,11 @@ export class Client {
     }
     return res;
   }
-  get(p: string)             { return this.req("GET", p); }
-  post(p: string, b?: any)   { return this.req("POST", p, b); }
-  patch(p: string, b?: any)  { return this.req("PATCH", p, b); }
-  put(p: string, b?: any)    { return this.req("PUT", p, b); }
-  delete(p: string)          { return this.req("DELETE", p); }
+  get(p: string)               { return this.req("GET", p); }
+  post(p: string, b?: unknown)  { return this.req("POST", p, b); }
+  patch(p: string, b?: unknown) { return this.req("PATCH", p, b); }
+  put(p: string, b?: unknown)   { return this.req("PUT", p, b); }
+  delete(p: string)            { return this.req("DELETE", p); }
 }
 
 // Re-export so test files can `instanceof` on RPC errors.

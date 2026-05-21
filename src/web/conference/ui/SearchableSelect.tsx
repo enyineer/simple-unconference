@@ -73,10 +73,15 @@ export function SearchableSelect({
   }, [query, options]);
 
   // Reset the highlight when the filter changes so it never points off
-  // the end of the visible list.
-  useEffect(() => {
+  // the end of the visible list. Adjusts state during render (React's
+  // recommended pattern for prop-derived resets) rather than running an
+  // effect after paint.
+  const [lastResetKey, setLastResetKey] = useState<string>(`${query}|${open}`);
+  const resetKey = `${query}|${open}`;
+  if (lastResetKey !== resetKey) {
+    setLastResetKey(resetKey);
     setHighlight(0);
-  }, [query, open]);
+  }
 
   // Close on outside click.
   useEffect(() => {
@@ -89,7 +94,7 @@ export function SearchableSelect({
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [open]);
 
   function commitClose() {

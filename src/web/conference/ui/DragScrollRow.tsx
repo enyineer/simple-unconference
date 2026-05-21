@@ -80,7 +80,7 @@ export function DragScrollRow({
     ref.current!.scrollLeft = d.startScroll - dx;
   }
 
-  function onPointerUp(e: React.PointerEvent<HTMLDivElement>) {
+  function onPointerUp(_e: React.PointerEvent<HTMLDivElement>) {
     const d = dragRef.current;
     if (!d) return;
     const el = ref.current!;

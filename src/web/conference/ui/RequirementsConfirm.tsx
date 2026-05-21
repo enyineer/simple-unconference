@@ -93,7 +93,7 @@ export function useRequirementsConfirm(): UseRequirementsConfirm {
               fontSize: 11, fontWeight: 600, letterSpacing: 0.4,
               textTransform: "uppercase", color: muted, marginBottom: 6,
             }}>
-              You'll need
+              You&apos;ll need
             </div>
             <ul style={{
               listStyle: "none", padding: 0, margin: 0,

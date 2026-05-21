@@ -9,6 +9,8 @@
     "start": "bun src/server/index.ts",
     "test": "bun test",
     "test:scale": "bun test src/server/assignment.scale.test.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
     "loadtest": "bun scripts/loadtest.ts",
     "loadtest:sweep": "bun scripts/loadtest-sweep.ts",
     "build": "vite build",
@@ -20,10 +22,17 @@
   "devDependencies": {
     "@changesets/changelog-github": "^0.7.0",
     "@changesets/cli": "^2.31.0",
+    "@eslint/js": "^10.0.1",
     "@types/bun": "latest",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.2",
+    "eslint": "^9",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.6.0",
+    "typescript-eslint": "^8.59.4",
     "vite": "^8.0.13"
   },
   "peerDependencies": {

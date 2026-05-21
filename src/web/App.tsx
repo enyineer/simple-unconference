@@ -200,15 +200,22 @@ export function App() {
   // Two independent auth states. They can be active simultaneously — the
   // owner cookie + any number of per-conference identity cookies coexist.
   const [owner, setOwner] = useState<Me | null | undefined>(undefined);
-  const [confMe, setConfMe] = useState<ConfMe | null | undefined>(undefined);
+  // Per-conference identity / design system. `fetchedX` is what the most
+  // recent fetch (or event handler) wrote; `loadedXSlug` is which slug that
+  // value belongs to. The derived `confMe` / `confDs` collapse back to their
+  // "no conference active" defaults whenever those don't match, so we don't
+  // need a synchronous reset-in-effect on confSlug change.
+  const [fetchedConfMe, setFetchedConfMe] = useState<ConfMe | null | undefined>(undefined);
+  const [loadedConfMeSlug, setLoadedConfMeSlug] = useState<string | undefined>(undefined);
+  const [fetchedConfDs, setFetchedConfDs] = useState<string | null>(null);
+  const [loadedConfDsSlug, setLoadedConfDsSlug] = useState<string | undefined>(undefined);
   // Owner-side color mode lives in memory only (Users have no persisted
   // colorMode in the new identity model). Each conference identity persists
   // its own preference server-side.
   const [ownerColorMode, setOwnerColorMode] = useState<ColorMode>("auto");
 
-  // Brand: when inside a conference, fetch the conference's design system.
-  const [confDs, setConfDs] = useState<string | null>(null);
-
+  // Used both on mount (via the effect below) and as the post-login /
+  // post-logout refresh handed to LoginPage / ConferencesPage.
   async function loadOwner() {
     try {
       setOwner(await api.auth.me());
@@ -217,24 +224,28 @@ export function App() {
     }
   }
   useEffect(() => {
-    loadOwner();
+    let cancelled = false;
+    api.auth.me()
+      .then((m) => { if (!cancelled) setOwner(m); })
+      .catch(() => { if (!cancelled) setOwner(null); });
+    return () => { cancelled = true; };
   }, []);
 
   // Per-conference identity: fetch whenever the active conference slug changes.
   useEffect(() => {
-    if (!confSlug) {
-      setConfMe(undefined);
-      return;
-    }
+    if (!confSlug) return;
     let cancelled = false;
-    setConfMe(undefined);
     api.conferences
       .me({ slug: confSlug })
       .then((m) => {
-        if (!cancelled) setConfMe(m);
+        if (cancelled) return;
+        setFetchedConfMe(m);
+        setLoadedConfMeSlug(confSlug);
       })
       .catch(() => {
-        if (!cancelled) setConfMe(null);
+        if (cancelled) return;
+        setFetchedConfMe(null);
+        setLoadedConfMeSlug(confSlug);
       });
     return () => {
       cancelled = true;
@@ -246,23 +257,32 @@ export function App() {
   // the default plugin if not authorized yet so JoinPage / ConferenceLogin
   // still render with sensible branding).
   useEffect(() => {
-    if (!confSlug) {
-      setConfDs(null);
-      return;
-    }
+    if (!confSlug) return;
     let cancelled = false;
     api.conferences
       .get({ slug: confSlug })
       .then((c: ConferenceSummary) => {
-        if (!cancelled) setConfDs(c.design_system || DEFAULT_PLUGIN_ID);
+        if (cancelled) return;
+        setFetchedConfDs(c.design_system || DEFAULT_PLUGIN_ID);
+        setLoadedConfDsSlug(confSlug);
       })
       .catch(() => {
-        if (!cancelled) setConfDs(DEFAULT_PLUGIN_ID);
+        if (cancelled) return;
+        setFetchedConfDs(DEFAULT_PLUGIN_ID);
+        setLoadedConfDsSlug(confSlug);
       });
     return () => {
       cancelled = true;
     };
   }, [confSlug]);
+
+  // Hide stale data while a new slug is in flight (or there's no active
+  // conference). The settled-slug tracking above guarantees these flip back
+  // to defaults without a synchronous setState in the effect.
+  const confMe = confSlug && loadedConfMeSlug === confSlug ? fetchedConfMe : undefined;
+  const confDs = confSlug && loadedConfDsSlug === confSlug ? fetchedConfDs : null;
+  const setConfMe = setFetchedConfMe;
+  const setConfDs = setFetchedConfDs;
 
   const activePluginId = confSlug && confDs ? confDs : DEFAULT_PLUGIN_ID;
   const activeColorMode: ColorMode = confSlug
@@ -287,7 +307,7 @@ export function App() {
       }
       setOwnerColorMode(mode);
     },
-    [confSlug, confMe],
+    [confSlug, confMe, setConfMe],
   );
 
   function renderPage() {

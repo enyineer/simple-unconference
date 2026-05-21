@@ -441,7 +441,7 @@ export function assignMixerSlot(input: MixerInput): MixerResult {
         }
       }
       // Lexicographic compare: (repeats, used, -capacity, id).
-      let better = false;
+      let better: boolean;
       if (best === null) {
         better = true;
       } else if (repeats !== bestRepeats) {

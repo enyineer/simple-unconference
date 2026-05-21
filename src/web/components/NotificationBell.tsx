@@ -7,7 +7,7 @@
 // change. Hrefs that don't match `tab:` are ignored (future-proofing for
 // external links if we ever need them).
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 
 type NotificationKind =
@@ -49,22 +49,26 @@ export function NotificationBell({
   const [unread, setUnread] = useState(0);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const res = await api.notifications.list({ slug });
-      setItems(res.items);
-      setUnread(res.unread_count);
-    } catch {
-      // Stale/unauthorized: bell goes empty rather than throwing into the
-      // page. The next poll either recovers or stays empty silently.
-    }
-  }, [slug]);
-
   useEffect(() => {
-    load();
-    const id = setInterval(load, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [load]);
+    let cancelled = false;
+    const tick = () => {
+      api.notifications.list({ slug })
+        .then((res) => {
+          if (cancelled) return;
+          setItems(res.items);
+          setUnread(res.unread_count);
+        })
+        // Stale/unauthorized: bell goes empty rather than throwing into the
+        // page. The next poll either recovers or stays empty silently.
+        .catch(() => {});
+    };
+    tick();
+    const id = setInterval(tick, POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [slug]);
 
   // Close on outside click + Escape (same pattern as AccountMenu).
   useEffect(() => {
@@ -256,7 +260,7 @@ export function NotificationBell({
                   fontSize: 13,
                 }}
               >
-                You're all caught up.
+                You&apos;re all caught up.
               </div>
             ) : (
               items.map((item) => (

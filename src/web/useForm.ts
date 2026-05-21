@@ -19,7 +19,7 @@ export interface FormApi<T> {
   applyServerErrors: (resp: unknown) => boolean;
 }
 
-export function useForm<TSchema extends v.GenericSchema>(
+export function useForm<TSchema extends v.GenericSchema<Record<string, unknown>>>(
   schema: TSchema,
   initial: Partial<v.InferInput<TSchema>>,
 ): FormApi<v.InferInput<TSchema>> {
@@ -28,11 +28,7 @@ export function useForm<TSchema extends v.GenericSchema>(
   const [errors, setErrors] = useState<FieldErrors>({});
 
   const setValue = useCallback(<K extends keyof T>(key: K, value: T[K]) => {
-    setValues((prev) => {
-      const next: any = { ...(prev as any) };
-      next[key] = value;
-      return next as T;
-    });
+    setValues((prev) => ({ ...prev, [key]: value }));
     setErrors((prev) => {
       if (!((key as string) in prev)) return prev;
       const next = { ...prev };
@@ -42,7 +38,7 @@ export function useForm<TSchema extends v.GenericSchema>(
   }, []);
 
   const reset = useCallback((next?: Partial<T>) => {
-    setValues({ ...(initial as any), ...((next ?? {}) as any) } as T);
+    setValues({ ...initial, ...(next ?? {}) } as T);
     setErrors({});
   }, [initial]);
 

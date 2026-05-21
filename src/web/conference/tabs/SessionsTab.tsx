@@ -13,7 +13,7 @@ import {
   TextInput,
   Textarea,
 } from "../../design-system";
-import { api, ApiError, errorCode } from "../../api";
+import { api, errorCode } from "../../api";
 import { quotaErrorMessage } from "../../quotaErrors";
 import type { Participant, Role, Room, Submission } from "../types";
 import { parseLabels, submitterLabel } from "../helpers";
@@ -64,18 +64,21 @@ export function SessionsTab({
     api.rooms.list({ slug }).then(setRooms).catch(() => setRooms([]));
   }, [slug]);
   // Mod-only roster used to populate the submitter-reassignment dropdown
-  // in the edit form. Participants don't see (or need) this list.
-  const [participants, setParticipants] = useState<Participant[]>([]);
+  // in the edit form. Participants don't see (or need) this list — we leave
+  // `fetchedParticipants` untouched and derive `participants` below so a
+  // role flip from mod to participant just hides the data without a
+  // synchronous reset-in-effect.
+  const [fetchedParticipants, setFetchedParticipants] = useState<Participant[]>([]);
   useEffect(() => {
-    if (!isMod) {
-      setParticipants([]);
-      return;
-    }
+    if (!isMod) return;
+    let cancelled = false;
     api.conferences
       .listParticipants({ slug })
-      .then(setParticipants)
-      .catch(() => setParticipants([]));
+      .then((p) => { if (!cancelled) setFetchedParticipants(p); })
+      .catch(() => { if (!cancelled) setFetchedParticipants([]); });
+    return () => { cancelled = true; };
   }, [slug, isMod]);
+  const participants = isMod ? fetchedParticipants : [];
   // Distinct tag values across all rooms in this conference. The picker
   // only offers these — selecting a tag no room has would just make the
   // session unplaceable.
@@ -121,7 +124,11 @@ export function SessionsTab({
     setSubs(await api.submissions.list({ slug }));
   }
   useEffect(() => {
-    refresh().catch(() => setSubs([]));
+    let cancelled = false;
+    api.submissions.list({ slug })
+      .then((ss) => { if (!cancelled) setSubs(ss); })
+      .catch(() => { if (!cancelled) setSubs([]); });
+    return () => { cancelled = true; };
   }, [slug]);
 
   async function deleteSubmission(s: Submission) {
@@ -191,13 +198,13 @@ export function SessionsTab({
   // Drop any selected tag that no longer exists in the offered set (e.g.
   // the user switched status from "all" to "rejected" and the tag they had
   // selected only existed on a published session). Avoids the "0 results
-  // but I can't see why" footgun.
-  useEffect(() => {
-    if (selectedTags.length === 0) return;
+  // but I can't see why" footgun. Computed during render and adjusted via
+  // setState — React reconciles before painting.
+  if (selectedTags.length > 0) {
     const offered = new Set(availableSessionTags);
     const pruned = selectedTags.filter((t) => offered.has(t));
     if (pruned.length !== selectedTags.length) setSelectedTags(pruned);
-  }, [availableSessionTags, selectedTags]);
+  }
 
   const trimmedQuery = query.trim().toLowerCase();
   const filtered = useMemo(() => {
@@ -1051,7 +1058,7 @@ function SessionForm(props: SessionFormProps) {
       // Mod-only patch — same fields apply to both create and update.
       // Computed up front so we can early-return on validation errors
       // before touching the server.
-      let modFields: {
+      const modFields: {
         max_placements?: number | null;
         manually_finished?: boolean;
         pre_assigned_room_id?: number | null;
@@ -1203,7 +1210,7 @@ function SessionForm(props: SessionFormProps) {
         />
         {requirementsLocked && (
           <Text muted>
-            Required room features can't be changed after publishing.
+            Required room features can&apos;t be changed after publishing.
           </Text>
         )}
         {isMod && (
@@ -1324,7 +1331,7 @@ function SessionForm(props: SessionFormProps) {
               }}
             >
               Pre-assigned sessions always go to their pinned room in any
-              unconference slot they land in. The slot's assignment will be
+              unconference slot they land in. The slot&apos;s assignment will be
               blocked if two pre-assigned sessions compete for the same room.
             </div>
           </>
@@ -1362,7 +1369,7 @@ function RoomTagPicker({
         <div style={{ fontSize: 13, fontWeight: 500 }}>Required room features</div>
         <Text muted>
           No room has any feature tags yet. Ask a moderator to tag rooms
-          (e.g. "projector", "whiteboard") in the Rooms tab to enable this.
+          (e.g. &quot;projector&quot;, &quot;whiteboard&quot;) in the Rooms tab to enable this.
         </Text>
       </Stack>
     );

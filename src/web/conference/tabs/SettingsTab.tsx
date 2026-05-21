@@ -94,9 +94,15 @@ export function SettingsTab({
 
   // Locally-edited name; commits on blur (mirroring the "limited" cap input).
   // Kept in sync with `currentName` when the parent's value changes (e.g. an
-  // optimistic save round-trip or a name update from elsewhere).
+  // optimistic save round-trip or a name update from elsewhere). Uses the
+  // "adjust state during render" pattern so we don't trigger an extra effect
+  // pass — React reconciles the resulting setState before painting.
   const [nameDraft, setNameDraft] = useState(currentName);
-  useEffect(() => { setNameDraft(currentName); }, [currentName]);
+  const [lastSyncedName, setLastSyncedName] = useState(currentName);
+  if (lastSyncedName !== currentName) {
+    setLastSyncedName(currentName);
+    setNameDraft(currentName);
+  }
 
   async function updateName(next: string) {
     const trimmed = next.trim();
@@ -472,17 +478,18 @@ function JoinLinkSection({ slug }: { slug: string }) {
   const [maxUsesInput, setMaxUsesInput] = useState<string>("");
   const [expiryInput, setExpiryInput] = useState<string>("");
 
-  async function refresh() {
-    try {
-      const l = await api.conferences.getJoinLink({ slug });
-      setLink(l);
-      setMaxUsesInput(l.max_uses !== null ? String(l.max_uses) : "");
-      setExpiryInput(l.expires_at !== null ? toDatetimeLocal(l.expires_at) : "");
-    } catch (e) {
-      setError(errorCode(e));
-    }
-  }
-  useEffect(() => { refresh(); }, [slug]);
+  useEffect(() => {
+    let cancelled = false;
+    api.conferences.getJoinLink({ slug })
+      .then((l) => {
+        if (cancelled) return;
+        setLink(l);
+        setMaxUsesInput(l.max_uses !== null ? String(l.max_uses) : "");
+        setExpiryInput(l.expires_at !== null ? toDatetimeLocal(l.expires_at) : "");
+      })
+      .catch((e) => { if (!cancelled) setError(errorCode(e)); });
+    return () => { cancelled = true; };
+  }, [slug]);
 
   async function setEnabled(next: boolean) {
     setBusy(true); setError(null); setInfo(null);
@@ -541,7 +548,7 @@ function JoinLinkSection({ slug }: { slug: string }) {
         <Stack gap="condensed">
           <Stack direction="row" gap="condensed" align="center">
             <StatusDot on={false} />
-            <Text muted>Off. People can't sign themselves up.</Text>
+            <Text muted>Off. People can&apos;t sign themselves up.</Text>
           </Stack>
           <div>
             <Button variant="primary" onClick={() => setEnabled(true)} disabled={busy}>

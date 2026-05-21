@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Badge, Banner, Button, Form, Heading, Sheet, Spinner, Stack, TextInput, Textarea, Text,
 } from "../../design-system";
@@ -7,6 +7,7 @@ import { quotaErrorMessage } from "../../quotaErrors";
 import type { Participant, Role } from "../types";
 import { EmptyState } from "../ui/EmptyState";
 import { Tip } from "../ui/Tip";
+import { useNow } from "../../useNow";
 
 interface PendingInvite {
   id: number;
@@ -39,15 +40,25 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteInfo, setInviteInfo] = useState<string | null>(null);
 
+  const fetchAll = useCallback(() => Promise.all([
+    api.conferences.listParticipants({ slug }),
+    api.conferences.listInvites({ slug }).catch(() => [] as PendingInvite[]),
+  ]), [slug]);
   async function refresh() {
-    const [pp, inv] = await Promise.all([
-      api.conferences.listParticipants({ slug }),
-      api.conferences.listInvites({ slug }).catch(() => [] as PendingInvite[]),
-    ]);
+    const [pp, inv] = await fetchAll();
     setPeople(pp);
     setInvites(inv);
   }
-  useEffect(() => { refresh().catch(() => setPeople([])); }, [slug]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchAll()
+      .then(([pp, inv]) => {
+        if (cancelled) return;
+        setPeople(pp); setInvites(inv);
+      })
+      .catch(() => { if (!cancelled) setPeople([]); });
+    return () => { cancelled = true; };
+  }, [fetchAll]);
 
   function resetInviteSheet() {
     setSingleEmail("");
@@ -225,8 +236,9 @@ function InviteRow({
   onRevoke: () => void | Promise<void>;
 }) {
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
+  const now = useNow();
   const expiresLabel = formatExpiry(invite.expires_at);
-  const expired = invite.expires_at <= Date.now();
+  const expired = invite.expires_at <= now;
   return (
     <div
       style={{

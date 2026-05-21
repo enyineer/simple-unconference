@@ -44,7 +44,7 @@ export function AssignmentRulesModal({
         <Text muted>
           When a moderator runs an unconference or mixer slot, the system
           decides which sessions go where and which participants attend
-          which session. Here's exactly what it does, in order.
+          which session. Here&apos;s exactly what it does, in order.
         </Text>
 
         <Section index={1} title="Which sessions get a room">
@@ -57,13 +57,13 @@ export function AssignmentRulesModal({
           {isMod && (
             <Rule modOnly>
               Sessions marked <em>finished</em> (placement cap reached, or
-              the manual "mark as finished" toggle) drop out before
+              the manual &quot;mark as finished&quot; toggle) drop out before
               ranking. Re-publishing or bumping the cap brings them back.
             </Rule>
           )}
           <Rule>
             The number of sessions placed is capped at the number of
-            available rooms in this slot's scope.
+            available rooms in this slot&apos;s scope.
           </Rule>
         </Section>
 
@@ -103,8 +103,8 @@ export function AssignmentRulesModal({
           </Rule>
           <Rule>
             The submitter of a session is always assigned to host it (when
-            the session is placed). You can't be auto-placed somewhere
-            else if you're hosting.
+            the session is placed). You can&apos;t be auto-placed somewhere
+            else if you&apos;re hosting.
           </Rule>
           <Rule>
             You can override the auto-pick anytime via{" "}
@@ -112,7 +112,7 @@ export function AssignmentRulesModal({
             pick is preserved if a mod re-runs the assignment.
           </Rule>
           <Rule>
-            If you didn't star any sessions that got a room, you'll be
+            If you didn&apos;t star any sessions that got a room, you&apos;ll be
             listed as <em>unplaced</em> until you pick one.
           </Rule>
         </Section>
@@ -120,22 +120,22 @@ export function AssignmentRulesModal({
         <Section index={4} title="Avoiding double-bookings">
           <Rule>
             <strong>Same room:</strong> a room booked by an overlapping
-            slot can't be used twice at the same time.
+            slot can&apos;t be used twice at the same time.
           </Rule>
           <Rule>
             <strong>Same speaker:</strong> a submitter hosting a session
-            in one slot can't host a <em>different</em> session in an
+            in one slot can&apos;t host a <em>different</em> session in an
             overlapping slot.
           </Rule>
           <Rule>
-            <strong>Same session:</strong> the same session isn't placed
+            <strong>Same session:</strong> the same session isn&apos;t placed
             in two overlapping slots — unless a mod has flagged it as{" "}
             <em>allows overlap</em> (for recurring workshops that run in
             parallel).
           </Rule>
           <Rule>
-            <strong>Same participant:</strong> if you're assigned in one
-            slot, you won't also be assigned in an overlapping slot.
+            <strong>Same participant:</strong> if you&apos;re assigned in one
+            slot, you won&apos;t also be assigned in an overlapping slot.
           </Rule>
           <Rule>
             Excluded rooms, sessions, and participants are reported after
@@ -147,7 +147,7 @@ export function AssignmentRulesModal({
         <Section index={5} title="Avoiding repeated sessions">
           <Rule>
             When a slot has <em>avoid repeats</em> enabled, the system
-            won't put you in a session you've already attended in an
+            won&apos;t put you in a session you&apos;ve already attended in an
             earlier unconference slot of this conference. Hosts (the
             submitter) are exempt — leading your own session always wins.
           </Rule>
@@ -162,8 +162,8 @@ export function AssignmentRulesModal({
               clear the pin.
             </Rule>
             <Rule modOnly>
-              <strong>A pinned room that isn't in the slot's room set.</strong>{" "}
-              Either add the room to the slot's scope (via Configure) or
+              <strong>A pinned room that isn&apos;t in the slot&apos;s room set.</strong>{" "}
+              Either add the room to the slot&apos;s scope (via Configure) or
               change the pin.
             </Rule>
             <Rule modOnly>
@@ -171,7 +171,7 @@ export function AssignmentRulesModal({
               Either every matching room is already taken by a
               higher-priority session, or the room that used to have
               those features lost them. The resolve panel lists every
-              such session up front — if you'd fix one only to discover
+              such session up front — if you&apos;d fix one only to discover
               another in the next round, both appear in one pass.
             </Rule>
             <Rule modOnly>
@@ -201,7 +201,7 @@ export function AssignmentRulesModal({
         <Section title="Re-running">
           <Rule>
             A moderator can re-run the assignment at any time. Manual
-            picks are preserved. Anyone who wasn't manually pinned might
+            picks are preserved. Anyone who wasn&apos;t manually pinned might
             be moved around as stars change.
           </Rule>
           <Rule>

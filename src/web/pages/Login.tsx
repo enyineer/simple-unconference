@@ -335,9 +335,9 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
 
   // If signup gets disabled while the form is in signup mode (e.g. operator
   // flipped the env var between page load and submit), force back to login.
-  useEffect(() => {
-    if (signupEnabled === false && mode === "signup") setMode("login");
-  }, [signupEnabled, mode]);
+  // Adjusted during render so the next paint already reflects the corrected
+  // mode rather than briefly showing the disallowed signup form.
+  if (signupEnabled === false && mode === "signup") setMode("login");
 
   // Same field set, two schemas — pick at submit time.
   const form = useForm(SignupSchema, { email: "", password: "", name: "" });

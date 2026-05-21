@@ -9,7 +9,7 @@
 // list) a default is passed.
 
 import {
-  createContext, useContext, useEffect, useState,
+  useEffect, useState,
   type ReactNode,
 } from "react";
 import type {
@@ -17,21 +17,8 @@ import type {
   StackProps, CardProps, BannerProps, HeadingProps, FormProps, SpinnerProps,
   LinkProps, BadgeProps, TextProps, BaseProps, ColorMode, SheetProps, DateTimeProps,
 } from "./core/contract";
-import { plugins, loadPlugin, type PluginEntry } from "./core/registry";
-
-interface CtxValue {
-  ds: DesignSystem;
-  pluginId: string;
-  available: PluginEntry[];
-}
-
-const Ctx = createContext<CtxValue | null>(null);
-
-export function useDesignSystem(): CtxValue {
-  const v = useContext(Ctx);
-  if (!v) throw new Error("DesignSystemProvider missing from tree");
-  return v;
-}
+import { plugins, loadPlugin } from "./core/registry";
+import { DesignSystemCtx, useDesignSystem } from "./context";
 
 interface ProviderProps {
   pluginId: string;
@@ -43,16 +30,23 @@ interface ProviderProps {
 }
 
 export function DesignSystemProvider({ pluginId, colorMode, children, fallback }: ProviderProps) {
-  const [ds, setDs] = useState<DesignSystem | null>(null);
+  // Track which pluginId the loaded `fetchedDs` belongs to. Deriving `ds`
+  // below means a pluginId change naturally shows the fallback while the new
+  // plugin is fetching, without a synchronous reset-in-effect.
+  const [fetchedDs, setFetchedDs] = useState<DesignSystem | null>(null);
+  const [loadedPluginId, setLoadedPluginId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    setDs(null);
     loadPlugin(pluginId).then((impl) => {
-      if (!cancelled) setDs(impl);
+      if (cancelled) return;
+      setFetchedDs(impl);
+      setLoadedPluginId(pluginId);
     });
     return () => { cancelled = true; };
   }, [pluginId]);
+
+  const ds = loadedPluginId === pluginId ? fetchedDs : null;
 
   if (!ds) {
     return (
@@ -68,9 +62,9 @@ export function DesignSystemProvider({ pluginId, colorMode, children, fallback }
   }
 
   return (
-    <Ctx.Provider value={{ ds, pluginId, available: plugins }}>
+    <DesignSystemCtx.Provider value={{ ds, pluginId, available: plugins }}>
       <ds.ThemeProvider colorMode={colorMode ?? "auto"}>{children}</ds.ThemeProvider>
-    </Ctx.Provider>
+    </DesignSystemCtx.Provider>
   );
 }
 
@@ -93,4 +87,3 @@ export const Badge      = (p: BadgeProps) => { const { ds } = useDesignSystem();
 export const Sheet      = (p: SheetProps) => { const { ds } = useDesignSystem(); return <ds.Sheet {...p} />; };
 export const DateTime   = (p: DateTimeProps) => { const { ds } = useDesignSystem(); return <ds.DateTime {...p} />; };
 
-export type { DesignSystem } from "./core/contract";

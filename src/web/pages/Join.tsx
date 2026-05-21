@@ -39,7 +39,9 @@ export function JoinPage({
   onCancel: () => void;
 }) {
   const token = readToken();
-  const [mode, setMode] = useState<Mode>({ kind: "loading" });
+  const [mode, setMode] = useState<Mode>(() =>
+    token ? { kind: "loading" } : { kind: "error", reason: "missing_token" },
+  );
   const [topError, setTopError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // Only required for the join_link flow (open-link signup). Invite claims
@@ -65,10 +67,7 @@ export function JoinPage({
   });
 
   useEffect(() => {
-    if (!token) {
-      setMode({ kind: "error", reason: "missing_token" });
-      return;
-    }
+    if (!token) return;
     api.conferences.previewInvite({ slug, token })
       .then((preview) => {
         form.setValue("email", preview.email);
@@ -196,7 +195,7 @@ export function JoinPage({
           )}
           {!isInvite && (
             <Text muted>
-              Your identity is scoped to this conference only. It won't be visible in any other.
+              Your identity is scoped to this conference only. It won&apos;t be visible in any other.
             </Text>
           )}
           <Form onSubmit={submit}>

@@ -291,7 +291,7 @@ function DayCalendar({
       if (liveEnd > dayEnd) liveEnd = dayEnd;
     }
     setDrag({ ...drag, liveStart, liveEnd });
-  }, [drag]);
+  }, [drag, timeZone]);
 
   const endDrag = useCallback(async () => {
     if (!drag) return;

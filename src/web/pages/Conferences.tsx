@@ -39,7 +39,13 @@ export function ConferencesPage({
     try { setConfs(await api.conferences.list()); }
     catch { setConfs([]); }
   }
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    api.conferences.list()
+      .then((c) => { if (!cancelled) setConfs(c); })
+      .catch(() => { if (!cancelled) setConfs([]); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -229,7 +235,7 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
         fontSize: 16, fontWeight: 600,
         color: "var(--fgColor-default, var(--uncon-fg, inherit))",
       }}>
-        You're not in any conferences yet
+        You&apos;re not in any conferences yet
       </div>
       <div style={{ color: muted, maxWidth: 460, fontSize: 13, lineHeight: "20px" }}>
         Create one to start running an unconference, or wait for an organizer to add you.
