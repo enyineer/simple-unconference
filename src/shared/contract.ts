@@ -30,6 +30,7 @@ import {
   SignupViaLinkSchema,
   SlotTypeSchema,
   TrackAssignmentSchema,
+  TransferOwnershipSchema,
   UpdateConferenceSchema,
   UpdateConfMeSchema,
   UpdateExpertPoolSchema,
@@ -446,6 +447,13 @@ export const contract = {
       .output(type<Ok>()),
     removeModerator: oc
       .input(v.object({ slug: Slug, user_id: Id }))
+      .output(type<Ok>()),
+
+    // Hand ownership over to another existing global User. Owner-only.
+    // The previous owner loses owner-level access; the new owner gets an
+    // auto-minted ConferenceIdentity on their next visit.
+    transferOwnership: oc
+      .input(v.object({ slug: Slug, ...TransferOwnershipSchema.entries }))
       .output(type<Ok>()),
 
     // ----- invites (moderator+) -------------------------------------------

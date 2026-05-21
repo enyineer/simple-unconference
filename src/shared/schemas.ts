@@ -87,6 +87,13 @@ export const InviteCreateSchema = v.object({
 });
 export type InviteCreateInput = v.InferOutput<typeof InviteCreateSchema>;
 
+// Hand ownership of a conference to another existing global User. Looked up
+// by email since the new owner may not have a per-conference identity yet.
+export const TransferOwnershipSchema = v.object({
+  new_owner_email: Email,
+});
+export type TransferOwnershipInput = v.InferOutput<typeof TransferOwnershipSchema>;
+
 // Bulk-invite: one email per line (the old participant CSV minus password
 // columns — passwords are now set by the participant on first claim).
 export const InviteImportSchema = v.object({

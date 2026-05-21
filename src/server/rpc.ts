@@ -262,10 +262,23 @@ const authRouter = {
 
   // Self-service deletion of the calling owner's User row. Sessions cascade
   // (FK onDelete: Cascade), so all the user's other devices are signed out.
-  // Conferences they still own keep existing — ownerUserId is SetNull at
-  // the FK level. Callers that want a fully clean slate should delete their
-  // conferences via conferences.delete() first.
+  //
+  // Refuses when the caller still owns conferences — those carry other
+  // people's data (submissions, stars, bookings) and shouldn't be silently
+  // orphaned. Caller must first delete each conference via
+  // `conferences.delete` or transfer it via `conferences.transferOwnership`.
+  // The error data carries the owned slugs so the UI can list them.
   deleteSelf: authed.auth.deleteSelf.handler(async ({ context }) => {
+    const owned = await context.prisma.conference.findMany({
+      where: { ownerId: context.user.id },
+      select: { slug: true },
+    });
+    if (owned.length > 0) {
+      throw new ORPCError("FORBIDDEN", {
+        message: "owned_conferences_present",
+        data: { owned: owned.map((c) => c.slug) },
+      });
+    }
     await context.prisma.user.delete({ where: { id: context.user.id } });
     clearOwnerCookie(context.responseHeaders);
     return { ok: true as const };
@@ -431,6 +444,40 @@ const conferenceRouter = {
         ownerUserId: null,
       },
       data: { role: "participant" },
+    });
+    return { ok: true as const };
+  }),
+
+  // Hand ownership to another existing global User. Owner-only.
+  //
+  // Error codes:
+  //   - same_user           caller tried to transfer to themselves
+  //   - user_not_found      no global User with that email exists; the new
+  //                         owner needs to sign up first
+  //   - signup_disabled     informational; can't auto-onboard the target
+  //                         (handled by caller when the new owner doesn't
+  //                         have an account yet)
+  //
+  // After the update, Conference.ownerId points at the new user. Their
+  // ConferenceIdentity auto-mints on next visit (see ensureOwnerIdentity in
+  // permissions.ts). The previous owner's auto-minted identity row stays
+  // intact but is no longer the privileged path — they'll need to be
+  // invited as a moderator if they want to keep helping run the conference.
+  transferOwnership: requireConf("owner").conferences.transferOwnership.handler(async ({ input, context }) => {
+    const target = await context.prisma.user.findUnique({
+      where: { email: input.new_owner_email },
+      select: { id: true },
+    });
+    if (!target) throw new ORPCError("NOT_FOUND", { message: "user_not_found" });
+    // requireConf("owner") guarantees the caller's principal is owner-kind,
+    // so principal.user is set. Refuse no-op self-transfers up front.
+    const callerUserId = context.principal.kind === "owner" ? context.principal.user.id : null;
+    if (callerUserId === target.id) {
+      throw new ORPCError("CONFLICT", { message: "same_user" });
+    }
+    await context.prisma.conference.update({
+      where: { id: context.conferenceId },
+      data: { ownerId: target.id },
     });
     return { ok: true as const };
   }),

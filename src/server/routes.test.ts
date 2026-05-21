@@ -72,6 +72,108 @@ describe("auth flow (global owner)", () => {
     const c2 = new Client(ctx.app);
     await signupAndLogin(c2, "ephemeral@example.com");
   });
+
+  test("deleteSelf refuses while the user still owns conferences", async () => {
+    const c = new Client(ctx.app);
+    await signupAndLogin(c, "still-owner@example.com");
+    await c.rpc.conferences.create({ name: "Stuck Conf" });
+
+    // Refused with a structured error carrying the owned slugs.
+    try {
+      await c.rpc.auth.deleteSelf();
+      throw new Error("expected deleteSelf to be rejected");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ORPCError);
+      const err = e as ORPCError<string, { owned?: string[] }>;
+      expect(err.message).toBe("owned_conferences_present");
+      expect(err.data?.owned).toEqual(["stuck-conf"]);
+    }
+
+    // Deleting the conference removes the precondition.
+    await c.rpc.conferences.delete({ slug: "stuck-conf" });
+    await c.rpc.auth.deleteSelf();
+    await expect(c.rpc.auth.me()).rejects.toBeInstanceOf(ORPCError);
+  });
+});
+
+describe("conferences.transferOwnership", () => {
+  let ctx: TestApp;
+  beforeAll(() => { ctx = setupTestApp(); });
+  afterAll(async () => { await ctx.cleanup(); });
+
+  test("only the current owner can transfer; target must exist; same-user rejected", async () => {
+    // Owner sets up a conference.
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "old-owner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Handover" });
+
+    // A second global user (the future owner) signs up so we can transfer.
+    const newOwner = new Client(ctx.app);
+    await signupAndLogin(newOwner, "new-owner@example.com");
+
+    // A third, unrelated user — they must not be able to transfer.
+    const stranger = new Client(ctx.app);
+    await signupAndLogin(stranger, "stranger@example.com");
+    await expect(
+      stranger.rpc.conferences.transferOwnership({
+        slug: conf.slug,
+        new_owner_email: "new-owner@example.com",
+      }),
+    ).rejects.toBeInstanceOf(ORPCError);
+
+    // Email that doesn't match any user → user_not_found.
+    try {
+      await owner.rpc.conferences.transferOwnership({
+        slug: conf.slug,
+        new_owner_email: "nobody@example.com",
+      });
+      throw new Error("expected user_not_found");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ORPCError);
+      expect((e as ORPCError<string, unknown>).message).toBe("user_not_found");
+    }
+
+    // Transferring to self → same_user.
+    try {
+      await owner.rpc.conferences.transferOwnership({
+        slug: conf.slug,
+        new_owner_email: "old-owner@example.com",
+      });
+      throw new Error("expected same_user");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ORPCError);
+      expect((e as ORPCError<string, unknown>).message).toBe("same_user");
+    }
+  });
+
+  test("after a successful transfer the new owner gets owner role and the old owner loses it", async () => {
+    const oldOwner = new Client(ctx.app);
+    await signupAndLogin(oldOwner, "outgoing@example.com");
+    const conf = await oldOwner.rpc.conferences.create({ name: "Outgoing" });
+
+    const newOwner = new Client(ctx.app);
+    await signupAndLogin(newOwner, "incoming@example.com");
+
+    await oldOwner.rpc.conferences.transferOwnership({
+      slug: conf.slug,
+      new_owner_email: "incoming@example.com",
+    });
+
+    // New owner can fetch the conference and sees owner role.
+    const seenByNew = await newOwner.rpc.conferences.get({ slug: conf.slug });
+    expect(seenByNew.my_role).toBe("owner");
+
+    // Old owner can no longer reach owner-only routes on the conference.
+    await expect(
+      oldOwner.rpc.conferences.transferOwnership({
+        slug: conf.slug,
+        new_owner_email: "outgoing@example.com",
+      }),
+    ).rejects.toBeInstanceOf(ORPCError);
+
+    // Old owner now has no owned conferences and can delete themselves.
+    await oldOwner.rpc.auth.deleteSelf();
+  });
 });
 
 describe("public config + DISABLE_SIGNUP", () => {
