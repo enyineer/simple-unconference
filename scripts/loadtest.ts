@@ -320,7 +320,9 @@ async function main() {
   printReport(args, samples, elapsed);
 }
 
-main().catch((e) => {
-  console.error("[loadtest] failed:", e instanceof Error ? e.message : e);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((e) => {
+    console.error("[loadtest] failed:", e instanceof Error ? e.message : e);
+    process.exit(1);
+  });
+}

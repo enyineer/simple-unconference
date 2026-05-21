@@ -321,6 +321,8 @@ The default matrix walks `1w/0.5c/512Mi` (chart default) up to `4w/4c/2Gi`. Outp
 
 Requires `docker` on `PATH` (a `docker`-aliased `podman` also works). Each iteration uses an ephemeral container with no mounted volume, so the database is fresh per run — no carry-over between configs. Press Ctrl-C and the in-flight container is stopped before exit.
 
+A reference sweep on a developer laptop is checked in at [docs/loadtest-results.md](docs/loadtest-results.md) to give a feel for how `workers.count` and `resources.limits` interact for this workload. Results from that machine are **not representative of production** — different hardware, the PVC storage class, ingress/TLS in the request path, and whether the client lives inside or outside the cluster will all move the numbers. Run the sweep against your own infrastructure for actual capacity-planning numbers.
+
 ## Adding a design system
 
 1. Implement [`DesignSystem`](src/web/design-system/core/contract.tsx) in `src/web/design-system/<id>/index.tsx`.
