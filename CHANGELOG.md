@@ -1,5 +1,47 @@
 # simple-unconference
 
+## 0.6.0
+
+### Minor Changes
+
+- [`d6ab7eb`](https://github.com/enyineer/simple-unconference/commit/d6ab7eb37efec74a39a8573d1cfdd91649d4bf34) Thanks [@enyineer](https://github.com/enyineer)! - Self-service account lifecycle: two new authenticated RPCs.
+
+  - `auth.deleteSelf` deletes the calling owner's User row. Sessions cascade via the existing FK so all the user's devices are signed out; the response clears the global cookie. **Refuses with `owned_conferences_present` (error data: `{ owned: string[] }`) when the caller still owns conferences** — those carry other people's data and shouldn't be silently orphaned. Caller must first delete or transfer each conference.
+  - `conferences.transferOwnership({ new_owner_email })` hands ownership of a conference to another existing global User by email. Owner-only. The new owner's `ConferenceIdentity` auto-mints on their next visit; the previous owner loses owner-level access (re-invite as moderator if needed). Errors: `user_not_found`, `same_user`.
+
+  The loadtest runner now uses `auth.deleteSelf` to teardown the owner account it creates during bootstrap. Combined with the existing `conferences.delete()`, runs leave no trace on the target by default. Pass `--no-cleanup` to skip teardown for debugging. Falls back gracefully (warning, no error) when run against older releases that don't have these endpoints yet.
+
+- [`a97b5ff`](https://github.com/enyineer/simple-unconference/commit/a97b5ff38092d15495fbb434d193e453ead143e8) Thanks [@enyineer](https://github.com/enyineer)! - Prometheus-compatible `/api/metrics` endpoint + larger default PVC.
+
+  - **`GET /api/metrics`** exposes instance-wide gauges: row counts (`users_total`, `conferences_total`, `conference_identities_total`, `submissions_total` plus `submissions_by_status_total{status="…"}`, `stars_total`, `notifications_total`, `rooms_total`, `invites_total`/`invites_unclaimed_total`, `experts_total`, `expert_bookings_total`), storage (`storage_pvc_total_bytes`, `_free_bytes`, `_used_bytes` from `statfs`, plus `storage_db_file_bytes` from the SQLite file), and runtime (`app_uptime_seconds`, `app_worker_id`). Cheap to scrape — Prisma counts + one `statfs` call, computed on demand. Mounted before the oRPC catch-all so it owns `/api/metrics` and never reaches the RPC handler.
+  - **`METRICS_TOKEN` env var** (chart: `metrics.token`) optionally gates the endpoint with `Authorization: Bearer <token>`. Unset = open, for in-cluster scrape via the Service.
+  - **ServiceMonitor template** rendered when `metrics.serviceMonitor.enabled: true` for prometheus-operator users. Auto-emits a matching `Secret` carrying the token and references it via `spec.endpoints[].authorization` so no manual wiring is needed.
+  - **Smart `DATA_DIR` resolution** for local dev: falls back through `/app/data` → `./data` → CWD when not explicitly set, and logs a one-time `[metrics] data dir resolved to …` line at startup so the zeros in `storage_*` gauges never mystify someone running `bun dev`. `statfs` failures also warn once instead of silently zeroing.
+  - **PVC default bumped 2Gi → 5Gi** in the chart. Per the row-size math in `docs/loadtest-results.md`, 5Gi gives a public instance ~150 fully-saturated 2000-attendee events of headroom; the previous 2Gi was reasonable but tight for hosted use.
+  - **README**: new "Metrics" section with the full table of gauges and a manual scrape-config example for non-operator setups.
+  - **Tests**: 4 new cases cover open access, missing Bearer (401), wrong token (401), and valid token (200) plus the Prometheus exposition-format shape. Full suite 259/259.
+
+- [`fcdc3df`](https://github.com/enyineer/simple-unconference/commit/fcdc3df318b9ff438cfa1a2bdfbd66368e5160c2) Thanks [@enyineer](https://github.com/enyineer)! - Public-instance hardening: four layered defenses, all opt-in via env vars (Docker-friendly) and Helm chart values, every one disable-able individually with a `0` / empty value.
+
+  - **Cloudflare Turnstile** gating on `auth.signup`, `auth.login`, `conferences.claimInvite`, and `conferences.signupViaLink`. Set both `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` to enable; leave either empty for a no-op. The site key is exposed through `config.get` so the SPA lazy-loads the widget only when enabled. `claimInvite` is gated too so an abusive moderator can't burn the participant cap by self-inviting + bot-redeeming fake emails they control.
+  - **Per-email failed-login lockout** on both global `auth.login` and per-conference `conferences.login`. NAT-blind (per-email, not per-IP) so venue Wi-Fi works fine. Defaults: 5 failures / 15-min window → 15-min lockout (`LOGIN_FAIL_LIMIT`, `LOGIN_FAIL_WINDOW_MIN`, `LOGIN_LOCKOUT_MIN`).
+  - **Per-account write rate** (sliding 1-hour window, default 600/user via `WRITES_PER_HOUR_PER_USER`) applied to expensive `create`/`update` operations. Stars and notification marks are exempt — legitimate bursts during agenda review are normal.
+  - **Per-account / per-conference quotas**: `MAX_CONFERENCES_PER_USER` (3), `MAX_SESSIONS_PER_USER_PER_CONFERENCE` (5), `MAX_PARTICIPANTS_PER_CONFERENCE` (2500), `MAX_PENDING_INVITES_PER_CONFERENCE` (2500), `MAX_ROOMS_PER_CONFERENCE` (100). Defaults sized for events up to ~2000 attendees; private deployments raise via env or set to `0` for unlimited.
+
+  Helm chart adds `limits:` and `turnstile:` blocks that emit the corresponding env vars. The Login + Join pages render the Turnstile widget when `config.get` reports a site key; the script loads lazily on first mount and is cached for subsequent ones. Error codes returned to the client: `quota_exceeded` (with `data: { resource, limit, current }`), `account_locked`, `rate_limited`, `captcha_required`, `captcha_failed`.
+
+  README adds a [Public-instance hardening](https://github.com/enyineer/simple-unconference#public-instance-hardening) section explaining the four-layer design and why per-IP rate limits would be wrong for the venue-WLAN traffic pattern. The free public instance at <https://unconference.enking.dev> runs with these defaults enabled.
+
+- [`84814ff`](https://github.com/enyineer/simple-unconference/commit/84814fff4d179f6457a64e535b2ab10f63c6fe44) Thanks [@enyineer](https://github.com/enyineer)! - Make quotas visible — error messages, usage panel, threshold notifications.
+
+  - **Specific error messages** for every `quota_exceeded` response. New `src/web/quotaErrors.ts` resource-switches on `data.resource` and renders a real sentence with the actual limit (e.g. "You've reached the limit of 5 sessions for this conference. Delete one of yours before submitting another.") instead of the raw code. Wired into every page that can hit a quota: Login, Conferences, Join, SessionsTab, RoomsTab, PeopleTab.
+  - **Mod-only Usage card** in the Settings tab. Shows live counters for Participants, Pending invites, Rooms, and Total sessions against their configured caps, with progress bars that turn yellow at 80% and red at the cap. Reads from a new `usage` field on the `conferences.get` response (populated only when caller is moderator+).
+  - **Threshold notifications.** When a `claimInvite`, `signupViaLink`, `createInvite`, or `rooms.create` insert crosses 80% or hits 100% of its cap, all conference moderators get an inbox notification (`kind: "quota_threshold"`) so they can raise the limit before the wall is hit. Fires once per integer crossing — no spam.
+  - **Owner-side quota hint** on the global Conferences page. Counts conferences the viewer owns against `MAX_CONFERENCES_PER_USER` (now exposed via `config.get`), with the same yellow-at-80% / red-at-cap colour treatment.
+  - **Per-user session cap visibility** on the Sessions tab. Shows "X of N session submissions used" using a new `my_session_count` field on `conferences.get` — counts ALL the viewer's submissions including rejected and finished ones, since those occupy quota slots but aren't returned by `submissions.list` for non-mods. Stays accurate across creates/deletes via an `onSessionMutated` refresh hook.
+
+  Net result: nobody hits a wall as a surprise; the first quota_exceeded is the _third_ signal you've had a chance to act on.
+
 ## 0.5.0
 
 ### Minor Changes
