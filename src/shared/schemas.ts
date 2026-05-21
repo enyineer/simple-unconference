@@ -190,6 +190,18 @@ export const CreateSubmissionSchema = v.object({
   // The server filters to tags that actually exist on a room in this
   // conference and silently drops anything else.
   room_requirements: v.optional(LabelList),
+  // Moderator-only fields available at create time so a mod can fully
+  // configure a session in one step instead of create-then-edit. Same
+  // semantics as their counterparts on UpdateSubmissionSchema; the server
+  // enforces role.
+  max_placements: v.optional(v.union([PosInt, v.null()])),
+  manually_finished: v.optional(v.boolean()),
+  pre_assigned_room_id: v.optional(v.union([PosInt, v.null()])),
+  allow_overlapping_placements: v.optional(v.boolean()),
+  /** ConferenceIdentity.id to attribute the submission to. Defaults to the
+   * actor when omitted. Mods use this when they submit on someone else's
+   * behalf so the speaker appears as the author from day one. */
+  submitter_id: v.optional(PosInt),
 });
 export type CreateSubmissionInput = v.InferOutput<typeof CreateSubmissionSchema>;
 
@@ -216,6 +228,12 @@ export const UpdateSubmissionSchema = v.object({
   // overlapping slots (its submitter can also be the host of overlapping
   // placements). Default false enforces the no-overlap rule.
   allow_overlapping_placements: v.optional(v.boolean()),
+  // Moderator-only: reassign the submitter to another conference identity
+  // (ConferenceIdentity.id). Used when a mod creates a submission on
+  // someone else's behalf so the actual speaker is shown instead of the
+  // mod. The server validates the target identity belongs to this
+  // conference.
+  submitter_id: v.optional(PosInt),
 });
 export type UpdateSubmissionInput = v.InferOutput<typeof UpdateSubmissionSchema>;
 

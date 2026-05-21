@@ -13,6 +13,7 @@ import {
 import { api, errorCode } from "../../api";
 import type { Role, Room, Participant } from "../types";
 import { EmptyState } from "../ui/EmptyState";
+import { SearchableSelect } from "../ui/SearchableSelect";
 import { Tip } from "../ui/Tip";
 import { formatInTz } from "../../../shared/tz";
 
@@ -530,17 +531,19 @@ function PromoteExpertSheet({
     <Sheet open={open} onClose={onClose} title="Promote to expert">
       {error && <Banner variant="critical">{error}</Banner>}
       <Form onSubmit={submit}>
-        <Select
+        <SearchableSelect
           label="Member"
           value={identityId}
-          onChange={(e) => setIdentityId(e.target.value)}
+          onChange={setIdentityId}
           options={[
             { value: "", label: "Pick a conference member…" },
             ...candidates.map((p) => ({
               value: String(p.user_id),
-              label: p.name ? `${p.name} (${p.email})` : p.email,
+              label: p.name && p.name.trim() ? p.name : p.email,
+              hint: p.name && p.name.trim() ? p.email : undefined,
             })),
           ]}
+          placeholder="Search by name or email…"
         />
         <Textarea
           label="Bio / expertise (shown to all members)"
@@ -559,17 +562,19 @@ function PromoteExpertSheet({
           ]}
         />
         {mode === "pool" ? (
-          <Select
+          <SearchableSelect
             label="Pool"
             value={poolId}
-            onChange={(e) => setPoolId(e.target.value)}
+            onChange={setPoolId}
             options={[
               { value: "", label: "— No pool (booking will fail) —" },
               ...pools.map((p) => ({
                 value: String(p.id),
-                label: `${p.name} (${p.room_ids.length} room${p.room_ids.length === 1 ? "" : "s"})`,
+                label: p.name,
+                hint: `${p.room_ids.length} room${p.room_ids.length === 1 ? "" : "s"}`,
               })),
             ]}
+            placeholder="Search pools…"
           />
         ) : (
           <RoomCheckboxes rooms={rooms} value={roomIds} onChange={setRoomIds} />
@@ -640,17 +645,19 @@ function EditExpertSheet({
           ]}
         />
         {mode === "pool" ? (
-          <Select
+          <SearchableSelect
             label="Pool"
             value={poolId}
-            onChange={(e) => setPoolId(e.target.value)}
+            onChange={setPoolId}
             options={[
               { value: "", label: "— No pool —" },
               ...pools.map((p) => ({
                 value: String(p.id),
-                label: `${p.name} (${p.room_ids.length} room${p.room_ids.length === 1 ? "" : "s"})`,
+                label: p.name,
+                hint: `${p.room_ids.length} room${p.room_ids.length === 1 ? "" : "s"}`,
               })),
             ]}
+            placeholder="Search pools…"
           />
         ) : (
           <RoomCheckboxes rooms={rooms} value={roomIds} onChange={setRoomIds} />

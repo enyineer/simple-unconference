@@ -957,10 +957,47 @@ const submissionsRouter = {
       context.conferenceId,
       normalizeLabels(input.room_requirements),
     );
+    // Mod-only fields. Silently dropped for participants (the form doesn't
+    // render them anyway; we double-enforce role here).
+    const modData: Pick<
+      Prisma.SubmissionUncheckedCreateInput,
+      "maxPlacements" | "manuallyFinished" | "allowOverlappingPlacements" | "preAssignedRoomId"
+    > = {};
+    let submitterId = actorIdentityId(context);
+    if (isMod) {
+      if (input.max_placements !== undefined) {
+        modData.maxPlacements = input.max_placements;
+      }
+      if (input.manually_finished !== undefined) {
+        modData.manuallyFinished = input.manually_finished;
+      }
+      if (input.allow_overlapping_placements !== undefined) {
+        modData.allowOverlappingPlacements = input.allow_overlapping_placements;
+      }
+      if (input.pre_assigned_room_id !== undefined && input.pre_assigned_room_id !== null) {
+        const room = await context.prisma.room.findFirst({
+          where: { id: input.pre_assigned_room_id, conferenceId: context.conferenceId },
+          select: { id: true },
+        });
+        if (!room) throw new ORPCError("BAD_REQUEST", { message: "room_not_in_conference" });
+        modData.preAssignedRoomId = room.id;
+      }
+      if (input.submitter_id !== undefined) {
+        const identity = await context.prisma.conferenceIdentity.findFirst({
+          where: { id: input.submitter_id, conferenceId: context.conferenceId },
+          select: { id: true },
+        });
+        if (!identity) {
+          throw new ORPCError("BAD_REQUEST", { message: "submitter_not_in_conference" });
+        }
+        submitterId = identity.id;
+      }
+    }
     const created = await context.prisma.submission.create({
       data: {
-        conferenceId: context.conferenceId, submitterId: actorIdentityId(context),
+        conferenceId: context.conferenceId, submitterId,
         title: input.title, description: input.description ?? "",
+        ...modData,
         tags:             { create: tags.map((value) => ({ value })) },
         requirements:     { create: requirements.map((value) => ({ value })) },
         roomRequirements: { create: roomRequirements.map((value) => ({ value })) },
@@ -1021,6 +1058,19 @@ const submissionsRouter = {
       }
       if (input.allow_overlapping_placements !== undefined) {
         modPatch.allowOverlappingPlacements = input.allow_overlapping_placements;
+      }
+      if (input.submitter_id !== undefined) {
+        // Validate the identity belongs to this conference. The picker
+        // only offers in-conference identities, so a mismatch is a
+        // contract violation worth rejecting with 400.
+        const identity = await context.prisma.conferenceIdentity.findFirst({
+          where: { id: input.submitter_id, conferenceId: context.conferenceId },
+          select: { id: true },
+        });
+        if (!identity) {
+          throw new ORPCError("BAD_REQUEST", { message: "submitter_not_in_conference" });
+        }
+        modPatch.submitter = { connect: { id: identity.id } };
       }
     }
     const ops: Prisma.PrismaPromise<unknown>[] = [

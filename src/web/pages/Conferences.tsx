@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  PageLayout, Heading, Stack, Button, TextInput, Select, Form, Banner, Sheet, Spinner,
+  PageLayout, Heading, Stack, Button, TextInput, Form, Banner, Sheet, Spinner,
 } from "../design-system";
 import type { ColorMode } from "../design-system/core/contract";
 import { AccountMenu } from "../components/AccountMenu";
 import { api, errorCode } from "../api";
 import { detectLocalTimeZone, listTimeZones } from "../../shared/tz";
+import { SearchableSelect } from "../conference/ui/SearchableSelect";
 
 interface Conf {
   id: number; name: string; slug: string; role: string; owner_id: number;
@@ -260,11 +261,12 @@ function NewConferenceForm({
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        <Select
+        <SearchableSelect
           label="Timezone"
           value={timezone}
-          onChange={(e) => setTimezone(e.target.value)}
+          onChange={setTimezone}
           options={tzOptions}
+          placeholder="Search timezones…"
         />
         <Stack direction="row" gap="condensed">
           <Button type="submit" variant="primary" disabled={busy || !name.trim()}>

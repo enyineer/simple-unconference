@@ -14,12 +14,13 @@ import {
   Textarea,
 } from "../../design-system";
 import { api, ApiError, errorCode } from "../../api";
-import type { Role, Room, Submission } from "../types";
+import type { Participant, Role, Room, Submission } from "../types";
 import { parseLabels, submitterLabel } from "../helpers";
 import { EmptyState } from "../ui/EmptyState";
 import { Pill } from "../ui/Pill";
 import { Tip } from "../ui/Tip";
 import { useRequirementsConfirm } from "../ui/RequirementsConfirm";
+import { SearchableSelect, type SearchableSelectOption } from "../ui/SearchableSelect";
 
 // Status filter values used by the Sessions tab. Participants only ever see
 // `published`, so the filter chips are mod-only.
@@ -50,21 +51,25 @@ export function SessionsTab({
   useEffect(() => {
     api.rooms.list({ slug }).then(setRooms).catch(() => setRooms([]));
   }, [slug]);
+  // Mod-only roster used to populate the submitter-reassignment dropdown
+  // in the edit form. Participants don't see (or need) this list.
+  const [participants, setParticipants] = useState<Participant[]>([]);
+  useEffect(() => {
+    if (!isMod) {
+      setParticipants([]);
+      return;
+    }
+    api.conferences
+      .listParticipants({ slug })
+      .then(setParticipants)
+      .catch(() => setParticipants([]));
+  }, [slug, isMod]);
   // Distinct tag values across all rooms in this conference. The picker
   // only offers these — selecting a tag no room has would just make the
   // session unplaceable.
   const availableRoomTags = Array.from(
     new Set(rooms.flatMap((r) => r.tags)),
   ).sort();
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [tags, setTags] = useState("");
-  const [requirements, setRequirements] = useState("");
-  // Required room features chosen at create time. Set of tag values picked
-  // from the conference's available room tags. Persisted as the session's
-  // `room_requirements` — the algorithm filters candidate rooms to those
-  // whose tag set is a superset of this selection.
-  const [roomRequirements, setRoomRequirements] = useState<string[]>([]);
   const [adding, setAdding] = useState(false);
   const [filter, setFilter] = useState<SessionFilter>(
     isMod ? "all" : "published",
@@ -95,34 +100,6 @@ export function SessionsTab({
   useEffect(() => {
     refresh().catch(() => setSubs([]));
   }, [slug]);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    try {
-      await api.submissions.create({
-        slug,
-        title,
-        description,
-        tags: parseLabels(tags),
-        requirements: parseLabels(requirements),
-        room_requirements: roomRequirements,
-      });
-      setTitle("");
-      setDescription("");
-      setTags("");
-      setRequirements("");
-      setRoomRequirements([]);
-      setAdding(false);
-      setSubmitNotice(
-        isMod
-          ? "Session created."
-          : "Submitted. A moderator will review it before others can see it. You can edit and delete it from this page until then.",
-      );
-      await refresh();
-    } catch (e) {
-      alert(errorCode(e));
-    }
-  }
 
   async function deleteSubmission(s: Submission) {
     const msg = isMod
@@ -221,44 +198,27 @@ export function SessionsTab({
         onClose={() => setAdding(false)}
         title="Submit a session"
       >
-        <Tip>A moderator publishes your session before others can star it.</Tip>
-        <Form onSubmit={submit}>
-          <TextInput
-            label="Title"
-            required
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
+        {adding && (
+          <SessionForm
+            mode="create"
+            slug={slug}
+            isMod={isMod}
+            conferenceDefaultMaxPlacements={submissionMaxPlacementsDefault}
+            rooms={rooms}
+            participants={participants}
+            availableRoomTags={availableRoomTags}
+            onCancel={() => setAdding(false)}
+            onSaved={async () => {
+              setAdding(false);
+              setSubmitNotice(
+                isMod
+                  ? "Session created."
+                  : "Submitted. A moderator will review it before others can see it. You can edit and delete it from this page until then.",
+              );
+              await refresh();
+            }}
           />
-          <Textarea
-            label="Description"
-            rows={4}
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-          <TextInput
-            label="Tags (comma-separated)"
-            placeholder="e.g. workshop, discussion, lightning"
-            value={tags}
-            onChange={(e) => setTags(e.target.value)}
-          />
-          <TextInput
-            label="Requirements (comma-separated)"
-            placeholder="e.g. laptop, github account"
-            value={requirements}
-            onChange={(e) => setRequirements(e.target.value)}
-          />
-          <RoomTagPicker
-            availableTags={availableRoomTags}
-            selected={roomRequirements}
-            onChange={setRoomRequirements}
-          />
-          <Stack direction="row" gap="condensed">
-            <Button type="submit" variant="primary">
-              Submit
-            </Button>
-            <Button onClick={() => setAdding(false)}>Cancel</Button>
-          </Stack>
-        </Form>
+        )}
       </Sheet>
 
       {/* Mod-only status filter as chips with counts — easier to scan than
@@ -323,12 +283,14 @@ export function SessionsTab({
         title={editingSub ? `Edit: ${editingSub.title}` : ""}
       >
         {editingSub && (
-          <SessionEditForm
+          <SessionForm
+            mode="edit"
             slug={slug}
             submission={editingSub}
             isMod={isMod}
             conferenceDefaultMaxPlacements={submissionMaxPlacementsDefault}
             rooms={rooms}
+            participants={participants}
             availableRoomTags={availableRoomTags}
             onCancel={() => setEditingId(null)}
             onSaved={async () => {
@@ -587,72 +549,85 @@ function SessionCard({
   );
 }
 
-// Edit form for a submission — rendered inside a Sheet, so we drop the
-// outer Card chrome the previous inline version used.
-function SessionEditForm({
-  slug,
-  submission,
-  isMod,
-  conferenceDefaultMaxPlacements,
-  rooms,
-  availableRoomTags,
-  onCancel,
-  onSaved,
-}: {
+// Unified create/edit form for a submission. Same UI for both — at create
+// time the mod-only fields default to "auto"/empty, at edit time they're
+// hydrated from the existing submission. Rendered inside a Sheet, so we
+// drop the outer Card chrome the previous inline version used.
+type SessionFormProps =
+  | (SessionFormCommonProps & { mode: "create"; submission?: undefined })
+  | (SessionFormCommonProps & { mode: "edit"; submission: Submission });
+
+interface SessionFormCommonProps {
   slug: string;
-  submission: Submission;
   isMod: boolean;
   conferenceDefaultMaxPlacements: number | null;
-  /** Conference rooms — only used to render the mod-only pre-assignment
-   * dropdown. Empty for participants (the dropdown is gated behind isMod). */
+  /** Conference rooms — used by the mod-only pre-assignment picker and the
+   * "required room features" tag picker. Empty for participants. */
   rooms: Room[];
+  /** Conference roster — feeds the mod-only "submitter" picker so a mod
+   * who submits on someone else's behalf can attribute the session to the
+   * actual speaker. Empty for participants. */
+  participants: Participant[];
   /** Distinct tag values across all conference rooms. The "required room
    * features" picker offers exactly these — no free text. */
   availableRoomTags: string[];
   onCancel: () => void;
   onSaved: () => Promise<void> | void;
-}) {
-  const [title, setTitle] = useState(submission.title);
-  const [description, setDescription] = useState(submission.description);
-  const [tags, setTags] = useState(submission.tags.join(", "));
+}
+
+function SessionForm(props: SessionFormProps) {
+  const {
+    mode, slug, isMod, conferenceDefaultMaxPlacements,
+    rooms, participants, availableRoomTags, onCancel, onSaved,
+  } = props;
+  const existing = mode === "edit" ? props.submission : null;
+
+  const [title, setTitle] = useState(existing?.title ?? "");
+  const [description, setDescription] = useState(existing?.description ?? "");
+  const [tags, setTags] = useState(existing?.tags.join(", ") ?? "");
   const [requirements, setRequirements] = useState(
-    submission.requirements.join(", "),
+    existing?.requirements.join(", ") ?? "",
   );
   // Editable for participants while the session is still "submitted", and
   // for mods regardless of status. The submission becoming "published"
   // effectively freezes this set for the submitter via the existing
-  // already_decided gate; we mirror that here.
+  // already_decided gate; we mirror that here. New submissions are always
+  // editable (no status yet).
   const [roomRequirements, setRoomRequirements] = useState<string[]>(
-    submission.room_requirements,
+    existing?.room_requirements ?? [],
   );
-  const requirementsLocked = !isMod && submission.status !== "submitted";
+  const requirementsLocked =
+    !isMod && existing !== null && existing.status !== "submitted";
   // Mod-only state. `inherit` means "use the conference default" (stored as
   // null on the row); `once` and `limited` set an explicit per-submission cap.
   const [capMode, setCapMode] = useState<"inherit" | "once" | "limited">(() => {
-    if (submission.max_placements === null) return "inherit";
-    if (submission.max_placements === 1) return "once";
+    if (!existing || existing.max_placements === null) return "inherit";
+    if (existing.max_placements === 1) return "once";
     return "limited";
   });
   const [capValue, setCapValue] = useState<string>(
-    submission.max_placements !== null && submission.max_placements > 1
-      ? String(submission.max_placements)
+    existing && existing.max_placements !== null && existing.max_placements > 1
+      ? String(existing.max_placements)
       : "2",
   );
   const [manuallyFinished, setManuallyFinished] = useState(
-    submission.manually_finished,
+    existing?.manually_finished ?? false,
   );
-  // Allow this session (and its submitter) to be scheduled in multiple
-  // overlapping slots — useful for recurring workshops. Default off
-  // enforces the strict no-overlap rule.
   const [allowOverlap, setAllowOverlap] = useState(
-    submission.allow_overlapping_placements,
+    existing?.allow_overlapping_placements ?? false,
   );
   // Pre-assigned room. "" means "auto" (no pin); otherwise the room id as a
-  // string (Select returns string values).
+  // string (matches SearchableSelect's value type).
   const [preAssignedRoomId, setPreAssignedRoomId] = useState<string>(
-    submission.pre_assigned_room_id === null
+    existing?.pre_assigned_room_id == null
       ? ""
-      : String(submission.pre_assigned_room_id),
+      : String(existing.pre_assigned_room_id),
+  );
+  // Mod-only submitter attribution. At create time defaults to "" (server
+  // falls back to the actor); at edit time hydrates from the existing
+  // submission so the picker shows the current author.
+  const [submitterId, setSubmitterId] = useState<string>(
+    existing ? String(existing.submitter_id) : "",
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -662,31 +637,16 @@ function SessionEditForm({
     setError(null);
     setBusy(true);
     try {
-      const patch: {
-        slug: string;
-        id: number;
-        title: string;
-        description: string;
-        tags: string[];
-        requirements: string[];
+      // Mod-only patch — same fields apply to both create and update.
+      // Computed up front so we can early-return on validation errors
+      // before touching the server.
+      let modFields: {
         max_placements?: number | null;
         manually_finished?: boolean;
         pre_assigned_room_id?: number | null;
         allow_overlapping_placements?: boolean;
-        room_requirements?: string[];
-      } = {
-        slug,
-        id: submission.id,
-        title,
-        description,
-        tags: parseLabels(tags),
-        requirements: parseLabels(requirements),
-      };
-      // Only send room_requirements when the field is editable, so the
-      // server never sees a stale value from a frozen edit screen.
-      if (!requirementsLocked) {
-        patch.room_requirements = roomRequirements;
-      }
+        submitter_id?: number;
+      } = {};
       if (isMod) {
         let next: number | null;
         if (capMode === "inherit") next = null;
@@ -700,13 +660,50 @@ function SessionEditForm({
           }
           next = parsed;
         }
-        patch.max_placements = next;
-        patch.manually_finished = manuallyFinished;
-        patch.pre_assigned_room_id =
-          preAssignedRoomId === "" ? null : Number.parseInt(preAssignedRoomId, 10);
-        patch.allow_overlapping_placements = allowOverlap;
+        modFields.max_placements = next;
+        modFields.manually_finished = manuallyFinished;
+        modFields.allow_overlapping_placements = allowOverlap;
+        modFields.pre_assigned_room_id =
+          preAssignedRoomId === ""
+            ? null
+            : Number.parseInt(preAssignedRoomId, 10);
+        if (submitterId !== "") {
+          const parsed = Number.parseInt(submitterId, 10);
+          if (Number.isFinite(parsed)) {
+            // Only send when it actually differs from the current author
+            // on edit — there's nothing to do otherwise, and keeping the
+            // payload tight avoids spurious "changed" signals.
+            if (!existing || parsed !== existing.submitter_id) {
+              modFields.submitter_id = parsed;
+            }
+          }
+        }
       }
-      await api.submissions.update(patch);
+
+      if (mode === "create") {
+        await api.submissions.create({
+          slug,
+          title,
+          description,
+          tags: parseLabels(tags),
+          requirements: parseLabels(requirements),
+          room_requirements: roomRequirements,
+          ...modFields,
+        });
+      } else {
+        await api.submissions.update({
+          slug,
+          id: existing!.id,
+          title,
+          description,
+          tags: parseLabels(tags),
+          requirements: parseLabels(requirements),
+          // Only send room_requirements when the field is editable, so
+          // the server never sees a stale value from a frozen edit screen.
+          ...(requirementsLocked ? {} : { room_requirements: roomRequirements }),
+          ...modFields,
+        });
+      }
       await onSaved();
     } catch (e) {
       setError(errorCode(e));
@@ -723,8 +720,44 @@ function SessionEditForm({
     return `Use conference default (${conferenceDefaultMaxPlacements} placements)`;
   }
 
+  // Submitter options. Always include a "default" entry so create has a
+  // sensible no-op state, and include the current author at edit time even
+  // if they've since left the conference.
+  const submitterOptions: SearchableSelectOption[] = [
+    {
+      value: "",
+      label: mode === "create" ? "Me (default)" : "Keep current submitter",
+    },
+    ...participants.map((p) => ({
+      value: String(p.user_id),
+      label: p.name && p.name.trim() ? p.name : p.email,
+      hint: p.name && p.name.trim() ? p.email : undefined,
+    })),
+  ];
+  if (
+    existing &&
+    !participants.some((p) => p.user_id === existing.submitter_id)
+  ) {
+    submitterOptions.push({
+      value: String(existing.submitter_id),
+      label: submitterLabel(existing) ?? `User #${existing.submitter_id}`,
+    });
+  }
+
+  const roomOptions: SearchableSelectOption[] = [
+    { value: "", label: "Auto (assign to any room)" },
+    ...rooms.map((r) => ({
+      value: String(r.id),
+      label: r.name,
+      hint: `Capacity ${r.capacity}`,
+    })),
+  ];
+
   return (
     <Stack gap="condensed">
+      {mode === "create" && !isMod && (
+        <Tip>A moderator publishes your session before others can star it.</Tip>
+      )}
       {error && <Banner variant="critical">{error}</Banner>}
       <Form onSubmit={save}>
         <TextInput
@@ -741,11 +774,13 @@ function SessionEditForm({
         />
         <TextInput
           label="Tags (comma-separated)"
+          placeholder="e.g. workshop, discussion, lightning"
           value={tags}
           onChange={(e) => setTags(e.target.value)}
         />
         <TextInput
           label="Requirements (comma-separated)"
+          placeholder="e.g. laptop, github account"
           value={requirements}
           onChange={(e) => setRequirements(e.target.value)}
         />
@@ -762,6 +797,27 @@ function SessionEditForm({
         )}
         {isMod && (
           <>
+            {participants.length > 0 && (
+              <>
+                <SearchableSelect
+                  label="Submitter"
+                  value={submitterId}
+                  onChange={setSubmitterId}
+                  options={submitterOptions}
+                  placeholder="Search by name or email…"
+                />
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
+                  }}
+                >
+                  {mode === "create"
+                    ? "Attribute this session to the actual speaker if you're submitting on their behalf."
+                    : "Reassign authorship to the actual speaker if you created this session on their behalf."}
+                </div>
+              </>
+            )}
             <Select
               label="How many times can this session be assigned?"
               value={capMode}
@@ -832,26 +888,23 @@ function SessionEditForm({
                 whose times overlap. Use for recurring workshops.
               </span>
             </label>
-            <div
-              style={{
-                fontSize: 12,
-                color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
-              }}
-            >
-              Currently placed {submission.placement_count}{" "}
-              {submission.placement_count === 1 ? "time" : "times"}.
-            </div>
-            <Select
+            {existing && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
+                }}
+              >
+                Currently placed {existing.placement_count}{" "}
+                {existing.placement_count === 1 ? "time" : "times"}.
+              </div>
+            )}
+            <SearchableSelect
               label="Pre-assign to room"
               value={preAssignedRoomId}
-              onChange={(e) => setPreAssignedRoomId(e.target.value)}
-              options={[
-                { value: "", label: "Auto (assign to any room)" },
-                ...rooms.map((r) => ({
-                  value: String(r.id),
-                  label: `${r.name} (capacity ${r.capacity})`,
-                })),
-              ]}
+              onChange={setPreAssignedRoomId}
+              options={roomOptions}
+              placeholder="Search rooms…"
             />
             <div
               style={{
@@ -867,7 +920,7 @@ function SessionEditForm({
         )}
         <Stack direction="row" gap="condensed">
           <Button type="submit" variant="primary" disabled={busy}>
-            Save
+            {mode === "create" ? "Submit" : "Save"}
           </Button>
           <Button onClick={onCancel} disabled={busy}>
             Cancel

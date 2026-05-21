@@ -32,6 +32,7 @@ import type {
 import { fmtTimeShort, parseLabels } from "../helpers";
 import { AssignmentRulesTrigger } from "../ui/AssignmentRulesModal";
 import { SessionPicker } from "../ui/SessionPicker";
+import { SearchableSelect } from "../ui/SearchableSelect";
 import { Tip } from "../ui/Tip";
 import { useRequirementsConfirm } from "../ui/RequirementsConfirm";
 import { Calendar, CalendarLegend } from "./Calendar";
@@ -1015,17 +1016,19 @@ function TrackEditor({
         {requirementsConfirm.modal}
         <Card title={`Edit track — ${room.name}`}>
           <Stack gap="condensed">
-            <Select
+            <SearchableSelect
               label="Linked submission (optional)"
               value={submissionId}
-              onChange={(e) => setSubmissionId(e.target.value)}
+              onChange={setSubmissionId}
               options={[
                 { value: "", label: "— none (use custom title) —" },
                 ...subs.map((sub) => ({
                   value: String(sub.id),
                   label: sub.title,
+                  hint: sub.submitter_name ?? undefined,
                 })),
               ]}
+              placeholder="Search sessions…"
             />
             <TextInput
               label="Custom title (when no submission)"
@@ -1919,7 +1922,8 @@ function ResolveConflictsPanel({
       .filter((r) => r.id !== currentPin && !pinnedRoomIdsByOthers.has(r.id))
       .map((r) => ({
         value: String(r.id),
-        label: `${r.name} (cap ${r.capacity})`,
+        label: r.name,
+        hint: `Capacity ${r.capacity}`,
       }));
   }
 
@@ -2159,16 +2163,17 @@ function ResolveConflictsPanel({
           />
           {a.kind === "move" && (
             <div style={{ marginTop: 4, paddingLeft: 30 }}>
-              <Select
+              <SearchableSelect
                 label={hasPin ? "New room" : "Pin to room"}
                 value={String(a.roomId)}
-                onChange={(e) =>
+                onChange={(value) =>
                   setAction(cs.id, {
                     kind: "move",
-                    roomId: Number.parseInt(e.target.value, 10),
+                    roomId: Number.parseInt(value, 10),
                   })
                 }
                 options={options}
+                placeholder="Search rooms…"
               />
             </div>
           )}

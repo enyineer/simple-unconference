@@ -356,6 +356,109 @@ describe("submissions + stars + publish", () => {
     })).rejects.toBeInstanceOf(ORPCError);
   });
 
+  test("mod can reassign a submission's submitter to another conference identity", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "reassignowner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Reassign" });
+
+    // Owner-created submission — the actual speaker should be someone else.
+    const sub = await owner.rpc.submissions.create({
+      slug: conf.slug, title: "Real speaker's session",
+    });
+
+    const { client: speaker } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "speaker@example.com");
+    const roster = await owner.rpc.conferences.listParticipants({ slug: conf.slug });
+    const speakerIdentity = roster.find((p) => p.email === "speaker@example.com")!;
+
+    await owner.rpc.submissions.update({
+      slug: conf.slug, id: sub.id, submitter_id: speakerIdentity.user_id,
+    });
+
+    const after = await owner.rpc.submissions.list({ slug: conf.slug });
+    expect(after[0]!.submitter_id).toBe(speakerIdentity.user_id);
+    expect(after[0]!.submitter_email).toBe("speaker@example.com");
+
+    // Speaker — now the submitter — can edit their own submission.
+    await speaker.rpc.submissions.update({
+      slug: conf.slug, id: sub.id, title: "Edited by the new submitter",
+    });
+
+    // Non-mods can't reassign.
+    const { client: other } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "other@example.com");
+    await expect(other.rpc.submissions.update({
+      slug: conf.slug, id: sub.id, submitter_id: speakerIdentity.user_id,
+    })).rejects.toBeInstanceOf(ORPCError);
+
+    // Target identity must belong to this conference.
+    await expect(owner.rpc.submissions.update({
+      slug: conf.slug, id: sub.id, submitter_id: 999_999,
+    })).rejects.toBeInstanceOf(ORPCError);
+  });
+
+  test("mod can set submitter + pre-assigned room + cap + finished at create time in one step", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "modcreateowner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "ModCreate" });
+
+    const studio = await owner.rpc.rooms.create({
+      slug: conf.slug, name: "Studio", capacity: 25,
+    });
+
+    const { client: speaker } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "modspeaker@example.com");
+    const roster = await owner.rpc.conferences.listParticipants({ slug: conf.slug });
+    const speakerIdentity =
+      roster.find((p) => p.email === "modspeaker@example.com")!;
+
+    await owner.rpc.submissions.create({
+      slug: conf.slug,
+      title: "Pre-configured session",
+      description: "Set up in one shot",
+      submitter_id: speakerIdentity.user_id,
+      pre_assigned_room_id: studio.id,
+      max_placements: 1,
+      manually_finished: false,
+      allow_overlapping_placements: true,
+    });
+
+    const list = await owner.rpc.submissions.list({ slug: conf.slug });
+    const created = list[0]!;
+    expect(created.submitter_id).toBe(speakerIdentity.user_id);
+    expect(created.submitter_email).toBe("modspeaker@example.com");
+    expect(created.pre_assigned_room_id).toBe(studio.id);
+    expect(created.max_placements).toBe(1);
+    expect(created.allow_overlapping_placements).toBe(true);
+
+    // Participants can't smuggle mod-only fields through create. The server
+    // silently drops them and falls back to safe defaults: the actor stays
+    // as submitter and the pin is not honored.
+    await speaker.rpc.submissions.create({
+      slug: conf.slug,
+      title: "Sneaky participant create",
+      submitter_id: speakerIdentity.user_id, // happens to be themselves; harmless
+      pre_assigned_room_id: studio.id,
+      max_placements: 99,
+      allow_overlapping_placements: true,
+    });
+    const after = await owner.rpc.submissions.list({ slug: conf.slug });
+    const sneaky = after.find((s) => s.title === "Sneaky participant create")!;
+    expect(sneaky.pre_assigned_room_id).toBeNull();
+    expect(sneaky.max_placements).toBeNull();
+    expect(sneaky.allow_overlapping_placements).toBe(false);
+
+    // Bad pre-assigned room id rejected on create just like update.
+    await expect(owner.rpc.submissions.create({
+      slug: conf.slug, title: "Bad pin", pre_assigned_room_id: 999_999,
+    })).rejects.toBeInstanceOf(ORPCError);
+
+    // Bad submitter id rejected on create.
+    await expect(owner.rpc.submissions.create({
+      slug: conf.slug, title: "Bad submitter", submitter_id: 999_999,
+    })).rejects.toBeInstanceOf(ORPCError);
+  });
+
   test("participants submit; only mods can publish; stars require published", async () => {
     const owner = new Client(ctx.app);
     await signupAndLogin(owner, "subown@example.com");

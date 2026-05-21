@@ -7,6 +7,7 @@ import { plugins as designPlugins } from "../../design-system/core/registry";
 import { listTimeZones } from "../../../shared/tz";
 import { api, errorCode } from "../../api";
 import { SettingsSection } from "../ui/SettingsSection";
+import { SearchableSelect } from "../ui/SearchableSelect";
 
 // One-shot memoization for the IANA timezone list inside SettingsTab.
 function useMemoTimezones() {
@@ -234,12 +235,13 @@ export function SettingsTab({
         description="All slot times in this conference are interpreted in the selected timezone — regardless of where the organizer or attendees are located."
         saved={savedKey === "timezone"}
       >
-        <Select
+        <SearchableSelect
           label="Conference timezone"
           value={currentTz}
           disabled={busy}
-          onChange={(e) => updateTz(e.target.value)}
+          onChange={updateTz}
           options={tzOptions}
+          placeholder="Search timezones…"
         />
       </SettingsSection>
 
