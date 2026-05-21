@@ -4,7 +4,7 @@
 // When the server's PublicConfig.turnstile_site_key is null, the parent should
 // not render this component at all — it has no purpose without a site key.
 
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 
 interface TurnstileApi {
   render(
@@ -20,6 +20,7 @@ interface TurnstileApi {
   ): string;
   remove(widgetId: string): void;
   reset(widgetId?: string): void;
+  getResponse(widgetId?: string): string | undefined;
 }
 
 declare global {
@@ -53,46 +54,69 @@ function loadTurnstileScript(): Promise<void> {
   return scriptPromise;
 }
 
+export interface TurnstileWidgetHandle {
+  // Read the token straight from Cloudflare's widget at call time. Avoids
+  // any race between the callback firing and React state catching up.
+  getResponse(): string;
+  reset(): void;
+}
+
 export interface TurnstileWidgetProps {
   siteKey: string;
-  onVerify: (token: string) => void;
+  onVerify?: (token: string) => void;
   theme?: "light" | "dark" | "auto";
 }
 
-export function TurnstileWidget({ siteKey, onVerify, theme = "auto" }: TurnstileWidgetProps) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  // Keep the latest onVerify in a ref so the script-loaded effect doesn't
-  // re-render the widget every time the parent re-creates the callback.
-  const onVerifyRef = useRef(onVerify);
-  onVerifyRef.current = onVerify;
+export const TurnstileWidget = forwardRef<TurnstileWidgetHandle, TurnstileWidgetProps>(
+  function TurnstileWidget({ siteKey, onVerify, theme = "auto" }, ref) {
+    const containerRef = useRef<HTMLDivElement | null>(null);
+    const widgetIdRef = useRef<string | null>(null);
+    // Keep the latest onVerify in a ref so the script-loaded effect doesn't
+    // re-render the widget every time the parent re-creates the callback.
+    const onVerifyRef = useRef(onVerify);
+    onVerifyRef.current = onVerify;
 
-  useEffect(() => {
-    let cancelled = false;
-    let widgetId: string | null = null;
+    useImperativeHandle(ref, () => ({
+      getResponse: () => {
+        if (!window.turnstile || !widgetIdRef.current) return "";
+        return window.turnstile.getResponse(widgetIdRef.current) ?? "";
+      },
+      reset: () => {
+        if (window.turnstile && widgetIdRef.current) {
+          try { window.turnstile.reset(widgetIdRef.current); } catch { /* widget already gone */ }
+        }
+      },
+    }), []);
 
-    loadTurnstileScript()
-      .then(() => {
-        if (cancelled || !containerRef.current || !window.turnstile) return;
-        widgetId = window.turnstile.render(containerRef.current, {
-          sitekey: siteKey,
-          theme,
-          callback: (token: string) => onVerifyRef.current(token),
-          "expired-callback": () => onVerifyRef.current(""),
-          "error-callback": () => onVerifyRef.current(""),
+    useEffect(() => {
+      let cancelled = false;
+
+      loadTurnstileScript()
+        .then(() => {
+          if (cancelled || !containerRef.current || !window.turnstile) return;
+          widgetIdRef.current = window.turnstile.render(containerRef.current, {
+            sitekey: siteKey,
+            theme,
+            callback: (token: string) => onVerifyRef.current?.(token),
+            "expired-callback": () => onVerifyRef.current?.(""),
+            "error-callback": () => onVerifyRef.current?.(""),
+          });
+        })
+        .catch(() => {
+          // Script failed to load (network/CSP/etc). Treat as never-verified;
+          // parent's submit will get blocked by captcha_required on the server.
         });
-      })
-      .catch(() => {
-        // Script failed to load (network/CSP/etc). Treat as never-verified;
-        // parent's submit will get blocked by captcha_required on the server.
-      });
 
-    return () => {
-      cancelled = true;
-      if (widgetId && window.turnstile) {
-        try { window.turnstile.remove(widgetId); } catch { /* widget already gone */ }
-      }
-    };
-  }, [siteKey, theme]);
+      return () => {
+        cancelled = true;
+        const id = widgetIdRef.current;
+        widgetIdRef.current = null;
+        if (id && window.turnstile) {
+          try { window.turnstile.remove(id); } catch { /* widget already gone */ }
+        }
+      };
+    }, [siteKey, theme]);
 
-  return <div ref={containerRef} style={{ minHeight: 65 }} />;
-}
+    return <div ref={containerRef} style={{ minHeight: 65 }} />;
+  },
+);

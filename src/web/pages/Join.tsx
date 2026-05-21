@@ -7,14 +7,14 @@
 // fall through to the join-link signup form and let the participant supply
 // their own email.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Banner, Button, Card, Form, Heading, Link, PageLayout, Spinner, Stack, Text, TextInput,
 } from "../design-system";
 import { api, errorCode, errorFields } from "../api";
 import { useForm } from "../useForm";
 import { InviteClaimSchema, SignupViaLinkSchema, safeParse } from "../../shared/schemas";
-import { TurnstileWidget } from "../components/TurnstileWidget";
+import { TurnstileWidget, type TurnstileWidgetHandle } from "../components/TurnstileWidget";
 import { quotaErrorMessage } from "../quotaErrors";
 
 type Mode =
@@ -46,7 +46,7 @@ export function JoinPage({
   // are gated by the invite token itself, so we leave them un-Turnstile'd
   // to avoid friction-blocking legitimate invitees.
   const [turnstileSiteKey, setTurnstileSiteKey] = useState<string | null>(null);
-  const [turnstileToken, setTurnstileToken] = useState<string>("");
+  const turnstileRef = useRef<TurnstileWidgetHandle | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,6 +99,12 @@ export function JoinPage({
     setTopError(null);
     if (!token) return;
 
+    // Read straight from the widget at submit time — avoids any race between
+    // Cloudflare's callback and React state.
+    const turnstileToken = turnstileSiteKey !== null
+      ? (turnstileRef.current?.getResponse() ?? "")
+      : "";
+
     if (mode.kind === "invite") {
       if (turnstileSiteKey !== null && turnstileToken === "") {
         setTopError("Please complete the verification challenge before continuing.");
@@ -119,7 +125,7 @@ export function JoinPage({
         const fields = errorFields(err);
         if (fields) form.setErrors(fields);
         else setTopError(quotaErrorMessage(err) ?? humanError(errorCode(err)));
-        setTurnstileToken("");
+        turnstileRef.current?.reset();
       } finally { setBusy(false); }
       return;
     }
@@ -142,9 +148,9 @@ export function JoinPage({
         const fields = errorFields(err);
         if (fields) form.setErrors(fields);
         else setTopError(quotaErrorMessage(err) ?? humanError(errorCode(err)));
-        // Turnstile tokens are single-use; clear so the widget mints a fresh
+        // Turnstile tokens are single-use; reset so the widget mints a fresh
         // one for the retry.
-        setTurnstileToken("");
+        turnstileRef.current?.reset();
       } finally { setBusy(false); }
     }
   }
@@ -218,7 +224,11 @@ export function JoinPage({
               error={form.fieldError("password")}
             />
             {turnstileSiteKey !== null && (
-              <TurnstileWidget siteKey={turnstileSiteKey} onVerify={setTurnstileToken} />
+              <TurnstileWidget
+                ref={turnstileRef}
+                siteKey={turnstileSiteKey}
+                onVerify={(t) => { if (t) setTopError(null); }}
+              />
             )}
             <Stack direction="row" gap="condensed" align="center">
               <Button type="submit" variant="primary" disabled={busy}>

@@ -1,11 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   PageLayout, Stack, Card, TextInput, Button, Form, Banner, Link, Text,
 } from "../design-system";
 import { api, errorCode, errorFields } from "../api";
 import { useForm } from "../useForm";
 import { LoginSchema, SignupSchema, safeParse } from "../../shared/schemas";
-import { TurnstileWidget } from "../components/TurnstileWidget";
+import { TurnstileWidget, type TurnstileWidgetHandle } from "../components/TurnstileWidget";
 
 const REPO_URL = "https://github.com/enyineer/simple-unconference";
 const REPO_API = "https://api.github.com/repos/enyineer/simple-unconference";
@@ -318,7 +318,7 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
   // Non-null when the server has Turnstile configured. Drives whether we
   // render the widget at all + whether we hold the form until a token arrives.
   const [turnstileSiteKey, setTurnstileSiteKey] = useState<string | null>(null);
-  const [turnstileToken, setTurnstileToken] = useState<string>("");
+  const turnstileRef = useRef<TurnstileWidgetHandle | null>(null);
   const stars = useGitHubStars();
 
   useEffect(() => {
@@ -346,9 +346,11 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
     e.preventDefault();
     setTopError(null);
 
-    // Hold the form until the widget has minted a token. We only enforce this
-    // client-side as UX — the server will reject the call with captcha_required
-    // if the token is missing or stale anyway.
+    // Read the token straight from the widget at submit time. Avoids any
+    // race between Cloudflare's callback firing and React state catching up.
+    const turnstileToken = turnstileSiteKey !== null
+      ? (turnstileRef.current?.getResponse() ?? "")
+      : "";
     if (turnstileSiteKey !== null && turnstileToken === "") {
       setTopError("Please complete the verification challenge before continuing.");
       return;
@@ -378,9 +380,9 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
       const fields = errorFields(e);
       if (fields) form.setErrors(fields);
       else setTopError(humanError(errorCode(e)));
-      // Turnstile tokens are single-use; clear so the widget re-mints one
-      // for the next attempt. The widget's expired-callback also nukes it.
-      setTurnstileToken("");
+      // Turnstile tokens are single-use; reset so the widget mints a fresh one
+      // for the next attempt.
+      turnstileRef.current?.reset();
     } finally {
       setBusy(false);
     }
@@ -423,7 +425,11 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
                   />
                 )}
                 {turnstileSiteKey !== null && (
-                  <TurnstileWidget siteKey={turnstileSiteKey} onVerify={setTurnstileToken} />
+                  <TurnstileWidget
+                    ref={turnstileRef}
+                    siteKey={turnstileSiteKey}
+                    onVerify={(t) => { if (t) setTopError(null); }}
+                  />
                 )}
                 <Stack direction="row" gap="condensed" align="center">
                   <Button type="submit" variant="primary" disabled={busy}>
