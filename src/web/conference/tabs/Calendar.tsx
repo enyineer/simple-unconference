@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { formatInTz, instantToWallClock, wallClockToInstant } from "../../../shared/tz";
+import { DragScrollRow } from "../ui/DragScrollRow";
 
 // ----- data shapes the calendar needs --------------------------------------
 
@@ -626,7 +627,7 @@ function SlotEvent({
           >
             {title}
           </div>
-          <div
+          <DragScrollRow
             style={{
               flex: 1, minWidth: 0,
               display: "flex", flexDirection: "row",
@@ -634,7 +635,6 @@ function SlotEvent({
               overflowX: "auto", overflowY: "hidden",
               alignItems: "stretch",
             }}
-            onClick={(e) => e.stopPropagation()}
           >
             {subEvents.length === 0 ? (
               <div
@@ -660,7 +660,7 @@ function SlotEvent({
                 />
               ))
             )}
-          </div>
+          </DragScrollRow>
           <span style={{
             flex: "0 0 auto",
             padding: "0 8px",
@@ -693,7 +693,7 @@ function SlotEvent({
             </span>
           </div>
 
-          <div
+          <DragScrollRow
             style={{
               flex: 1,
               display: "flex", flexDirection: "row",
@@ -702,7 +702,6 @@ function SlotEvent({
               alignItems: "stretch",
               minHeight: 0,
             }}
-            onClick={(e) => e.stopPropagation()}
           >
             {subEvents.length === 0 ? (
               <div
@@ -728,7 +727,7 @@ function SlotEvent({
                 />
               ))
             )}
-          </div>
+          </DragScrollRow>
         </>
       )}
 

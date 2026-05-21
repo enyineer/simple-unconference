@@ -148,10 +148,25 @@ interface SubmissionOut {
   starred_by_me: boolean;
   tags: string[];
   requirements: string[];
+  // Required room features. The unconference assignment algorithm filters
+  // candidate rooms to those whose tag set is a superset of these values.
+  // Frozen once the session is published (submitters can't edit; mods can).
+  // Empty array means "any room is fine."
+  room_requirements: string[];
   // Per-submission cap override; null = inherit conference default.
   max_placements: number | null;
   // Manual moderator override that forces the session to "finished" status.
   manually_finished: boolean;
+  // Moderator-set pre-assignment to a specific room. When set, the
+  // unconference assignment algorithm pins this submission to this room for
+  // every slot it's placed in, overriding the star-based ranking. `null`
+  // means "auto-place". Visible to everyone (no privacy risk: the room
+  // name is already public information in the conference).
+  pre_assigned_room_id: number | null;
+  // Moderator opt-in to allow this session to be placed (or its submitter
+  // to host) in multiple overlapping slots. Default false enforces a
+  // strict no-overlap policy at assignment time.
+  allow_overlapping_placements: boolean;
   // Number of times this submission has been placed (static tracks + unconf
   // placements). UI shows this as `placement_count / effective_cap`.
   placement_count: number;
@@ -232,17 +247,80 @@ interface MyAssignmentsOut {
   unplaced_slots: number[];
 }
 
+// A pre-assignment conflict detected before an unconference slot is run.
+// `kind` discriminates the two failure modes:
+//   - "duplicate_room": two or more eligible submissions in this slot share
+//     the same `pre_assigned_room_id`; the mod must change one's pinned room.
+//   - "out_of_scope": a pre-assigned submission's room isn't in the slot's
+//     effective room set (only fires when `unconf_use_all_rooms = false`);
+//     the mod must either add the room to the slot or clear the pin.
+// Both shapes carry enough detail for the UI to deep-link to the offending
+// submission(s) without an extra round-trip.
+// Discriminated union of pre-assignment conflict shapes surfaced by the
+// route gate before any DB writes happen.
+//
+//   - "duplicate_room": two or more top-N pinned sessions target the same
+//     room. The mod must move/skip/unpin one.
+//   - "out_of_scope": a top-N pinned room isn't in the slot's effective
+//     room set. The mod must clear/skip the pin or add the room to the slot.
+//   - "unsatisfiable_requirements": a top-N session has approved room
+//     requirements (tags) but no room in the slot's scope satisfies them
+//     (either no room has the tags at all, or every matching room was
+//     reserved by an earlier pin / earlier matching session). The
+//     `candidate_room_names` list, when empty, means "no room in the slot
+//     matches these tags." When non-empty, the matching rooms exist but
+//     were already claimed by a higher-priority session.
+type PreAssignmentConflict =
+  | {
+      kind: "duplicate_room" | "out_of_scope";
+      room_id: number;
+      room_name: string;
+      submissions: { id: number; title: string }[];
+    }
+  | {
+      kind: "unsatisfiable_requirements";
+      submission: { id: number; title: string };
+      required_tags: string[];
+      candidate_room_names: string[];
+    };
+
+// Sessions / rooms / users excluded from this slot's assignment because of
+// overlapping agenda slots. Reported informationally on success — the mod
+// sees exactly what the algorithm filtered out and why (so they don't have
+// to guess why a popular session didn't get a placement, etc).
+interface OverlapExclusions {
+  rooms: { id: number; name: string }[];
+  submissions: {
+    id: number; title: string;
+    // Why this session was filtered:
+    //   - "same_session": the session is already placed in an overlapping
+    //     slot AND its allow_overlapping_placements flag is false.
+    //   - "busy_submitter": a *different* session by the same submitter is
+    //     placed in an overlapping slot.
+    reason: "same_session" | "busy_submitter";
+  }[];
+  // User identity IDs assigned to an overlapping slot in this conference.
+  // The UI shows just a count by default; the array is here for diagnostics.
+  user_ids: number[];
+}
+
 type AssignResult =
   | {
       kind: "unconference";
       placements: { slot_id: number; submission_id: number; room_id: number }[];
       user_assignments: { slot_id: number; user_id: number; submission_id: number }[];
       unplaced_users: number[];
+      overlap_exclusions: OverlapExclusions;
     }
   | {
       kind: "mixer";
       room_assignments: { slot_id: number; user_id: number; room_id: number }[];
       unplaced_users: number[];
+      overlap_exclusions: OverlapExclusions;
+    }
+  | {
+      kind: "conflict";
+      conflicts: PreAssignmentConflict[];
     };
 
 // ----- contract ------------------------------------------------------------
@@ -452,7 +530,15 @@ export const contract = {
       .input(v.object({ slug: Slug, slot_id: Id, track_id: Id }))
       .output(type<Ok>()),
     assign: oc
-      .input(v.object({ slug: Slug, slot_id: Id }))
+      .input(v.object({
+        slug: Slug, slot_id: Id,
+        // One-shot exclusion: drop these submissions from the slot's eligible
+        // pool just for this assignment run (no persistent change to slot
+        // config or to the submissions). The resolve panel uses this to
+        // "skip" a conflicting pre-assigned session so its next-most-starred
+        // alternative takes the room instead.
+        exclude_submission_ids: v.optional(v.array(Id)),
+      }))
       .output(type<AssignResult>()),
     myAssignments: oc.input(InConf).output(type<MyAssignmentsOut>()),
     pickAssignment: oc

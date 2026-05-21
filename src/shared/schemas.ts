@@ -186,6 +186,10 @@ export const CreateSubmissionSchema = v.object({
   description: v.optional(v.string()),
   tags: v.optional(LabelList),
   requirements: v.optional(LabelList),
+  // Required room features (tag values that the assigned room must carry).
+  // The server filters to tags that actually exist on a room in this
+  // conference and silently drops anything else.
+  room_requirements: v.optional(LabelList),
 });
 export type CreateSubmissionInput = v.InferOutput<typeof CreateSubmissionSchema>;
 
@@ -194,12 +198,24 @@ export const UpdateSubmissionSchema = v.object({
   description: v.optional(v.string()),
   tags: v.optional(LabelList),
   requirements: v.optional(LabelList),
+  room_requirements: v.optional(LabelList),
   // Moderator-only fields. The server enforces role; the schema just shapes
   // them. `max_placements`: null = inherit conference default; integer = cap.
   // `manually_finished`: true forces the session out of the pool / hidden
   // from participants regardless of placement count.
   max_placements: v.optional(v.union([PosInt, v.null()])),
   manually_finished: v.optional(v.boolean()),
+  // Moderator-only pre-assignment to a specific room id. `null` clears the
+  // pre-assignment; positive integer pins this submission to that room in
+  // every unconference slot it lands in. The server validates the room
+  // belongs to the same conference; it also refuses to run an assignment
+  // for a slot in which two pre-assigned submissions would compete for the
+  // same room.
+  pre_assigned_room_id: v.optional(v.union([PosInt, v.null()])),
+  // Moderator-only: when true, this session can run in multiple
+  // overlapping slots (its submitter can also be the host of overlapping
+  // placements). Default false enforces the no-overlap rule.
+  allow_overlapping_placements: v.optional(v.boolean()),
 });
 export type UpdateSubmissionInput = v.InferOutput<typeof UpdateSubmissionSchema>;
 

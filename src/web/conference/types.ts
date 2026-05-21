@@ -57,12 +57,25 @@ export interface Submission {
   created_at: number;
   tags: string[];
   requirements: string[];
+  /** Required room features. The assignment algorithm filters candidate
+   * rooms to those whose tag set is a superset of these values. Frozen
+   * once the session is published (submitters can no longer edit; mods can).
+   * Empty array means "any room is fine." */
+  room_requirements: string[];
   /** Per-submission override of the conference's max placements cap.
    * `null` means "inherit". Mods/owners can set this from the Sessions tab. */
   max_placements: number | null;
   /** Moderator override — true treats this session as finished regardless of
    * placement count. */
   manually_finished: boolean;
+  /** Moderator-set pre-assignment to a specific room. When set, the
+   * unconference algorithm pins this submission to this room (overriding
+   * star-based placement). `null` means "auto-place". */
+  pre_assigned_room_id: number | null;
+  /** Moderator-set: when true, this session can be placed (or its
+   * submitter can host) in multiple overlapping slots. Default false
+   * enforces the no-overlap rule. */
+  allow_overlapping_placements: boolean;
   /** Static TrackAssignment + UnconferencePlacement total for this session. */
   placement_count: number;
   /** Resolved against the conference default. Finished sessions are excluded

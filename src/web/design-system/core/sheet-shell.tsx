@@ -57,7 +57,13 @@ export function SheetShell({ open, onClose, title, tokens, children }: SheetShel
           width: "min(560px, 100vw)",
           maxWidth: "100vw",
           height: "100dvh",
-          overflowY: "auto",
+          // The outer panel CLIPS overflow. Scrolling happens inside the
+          // body div below — this way the body's padding-bottom is part of
+          // the scrollable area and always lays out after the last child.
+          // (When the outer panel was the scroller, content longer than
+          // the viewport visually overflowed *below* the body box, past
+          // its padding-bottom, so the last child hugged the panel edge.)
+          overflow: "hidden",
           boxShadow: "-8px 0 24px rgba(0, 0, 0, 0.18)",
           borderLeft: `1px solid ${tokens.border}`,
           display: "flex",
@@ -70,9 +76,8 @@ export function SheetShell({ open, onClose, title, tokens, children }: SheetShel
           justifyContent: "space-between",
           padding: "12px 16px",
           borderBottom: `1px solid ${tokens.border}`,
-          position: "sticky", top: 0,
           background: tokens.bg,
-          zIndex: 1,
+          flexShrink: 0,
         }}>
           <strong style={{ fontSize: 16 }}>{title ?? ""}</strong>
           <button
@@ -86,14 +91,25 @@ export function SheetShell({ open, onClose, title, tokens, children }: SheetShel
             }}
           >×</button>
         </div>
-        {/* Body laid out as a flex column with a default gap so consecutive
-            top-level children (a Tip, a Banner, a Form, …) have consistent
-            spacing without each call site needing to wrap them in a Stack. */}
+        {/* Body is the scrollable region. Flex column with a default gap so
+            consecutive top-level children (a Tip, a Banner, a Form, …) have
+            consistent spacing without each call site needing to wrap them
+            in a Stack. Asymmetric padding — wider on the sides, generous
+            on the bottom — gives the last action / paragraph clear
+            breathing room above the sheet edge. Applied here so every
+            sheet, across both design-system plugins, gets the same feel. */}
         <div style={{
-          padding: 16, flex: 1,
-          display: "flex", flexDirection: "column", gap: 16,
+          flex: 1,
           minHeight: 0,
-        }}>{children}</div>
+          overflowY: "auto",
+          paddingTop: 20,
+          paddingRight: 20,
+          paddingLeft: 20,
+          paddingBottom: 40,
+          display: "flex", flexDirection: "column", gap: 16,
+        }}>
+          {children}
+        </div>
       </div>
     </div>
   );

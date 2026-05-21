@@ -192,6 +192,7 @@ model Room {
   expertPoolMemberships ExpertRoomPoolRoom[]
   expertRoomMemberships ExpertRoom[]
   expertBookings        ExpertBooking[]
+  preAssignedSubmissions Submission[]          @relation("SubmissionPreAssignedRoom")
 
   @@index([conferenceId])
   @@map("rooms")
@@ -236,16 +237,33 @@ model Submission {
   // regardless of placement count (e.g. speaker withdrew; talk already
   // delivered externally). Mods/owners flip this from the Sessions tab.
   manuallyFinished Boolean @default(false) @map("manually_finished")
+  // Moderator-only pre-assignment to a specific room. When set, the
+  // unconference assignment algorithm places this submission in this room
+  // for every slot it lands in, overriding the star-based placement. The
+  // server refuses to run an assignment for a slot where two eligible
+  // pre-assigned submissions would compete for the same room, or where a
+  // pre-assigned room isn't in the slot's effective room set.
+  preAssignedRoomId Int? @map("pre_assigned_room_id")
+  // Moderator-only opt-in: when true, this session can be placed (or be
+  // hosted by its submitter) in multiple agenda slots whose times overlap.
+  // Default (false) is "exclusive" — the assignment algorithm refuses to
+  // schedule the same session in overlapping slots and also refuses to
+  // schedule a different session whose submitter is already speaking in
+  // an overlapping slot. Mods flip this on for sessions designed to run
+  // multiple times in parallel (e.g. a recurring workshop).
+  allowOverlappingPlacements Boolean @default(false) @map("allow_overlapping_placements")
   createdAt    DateTime         @default(now()) @map("created_at")
 
   conference          Conference              @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
   submitter           ConferenceIdentity      @relation(fields: [submitterId], references: [id])
+  preAssignedRoom     Room?                   @relation("SubmissionPreAssignedRoom", fields: [preAssignedRoomId], references: [id], onDelete: SetNull)
   stars               Star[]
   trackAssignments    TrackAssignment[]
   placements          UnconferencePlacement[]
   userAssignments     UserAssignment[]
   tags                SubmissionTag[]
   requirements        SubmissionRequirement[]
+  roomRequirements    SubmissionRoomRequirement[]
   slotMemberships     SlotSubmission[]
 
   @@index([conferenceId])
@@ -278,6 +296,25 @@ model SubmissionRequirement {
   @@unique([submissionId, value])
   @@index([submissionId])
   @@map("submission_requirements")
+}
+
+// Room-side requirements the session needs from its assigned room. Tag
+// values must match an existing `RoomTag.value` in the conference (the
+// picker only offers tags that exist on at least one room). The assignment
+// algorithm filters candidate rooms to those whose tag set is a superset
+// of these values. The set is "approved" implicitly by the session being
+// `published` — submitters can't edit a published session, so once a mod
+// publishes, the tags are frozen.
+model SubmissionRoomRequirement {
+  id           Int    @id @default(autoincrement())
+  submissionId Int    @map("submission_id")
+  value        String
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, value])
+  @@index([submissionId])
+  @@map("submission_room_requirements")
 }
 
 model Star {

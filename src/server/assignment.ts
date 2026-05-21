@@ -1,5 +1,10 @@
 // Slot-assignment algorithms (pure functions — no DB access).
 //
+// USER-FACING DOCS: the plain-language explanation shown to mods and
+// participants lives in `src/web/conference/ui/AssignmentRulesModal.tsx`.
+// **Update that file whenever you change behavior in this one** — it's the
+// single source of truth for what we promise the algorithm will do.
+//
 // Two algorithms live here, sharing input shape conventions so the caller can
 // branch by slot type without juggling unrelated structures:
 //
@@ -65,6 +70,18 @@ export interface AssignmentInput {
   // isn't placed in this slot, or that would overflow capacity, are silently
   // dropped (the user falls back into the regular flow).
   fixedAssignments?: Map<ID, ID>;
+  // Per-submission pre-assigned room (moderator-set). Honored ahead of the
+  // star-based room ranking: any submission listed here that's in the
+  // candidate pool gets its room first, and the remaining rooms feed the
+  // normal popularity zip.
+  //
+  // The caller is responsible for validating that:
+  //   1. no two entries target the same room id, and
+  //   2. every entry's room id is in `rooms`.
+  // The algorithm throws when these invariants don't hold — the route layer
+  // surfaces a structured conflict error to the moderator before getting
+  // here, so a runtime throw indicates a caller bug.
+  preAssignments?: Map<ID, ID>;
 }
 
 /**
@@ -101,15 +118,66 @@ export function assignUnconferenceSlot(input: AssignmentInput): AssignmentResult
     if (b.capacity !== a.capacity) return b.capacity - a.capacity;
     return a.id - b.id;
   });
+  const roomById = new Map<ID, AssignmentRoom>();
+  for (const r of rooms) roomById.set(r.id, r);
 
-  // Zip: top N submissions get rooms (N = min(rooms.length, submissions.length)).
+  // Stars decide which submissions are placed: take the top-N most-starred,
+  // where N = min(rooms, submissions). Pre-assignment only chooses *which
+  // room* a placed submission occupies — it never promotes a low-star
+  // session into the placement set. A pin on a session that doesn't make
+  // the top-N is silently ignored.
   const numPlaced = Math.min(roomsByCapacity.length, submissionsByPopularity.length);
+  const topN = submissionsByPopularity.slice(0, numPlaced);
+  const topNIds = new Set<ID>(topN.map((s) => s.id));
+
   const placedSubmissionRoom = new Map<ID, ID>(); // submission_id -> room_id
   const roomCapacity = new Map<ID, number>();     // submission_id -> capacity
   const placedSubmitterOf = new Map<ID, ID>();    // submission_id -> submitter_id
-  for (let i = 0; i < numPlaced; i++) {
-    const sub = submissionsByPopularity[i]!;
-    const room = roomsByCapacity[i]!;
+
+  // Pre-assignments win their rooms first — but only for submissions that
+  // made the top-N cut. The route layer's conflict gate is responsible for
+  // catching duplicate rooms / out-of-scope rooms BEFORE calling us, using
+  // the same top-N restriction; throws here indicate a caller bug.
+  const preAssignments = input.preAssignments;
+  const reservedRoomIds = new Set<ID>();
+  if (preAssignments && preAssignments.size > 0) {
+    const submissionsById = new Map<ID, AssignmentSubmission>();
+    for (const sub of submissions) submissionsById.set(sub.id, sub);
+    // Walk in (submission id, room id) ascending order for deterministic
+    // error messages.
+    const preEntries = [...preAssignments.entries()].sort((a, b) =>
+      a[0] !== b[0] ? a[0] - b[0] : a[1] - b[1],
+    );
+    for (const [subId, roomId] of preEntries) {
+      if (!topNIds.has(subId)) continue; // low-star or excluded; pin ignored
+      const sub = submissionsById.get(subId)!;
+      const room = roomById.get(roomId);
+      if (!room) {
+        throw new Error(
+          `preAssignment for submission ${subId} targets room ${roomId} which is not in the slot's room set`,
+        );
+      }
+      if (reservedRoomIds.has(roomId)) {
+        throw new Error(
+          `preAssignment conflict: room ${roomId} is requested by multiple submissions`,
+        );
+      }
+      reservedRoomIds.add(roomId);
+      placedSubmissionRoom.set(subId, roomId);
+      roomCapacity.set(subId, room.capacity);
+      placedSubmitterOf.set(subId, sub.submitter_id);
+    }
+  }
+
+  // Zip the remaining (unpinned) top-N submissions into the remaining
+  // rooms by popularity → largest-room. Same behavior as before pinning
+  // was introduced; pinning only steals rooms out of the pool first.
+  const remainingRooms = roomsByCapacity.filter((r) => !reservedRoomIds.has(r.id));
+  const remainingTopN = topN.filter((s) => !placedSubmissionRoom.has(s.id));
+  const numRemaining = Math.min(remainingRooms.length, remainingTopN.length);
+  for (let i = 0; i < numRemaining; i++) {
+    const sub = remainingTopN[i]!;
+    const room = remainingRooms[i]!;
     placedSubmissionRoom.set(sub.id, room.id);
     roomCapacity.set(sub.id, room.capacity);
     placedSubmitterOf.set(sub.id, sub.submitter_id);

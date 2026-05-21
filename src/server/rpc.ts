@@ -111,6 +111,27 @@ function normalizeLabels(input: string[] | undefined): string[] {
   return out;
 }
 
+// Filters a normalized requirement list to values that actually exist as a
+// `RoomTag.value` on any room in the given conference. The UI picker only
+// offers existing tags, but we re-enforce server-side: a tag that no room
+// carries would silently make the session unplaceable, so dropping it here
+// gives the participant a clearer "your selection didn't stick" signal
+// when the input goes through unverified channels.
+async function filterToExistingRoomTags(
+  prisma: PrismaClient,
+  conferenceId: number,
+  values: string[],
+): Promise<string[]> {
+  if (values.length === 0) return [];
+  const rows = await prisma.roomTag.findMany({
+    where: { value: { in: values }, room: { conferenceId } },
+    select: { value: true },
+    distinct: ["value"],
+  });
+  const valid = new Set(rows.map((r) => r.value));
+  return values.filter((v) => valid.has(v));
+}
+
 // ----- invite + join-link + calendar helpers -------------------------------
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -867,6 +888,7 @@ const submissionsRouter = {
           stars: { where: { userId: myIdentityId }, select: { userId: true } },
           tags: { select: { value: true }, orderBy: { value: "asc" } },
           requirements: { select: { value: true }, orderBy: { value: "asc" } },
+          roomRequirements: { select: { value: true }, orderBy: { value: "asc" } },
         },
         orderBy: { createdAt: "desc" },
       }),
@@ -897,8 +919,11 @@ const submissionsRouter = {
         starred_by_me: s.stars.length > 0,
         tags: s.tags.map((t) => t.value),
         requirements: s.requirements.map((r) => r.value),
+        room_requirements: s.roomRequirements.map((r) => r.value),
         max_placements: s.maxPlacements,
         manually_finished: s.manuallyFinished,
+        pre_assigned_room_id: s.preAssignedRoomId,
+        allow_overlapping_placements: s.allowOverlappingPlacements,
         placement_count: placementCount,
         is_finished,
       };
@@ -927,12 +952,18 @@ const submissionsRouter = {
     }
     const tags = normalizeLabels(input.tags);
     const requirements = normalizeLabels(input.requirements);
+    const roomRequirements = await filterToExistingRoomTags(
+      context.prisma,
+      context.conferenceId,
+      normalizeLabels(input.room_requirements),
+    );
     const created = await context.prisma.submission.create({
       data: {
         conferenceId: context.conferenceId, submitterId: actorIdentityId(context),
         title: input.title, description: input.description ?? "",
-        tags:         { create: tags.map((value) => ({ value })) },
-        requirements: { create: requirements.map((value) => ({ value })) },
+        tags:             { create: tags.map((value) => ({ value })) },
+        requirements:     { create: requirements.map((value) => ({ value })) },
+        roomRequirements: { create: roomRequirements.map((value) => ({ value })) },
       },
     });
     // Notify mods/owners so they know there's something in the review queue.
@@ -973,6 +1004,24 @@ const submissionsRouter = {
       if (input.manually_finished !== undefined) {
         modPatch.manuallyFinished = input.manually_finished;
       }
+      if (input.pre_assigned_room_id !== undefined) {
+        if (input.pre_assigned_room_id === null) {
+          modPatch.preAssignedRoom = { disconnect: true };
+        } else {
+          // Validate the room belongs to this conference. We don't 404 here
+          // because the form only shows rooms in this conference, so a bad
+          // id is a contract violation worth rejecting with a 400.
+          const room = await context.prisma.room.findFirst({
+            where: { id: input.pre_assigned_room_id, conferenceId: context.conferenceId },
+            select: { id: true },
+          });
+          if (!room) throw new ORPCError("BAD_REQUEST", { message: "room_not_in_conference" });
+          modPatch.preAssignedRoom = { connect: { id: room.id } };
+        }
+      }
+      if (input.allow_overlapping_placements !== undefined) {
+        modPatch.allowOverlappingPlacements = input.allow_overlapping_placements;
+      }
     }
     const ops: Prisma.PrismaPromise<unknown>[] = [
       context.prisma.submission.update({
@@ -996,6 +1045,17 @@ const submissionsRouter = {
       ops.push(context.prisma.submissionRequirement.deleteMany({ where: { submissionId: input.id } }));
       ops.push(context.prisma.submissionRequirement.createMany({
         data: reqs.map((value) => ({ submissionId: input.id, value })),
+      }));
+    }
+    if (input.room_requirements !== undefined) {
+      const roomReqs = await filterToExistingRoomTags(
+        context.prisma,
+        context.conferenceId,
+        normalizeLabels(input.room_requirements),
+      );
+      ops.push(context.prisma.submissionRoomRequirement.deleteMany({ where: { submissionId: input.id } }));
+      ops.push(context.prisma.submissionRoomRequirement.createMany({
+        data: roomReqs.map((value) => ({ submissionId: input.id, value })),
       }));
     }
     await context.prisma.$transaction(ops);
@@ -1091,7 +1151,40 @@ const submissionsRouter = {
 // AGENDA
 // =========================================================================
 
-async function runAssignmentForSlot(prisma: PrismaClient, confId: number, slotId: number) {
+// Shapes of pre-assignment conflicts surfaced by `runAssignmentForSlot`.
+// Mirrors the `PreAssignmentConflict` union in the API contract.
+type PreAssignmentConflict =
+  | {
+      kind: "duplicate_room" | "out_of_scope";
+      room_id: number;
+      room_name: string;
+      submissions: { id: number; title: string }[];
+    }
+  | {
+      kind: "unsatisfiable_requirements";
+      submission: { id: number; title: string };
+      required_tags: string[];
+      // Names of rooms in the slot's effective scope whose tag set satisfies
+      // the submission's requirements. Empty array = no room in this slot
+      // matches at all. Non-empty = matching rooms exist but every one was
+      // already claimed by a higher-priority session (pinned or more starred).
+      candidate_room_names: string[];
+    };
+
+// USER-FACING DOCS: the plain-language description of the steps below
+// (top-N selection, pin/tag pre-assignments, bipartite matching with
+// cascade analysis, overlap exclusions, finished filter, manual picks)
+// is rendered to mods + participants by
+// `src/web/conference/ui/AssignmentRulesModal.tsx`. **Update that file
+// whenever you change anything in `runAssignmentForSlot` or
+// `runMixerForSlot` below** — it's the single source of truth for what
+// the algorithm promises to do.
+async function runAssignmentForSlot(
+  prisma: PrismaClient,
+  confId: number,
+  slotId: number,
+  excludeSubmissionIds?: ReadonlySet<number>,
+) {
   const slot = await prisma.agendaSlot.findUniqueOrThrow({
     where: { id: slotId },
     include: {
@@ -1103,8 +1196,8 @@ async function runAssignmentForSlot(prisma: PrismaClient, confId: number, slotId
   const roomWhere = slot.unconfUseAllRooms
     ? { conferenceId: confId }
     : { conferenceId: confId, id: { in: slot.selectedRooms.map((r) => r.roomId) } };
-  const rooms = await prisma.room.findMany({
-    where: roomWhere, select: { id: true, capacity: true },
+  let rooms = await prisma.room.findMany({
+    where: roomWhere, select: { id: true, capacity: true, name: true },
   });
 
   const subWhere = slot.unconfUseAllSubmissions
@@ -1116,8 +1209,11 @@ async function runAssignmentForSlot(prisma: PrismaClient, confId: number, slotId
   const rawSubs = await prisma.submission.findMany({
     where: subWhere,
     select: {
-      id: true, submitterId: true,
+      id: true, title: true, submitterId: true,
       maxPlacements: true, manuallyFinished: true,
+      preAssignedRoomId: true,
+      allowOverlappingPlacements: true,
+      roomRequirements: { select: { value: true } },
     },
   });
   // Count placements + static tracks per submission, excluding the current
@@ -1153,30 +1249,458 @@ async function runAssignmentForSlot(prisma: PrismaClient, confId: number, slotId
     if (t.submissionId === null) continue;
     placementCountBySub.set(t.submissionId, (placementCountBySub.get(t.submissionId) ?? 0) + t._count.submissionId);
   }
-  const submissions = rawSubs
-    .filter((s) => {
-      const { is_finished } = resolveFinished(
-        { maxPlacements: s.maxPlacements, manuallyFinished: s.manuallyFinished },
-        confRow.submissionMaxPlacementsDefault,
-        placementCountBySub.get(s.id) ?? 0,
-      );
-      return !is_finished;
-    })
-    .map((s) => ({ id: s.id, submitterId: s.submitterId }));
+  let eligibleSubs = rawSubs.filter((s) => {
+    if (excludeSubmissionIds?.has(s.id)) return false;
+    const { is_finished } = resolveFinished(
+      { maxPlacements: s.maxPlacements, manuallyFinished: s.manuallyFinished },
+      confRow.submissionMaxPlacementsDefault,
+      placementCountBySub.get(s.id) ?? 0,
+    );
+    return !is_finished;
+  });
+
+  // ----- Overlap exclusions ----------------------------------------------
+  //
+  // Sessions running in agenda slots that overlap this slot's time window
+  // create three classes of conflict the algorithm should silently work
+  // around (mod sees them as informational exclusions, not blocking
+  // conflicts):
+  //
+  //   (a) Room reuse: a room booked by an overlapping slot can't be used
+  //       here. We drop it from the room pool.
+  //   (b) Busy submitter: a submitter speaking in an overlapping slot
+  //       can't host a *different* session here. We drop those sessions
+  //       from the candidate pool.
+  //   (c) Same-session double-booking: a session already placed in an
+  //       overlapping slot can't be placed here unless its
+  //       `allowOverlappingPlacements` flag is set (mods opt-in for
+  //       sessions designed to run in parallel — recurring workshops, etc).
+  //   (d) Busy participant: a user already assigned in an overlapping slot
+  //       can't attend another session here. We drop them from the stars
+  //       map below.
+  //
+  // The overlap-detection query is a single round-trip with placements,
+  // tracks, and user-assignments loaded in parallel.
+  const busyUserIds = new Set<number>();
+  const overlapExcludedRooms: { id: number; name: string }[] = [];
+  const overlapExcludedSubs: { id: number; title: string; reason: "same_session" | "busy_submitter" }[] = [];
+  {
+    const overlappingSlots = await prisma.agendaSlot.findMany({
+      where: {
+        conferenceId: confId,
+        id: { not: slotId },
+        // Overlap = startsAt < other.endsAt AND endsAt > other.startsAt.
+        startsAt: { lt: slot.endsAt },
+        endsAt: { gt: slot.startsAt },
+      },
+      select: { id: true },
+    });
+    const overlappingIds = overlappingSlots.map((s) => s.id);
+    if (overlappingIds.length > 0) {
+      const [overlapPlacements, overlapTracks, overlapAssigns] = await Promise.all([
+        prisma.unconferencePlacement.findMany({
+          where: { slotId: { in: overlappingIds } },
+          select: { submissionId: true, roomId: true },
+        }),
+        prisma.trackAssignment.findMany({
+          where: { slotId: { in: overlappingIds } },
+          select: { submissionId: true, roomId: true },
+        }),
+        prisma.userAssignment.findMany({
+          where: { slotId: { in: overlappingIds } },
+          select: { userId: true, submissionId: true, roomId: true },
+        }),
+      ]);
+
+      const excludedRoomIds = new Set<number>();
+      const overlapPlacedSessionIds = new Set<number>();
+      for (const p of overlapPlacements) {
+        excludedRoomIds.add(p.roomId);
+        overlapPlacedSessionIds.add(p.submissionId);
+      }
+      for (const t of overlapTracks) {
+        excludedRoomIds.add(t.roomId);
+        if (t.submissionId !== null) overlapPlacedSessionIds.add(t.submissionId);
+      }
+      for (const a of overlapAssigns) {
+        busyUserIds.add(a.userId);
+        if (a.roomId !== null) excludedRoomIds.add(a.roomId);
+      }
+
+      // For (b): map submitter → set of session IDs they're hosting in
+      // overlapping slots. A candidate sub is blocked when its submitter is
+      // hosting a *different* session there (same session is the (c) case).
+      const placedOverlappingByOtherSubmitter = overlapPlacedSessionIds.size === 0
+        ? []
+        : await prisma.submission.findMany({
+            where: { id: { in: [...overlapPlacedSessionIds] } },
+            select: { id: true, submitterId: true },
+          });
+      const placementsBySubmitter = new Map<number, Set<number>>();
+      for (const p of placedOverlappingByOtherSubmitter) {
+        let set = placementsBySubmitter.get(p.submitterId);
+        if (!set) { set = new Set(); placementsBySubmitter.set(p.submitterId, set); }
+        set.add(p.id);
+      }
+
+      // Apply (c) and (b) to the candidate pool.
+      eligibleSubs = eligibleSubs.filter((s) => {
+        if (overlapPlacedSessionIds.has(s.id) && !s.allowOverlappingPlacements) {
+          overlapExcludedSubs.push({ id: s.id, title: s.title, reason: "same_session" });
+          return false;
+        }
+        const hosting = placementsBySubmitter.get(s.submitterId);
+        if (hosting) {
+          // Check for a *different* session — if the submitter's only
+          // overlapping placement is this same session itself (allowed via
+          // the (c) escape), no (b) conflict.
+          let hasDifferent = false;
+          for (const sid of hosting) {
+            if (sid !== s.id) { hasDifferent = true; break; }
+          }
+          if (hasDifferent) {
+            overlapExcludedSubs.push({ id: s.id, title: s.title, reason: "busy_submitter" });
+            return false;
+          }
+        }
+        return true;
+      });
+
+      // Apply (a) to rooms.
+      const roomNameById = new Map(rooms.map((r) => [r.id, r.name]));
+      rooms = rooms.filter((r) => {
+        if (excludedRoomIds.has(r.id)) {
+          overlapExcludedRooms.push({ id: r.id, name: roomNameById.get(r.id) ?? "" });
+          return false;
+        }
+        return true;
+      });
+    }
+  }
+  const submissions = eligibleSubs.map((s) => ({ id: s.id, submitterId: s.submitterId }));
   const submissionIds = new Set(submissions.map((s) => s.id));
 
-  const starsRows = await prisma.star.findMany({
-    where: { submission: { conferenceId: confId, status: "published" } },
-    select: { userId: true, submissionId: true },
-  });
-  const identityRows = await prisma.conferenceIdentity.findMany({
-    where: { conferenceId: confId }, select: { id: true },
-  });
+  // Load stars + identities up front: we need per-submission star counts to
+  // compute the top-N placement set (which the conflict gate uses), and the
+  // same data builds the `stars` map for the algorithm itself.
+  const [starsRows, identityRows] = await Promise.all([
+    prisma.star.findMany({
+      where: { submission: { conferenceId: confId, status: "published" } },
+      select: { userId: true, submissionId: true },
+    }),
+    prisma.conferenceIdentity.findMany({
+      where: { conferenceId: confId }, select: { id: true },
+    }),
+  ]);
   const stars = new Map<number, Set<number>>();
-  for (const i of identityRows) stars.set(i.id, new Set());
+  for (const i of identityRows) {
+    // (d) Drop users assigned to overlapping slots. Their stars are
+    // ignored for this slot's matching; they're reported in
+    // overlap_exclusions.user_ids so the mod knows why they weren't
+    // placed.
+    if (busyUserIds.has(i.id)) continue;
+    stars.set(i.id, new Set());
+  }
+  const starCountBySub = new Map<number, number>();
+  for (const id of submissionIds) starCountBySub.set(id, 0);
   for (const s of starsRows) {
     if (!submissionIds.has(s.submissionId)) continue;
+    if (busyUserIds.has(s.userId)) continue;
     stars.get(s.userId)?.add(s.submissionId);
+    starCountBySub.set(s.submissionId, (starCountBySub.get(s.submissionId) ?? 0) + 1);
+  }
+
+  // Top-N: stars decide which submissions are placed. Pre-assignment only
+  // chooses *which room* a placed submission occupies; a pin on a session
+  // that doesn't make the top-N is silently ignored (no conflict raised).
+  const subsByPopularity = [...eligibleSubs].sort((a, b) => {
+    const sa = starCountBySub.get(a.id) ?? 0;
+    const sb = starCountBySub.get(b.id) ?? 0;
+    if (sb !== sa) return sb - sa;
+    return a.id - b.id;
+  });
+  const numPlaced = Math.min(rooms.length, subsByPopularity.length);
+  const topNSubs = subsByPopularity.slice(0, numPlaced);
+
+  // ----- Pre-assignment conflict gate + bipartite room matching ---------
+  //
+  // Two stages, both restricted to top-N (sessions that stars say will run):
+  //
+  //   Stage 1: pinned-only pre-checks. Catches user errors with crisp
+  //   messages before we attempt anything fancy:
+  //     - duplicate_room: two pinned sessions target the same room.
+  //     - out_of_scope: a pinned room isn't in the slot's effective room set.
+  //
+  //   Stage 2: bipartite matching for the rest. Build a bipartite graph
+  //   (sessions ↔ rooms) where edges encode eligibility:
+  //     - Pinned: single edge to the pinned room.
+  //     - Tag-constrained (room_requirements non-empty): edges to rooms
+  //       whose tag set is a superset of the requirements.
+  //     - Unconstrained: edges to every room.
+  //   Then run Kuhn's algorithm (augmenting-path bipartite matching),
+  //   processing sessions in popularity desc order and rooms in capacity
+  //   desc order. The matching is *optimal*: if any feasible top-N → room
+  //   assignment exists, the algorithm finds one. Augmenting paths swap
+  //   earlier assignments around when a constrained session needs a room
+  //   already claimed by a flexible one — so unconstrained sessions step
+  //   aside automatically. Pins are processed first (in stage 2 they're
+  //   matched before tag-constrained / unconstrained sessions touch the
+  //   graph), so a tag-constrained session can never displace a pin.
+  //
+  //   Unmatched top-N sessions surface as `unsatisfiable_requirements`
+  //   conflicts, with `candidate_room_names` listing the rooms whose tags
+  //   match (so the mod sees whether the issue is "no matching room
+  //   exists" vs "all matching rooms are already claimed").
+  const roomById = new Map<number, { id: number; name: string; capacity: number }>();
+  for (const r of rooms) roomById.set(r.id, r);
+  const conflicts: PreAssignmentConflict[] = [];
+  const preAssignments = new Map<number, number>(); // submissionId -> roomId
+  {
+    const groupedByRoom = new Map<number, { id: number; title: string }[]>();
+    const outOfScope = new Map<number, { roomName: string | null; subs: { id: number; title: string }[] }>();
+    for (const s of topNSubs) {
+      if (s.preAssignedRoomId === null) continue;
+      const room = roomById.get(s.preAssignedRoomId);
+      if (!room) {
+        const cur = outOfScope.get(s.preAssignedRoomId)
+          ?? { roomName: null, subs: [] as { id: number; title: string }[] };
+        cur.subs.push({ id: s.id, title: s.title });
+        outOfScope.set(s.preAssignedRoomId, cur);
+        continue;
+      }
+      const arr = groupedByRoom.get(s.preAssignedRoomId) ?? [];
+      arr.push({ id: s.id, title: s.title });
+      groupedByRoom.set(s.preAssignedRoomId, arr);
+    }
+    if (outOfScope.size > 0) {
+      const ids = [...outOfScope.keys()];
+      const extraRooms = await prisma.room.findMany({
+        where: { id: { in: ids }, conferenceId: confId },
+        select: { id: true, name: true },
+      });
+      for (const r of extraRooms) {
+        const e = outOfScope.get(r.id);
+        if (e) e.roomName = r.name;
+      }
+      for (const [roomId, e] of outOfScope) {
+        conflicts.push({
+          kind: "out_of_scope",
+          room_id: roomId,
+          room_name: e.roomName ?? "(unknown room)",
+          submissions: e.subs.sort((a, b) => a.id - b.id),
+        });
+      }
+    }
+    const reservedByPin = new Set<number>();
+    for (const [roomId, subs] of groupedByRoom) {
+      if (subs.length > 1) {
+        conflicts.push({
+          kind: "duplicate_room",
+          room_id: roomId,
+          room_name: roomById.get(roomId)!.name,
+          submissions: subs.sort((a, b) => a.id - b.id),
+        });
+      } else {
+        preAssignments.set(subs[0]!.id, roomId);
+        reservedByPin.add(roomId);
+      }
+    }
+    if (conflicts.length > 0) {
+      conflicts.sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === "duplicate_room" ? -1 : 1;
+        // Both are duplicate_room or both out_of_scope — sort by room_id for stability.
+        if (a.kind !== "unsatisfiable_requirements" && b.kind !== "unsatisfiable_requirements") {
+          return a.room_id - b.room_id;
+        }
+        return 0;
+      });
+      return { kind: "conflict" as const, conflicts };
+    }
+
+    // ----- Stage 2: bipartite matching with up-front cascade analysis -----
+    //
+    // Only sessions with explicit room constraints (a pin or a non-empty
+    // room_requirements set) participate in bipartite matching. Pins are
+    // handled in stage 1 above (their rooms are already reserved); here we
+    // match tag-constrained sessions to remaining rooms via Kuhn's
+    // algorithm. Unconstrained sessions don't enter the matching — they
+    // would let augmenting paths displace more-popular sessions from
+    // preferred rooms. They're placed later by the existing star →
+    // largest-room zip on leftover rooms.
+    //
+    // **Cascade analysis (the "up-front" part):** when a top-N constrained
+    // session can't be matched (its required tags aren't satisfiable given
+    // current room reservations), we record the conflict, drop the session
+    // from the trial top-N, and pull in the next-most-starred eligible
+    // candidate to refill the cut. Then we re-run the matching. We keep
+    // cascading until either every constrained session in the trial top-N
+    // is matched OR we've exhausted the candidate list. The mod sees ALL
+    // sessions that would have conflicted in one comprehensive resolve
+    // panel — no need to resolve, re-run, resolve again.
+    //
+    // Load room tags for rooms in scope.
+    const roomTagsRows = rooms.length === 0
+      ? []
+      : await prisma.roomTag.findMany({
+          where: { roomId: { in: rooms.map((r) => r.id) } },
+          select: { roomId: true, value: true },
+        });
+    const tagsByRoom = new Map<number, Set<string>>();
+    for (const r of rooms) tagsByRoom.set(r.id, new Set());
+    for (const row of roomTagsRows) tagsByRoom.get(row.roomId)!.add(row.value);
+
+    function roomSatisfies(roomId: number, requirements: string[]): boolean {
+      if (requirements.length === 0) return true;
+      const tags = tagsByRoom.get(roomId)!;
+      for (const req of requirements) if (!tags.has(req)) return false;
+      return true;
+    }
+    const roomsByCapacity = [...rooms].sort((a, b) =>
+      a.capacity !== b.capacity ? b.capacity - a.capacity : a.id - b.id,
+    );
+
+    // Pre-compute eligible/matching rooms for every eligible sub (not just
+    // top-N) — cascade may pull anyone in.
+    const eligibleRoomsBySub = new Map<number, number[]>();
+    const matchingRoomsBySub = new Map<number, number[]>();
+    const requirementsBySub = new Map<number, string[]>();
+    for (const s of eligibleSubs) {
+      const reqs = s.roomRequirements.map((r) => r.value);
+      requirementsBySub.set(s.id, reqs);
+      const allMatching = roomsByCapacity
+        .filter((r) => roomSatisfies(r.id, reqs))
+        .map((r) => r.id);
+      matchingRoomsBySub.set(s.id, allMatching);
+      eligibleRoomsBySub.set(s.id, allMatching.filter((rid) => !reservedByPin.has(rid)));
+    }
+
+    function canUse(subId: number, roomId: number): boolean {
+      return (eligibleRoomsBySub.get(subId) ?? []).includes(roomId);
+    }
+
+    // Cascade loop. `trial` starts as top-N by stars; whenever a constrained
+    // session can't match, it's logged as a conflict and replaced by the
+    // next candidate from `subsByPopularity`. Iteration cap is generous
+    // (every eligible sub could potentially cycle through) — termination
+    // is guaranteed because `nextIdx` only advances and we never re-add
+    // dropped sessions.
+    let trial = [...topNSubs];
+    let nextIdx = numPlaced;
+    const tagConflictsBySub = new Map<number, PreAssignmentConflict>();
+    let matchSub = new Map<number, number>();
+    let matchRoom = new Map<number, number>();
+    const maxIter = eligibleSubs.length + 2;
+
+    for (let iter = 0; iter < maxIter; iter++) {
+      // Filter to constrained-only this iteration. Order doesn't affect the
+      // final feasibility (Kuhn's max-matching is order-independent in
+      // cardinality); post-processing handles capacity preference below.
+      const tagConstrainedTrial = trial.filter(
+        (s) => s.preAssignedRoomId === null && s.roomRequirements.length > 0,
+      );
+      matchSub = new Map();
+      matchRoom = new Map();
+      function augment(subId: number, visited: Set<number>): boolean {
+        const eligible = eligibleRoomsBySub.get(subId) ?? [];
+        for (const roomId of eligible) {
+          if (visited.has(roomId)) continue;
+          visited.add(roomId);
+          const cur = matchRoom.get(roomId);
+          if (cur === undefined || augment(cur, visited)) {
+            matchSub.set(subId, roomId);
+            matchRoom.set(roomId, subId);
+            return true;
+          }
+        }
+        return false;
+      }
+      for (const s of tagConstrainedTrial) augment(s.id, new Set());
+
+      const unmatched = tagConstrainedTrial.filter((s) => !matchSub.has(s.id));
+      if (unmatched.length === 0) break; // All constrained members of trial fit — done.
+
+      // Record each unmatched session as a tag conflict (first-seen wins;
+      // a session can only appear once in `trial` so re-keying is safe).
+      for (const u of unmatched) {
+        if (!tagConflictsBySub.has(u.id)) {
+          const requiredTags = requirementsBySub.get(u.id) ?? [];
+          const candidateIds = matchingRoomsBySub.get(u.id) ?? [];
+          tagConflictsBySub.set(u.id, {
+            kind: "unsatisfiable_requirements",
+            submission: { id: u.id, title: u.title },
+            required_tags: requiredTags,
+            candidate_room_names: candidateIds.map((rid) => roomById.get(rid)!.name),
+          });
+        }
+      }
+      // Drop unmatched from trial and refill from `subsByPopularity` if
+      // there are more candidates beyond the current top-N cut.
+      const unmatchedIds = new Set(unmatched.map((u) => u.id));
+      trial = trial.filter((t) => !unmatchedIds.has(t.id));
+      let refilled = false;
+      while (trial.length < numPlaced && nextIdx < subsByPopularity.length) {
+        const next = subsByPopularity[nextIdx++]!;
+        if (!unmatchedIds.has(next.id)) {
+          trial.push(next);
+          refilled = true;
+        }
+      }
+      if (!refilled && trial.length === 0) break;
+      // If we couldn't refill (out of candidates) but trial shrunk, continue
+      // — the next iteration's matching might succeed on a smaller trial.
+      if (!refilled && unmatched.length === 0) break; // defensive: should never hit
+    }
+
+    if (tagConflictsBySub.size > 0) {
+      // Report all detected conflicts in popularity DESC for stable UI order.
+      const sorted = [...tagConflictsBySub.values()].sort((a, b) => {
+        if (a.kind !== "unsatisfiable_requirements" || b.kind !== "unsatisfiable_requirements") return 0;
+        const sa = starCountBySub.get(a.submission.id) ?? 0;
+        const sb = starCountBySub.get(b.submission.id) ?? 0;
+        if (sa !== sb) return sb - sa;
+        return a.submission.id - b.submission.id;
+      });
+      return { kind: "conflict" as const, conflicts: sorted };
+    }
+
+    // Post-processing swap pass — same as before, on the final matching.
+    const matchedConstrained = trial.filter(
+      (s) => s.preAssignedRoomId === null && s.roomRequirements.length > 0 && matchSub.has(s.id),
+    );
+    let swapped = true;
+    while (swapped) {
+      swapped = false;
+      for (let i = 0; i < matchedConstrained.length; i++) {
+        for (let j = 0; j < matchedConstrained.length; j++) {
+          if (i === j) continue;
+          const a = matchedConstrained[i]!;
+          const b = matchedConstrained[j]!;
+          const aPop = starCountBySub.get(a.id) ?? 0;
+          const bPop = starCountBySub.get(b.id) ?? 0;
+          if (aPop < bPop) continue;
+          if (aPop === bPop && a.id > b.id) continue;
+          const ra = matchSub.get(a.id)!;
+          const rb = matchSub.get(b.id)!;
+          if (roomById.get(rb)!.capacity <= roomById.get(ra)!.capacity) continue;
+          if (!canUse(a.id, rb)) continue;
+          if (!canUse(b.id, ra)) continue;
+          matchSub.set(a.id, rb);
+          matchSub.set(b.id, ra);
+          matchRoom.set(rb, a.id);
+          matchRoom.set(ra, b.id);
+          swapped = true;
+        }
+      }
+    }
+
+    // Drain matched sessions into preAssignments.
+    for (const [sid, rid] of matchSub) preAssignments.set(sid, rid);
+
+    // Cascade may have promoted candidates outside the original top-N. We
+    // need the downstream algorithm to know the final top-N — `trial` is
+    // that set. Update `topNSubs` so the unconstrained → leftover-room zip
+    // operates on the right pool.
+    topNSubs.splice(0, topNSubs.length, ...trial);
   }
 
   const prior = await prisma.userAssignment.findMany({
@@ -1203,12 +1727,17 @@ async function runAssignmentForSlot(prisma: PrismaClient, confId: number, slotId
     if (m.submissionId !== null) fixedAssignments.set(m.userId, m.submissionId);
   }
 
+  // The cascade analysis above may have replaced top-N members; pass the
+  // final (post-cascade) set as the algorithm's submission pool so its
+  // internal top-N selection matches the route's decisions and every
+  // pre-assignment lands in a session it expects to place.
   const input: AssignmentInput = {
-    rooms,
-    submissions: submissions.map((s) => ({ id: s.id, submitter_id: s.submitterId })),
+    rooms: rooms.map((r) => ({ id: r.id, capacity: r.capacity })),
+    submissions: topNSubs.map((s) => ({ id: s.id, submitter_id: s.submitterId })),
     stars, priorAssignments,
     avoidRepeats: slot.unconfAvoidRepeats,
     fixedAssignments,
+    preAssignments,
   };
   const result = assignUnconferenceSlot(input);
 
@@ -1240,6 +1769,11 @@ async function runAssignmentForSlot(prisma: PrismaClient, confId: number, slotId
     placements: result.placements.map((p) => ({ ...p, slot_id: slotId })),
     user_assignments: result.user_assignments.map((a) => ({ ...a, slot_id: slotId })),
     unplaced_users: result.unplaced_users,
+    overlap_exclusions: {
+      rooms: overlapExcludedRooms,
+      submissions: overlapExcludedSubs,
+      user_ids: [...busyUserIds].sort((a, b) => a - b),
+    },
   };
 }
 
@@ -1256,12 +1790,67 @@ async function runMixerForSlot(prisma: PrismaClient, confId: number, slotId: num
   const roomWhere = slot.unconfUseAllRooms
     ? { conferenceId: confId }
     : { conferenceId: confId, id: { in: slot.selectedRooms.map((r) => r.roomId) } };
-  const rooms = await prisma.room.findMany({
-    where: roomWhere, select: { id: true, capacity: true },
+  let rooms = await prisma.room.findMany({
+    where: roomWhere, select: { id: true, capacity: true, name: true },
   });
   const identityRows = await prisma.conferenceIdentity.findMany({
     where: { conferenceId: confId }, select: { id: true },
   });
+
+  // ----- Overlap exclusions (mixer) --------------------------------------
+  //
+  // Mixers have no sessions, so only the room (a) and participant (d)
+  // overlap rules apply. We drop rooms used by overlapping slots and
+  // exclude participants already assigned in overlapping slots.
+  const busyUserIds = new Set<number>();
+  const overlapExcludedRooms: { id: number; name: string }[] = [];
+  {
+    const overlappingSlots = await prisma.agendaSlot.findMany({
+      where: {
+        conferenceId: confId,
+        id: { not: slotId },
+        startsAt: { lt: slot.endsAt },
+        endsAt: { gt: slot.startsAt },
+      },
+      select: { id: true },
+    });
+    const overlappingIds = overlappingSlots.map((s) => s.id);
+    if (overlappingIds.length > 0) {
+      const [overlapPlacements, overlapTracks, overlapAssigns] = await Promise.all([
+        prisma.unconferencePlacement.findMany({
+          where: { slotId: { in: overlappingIds } },
+          select: { roomId: true },
+        }),
+        prisma.trackAssignment.findMany({
+          where: { slotId: { in: overlappingIds } },
+          select: { roomId: true },
+        }),
+        prisma.userAssignment.findMany({
+          where: { slotId: { in: overlappingIds } },
+          select: { userId: true, roomId: true },
+        }),
+      ]);
+      const excludedRoomIds = new Set<number>();
+      for (const p of overlapPlacements) excludedRoomIds.add(p.roomId);
+      for (const t of overlapTracks) excludedRoomIds.add(t.roomId);
+      for (const a of overlapAssigns) {
+        busyUserIds.add(a.userId);
+        if (a.roomId !== null) excludedRoomIds.add(a.roomId);
+      }
+      const roomNameById = new Map(rooms.map((r) => [r.id, r.name]));
+      rooms = rooms.filter((r) => {
+        if (excludedRoomIds.has(r.id)) {
+          overlapExcludedRooms.push({ id: r.id, name: roomNameById.get(r.id) ?? "" });
+          return false;
+        }
+        return true;
+      });
+    }
+  }
+  // Drop busy participants — they're already in an overlapping slot.
+  const eligibleUserIds = identityRows
+    .map((i) => i.id)
+    .filter((id) => !busyUserIds.has(id));
 
   // Resolve the slot's effective mode against the conference default. When
   // exclusive, gather pairings from every OTHER exclusive mixer in the
@@ -1306,7 +1895,8 @@ async function runMixerForSlot(prisma: PrismaClient, confId: number, slotId: num
   }
 
   const result = assignMixerSlot({
-    rooms, userIds: identityRows.map((i) => i.id), seed: slotId, priorPairings,
+    rooms: rooms.map((r) => ({ id: r.id, capacity: r.capacity })),
+    userIds: eligibleUserIds, seed: slotId, priorPairings,
   });
 
   await prisma.$transaction([
@@ -1322,6 +1912,11 @@ async function runMixerForSlot(prisma: PrismaClient, confId: number, slotId: num
   return {
     room_assignments: result.room_assignments.map((a) => ({ ...a, slot_id: slotId })),
     unplaced_users: result.unplaced_users,
+    overlap_exclusions: {
+      rooms: overlapExcludedRooms,
+      submissions: [],
+      user_ids: [...busyUserIds].sort((a, b) => a - b),
+    },
   };
 }
 
@@ -1585,7 +2180,16 @@ const agendaRouter = {
     });
     if (!slot) throw new ORPCError("NOT_FOUND");
     if (slot.type === "unconference") {
-      const r = await runAssignmentForSlot(context.prisma, context.conferenceId, input.slot_id);
+      const excludes = input.exclude_submission_ids && input.exclude_submission_ids.length > 0
+        ? new Set(input.exclude_submission_ids)
+        : undefined;
+      const r = await runAssignmentForSlot(context.prisma, context.conferenceId, input.slot_id, excludes);
+      // Pre-assignment conflicts surface here as a structured result; no
+      // notifications, no DB writes — the moderator resolves the conflict
+      // and re-runs.
+      if ("kind" in r && r.kind === "conflict") {
+        return r;
+      }
       // Notify each assigned participant. The "manual" picks (preserved across
       // re-runs) re-notify too — harmless and lets the participant know the
       // round was finalized.

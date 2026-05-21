@@ -9,11 +9,12 @@ import {
   Sheet,
   Spinner,
   Stack,
+  Text,
   TextInput,
   Textarea,
 } from "../../design-system";
 import { api, ApiError, errorCode } from "../../api";
-import type { Role, Submission } from "../types";
+import type { Role, Room, Submission } from "../types";
 import { parseLabels, submitterLabel } from "../helpers";
 import { EmptyState } from "../ui/EmptyState";
 import { Pill } from "../ui/Pill";
@@ -42,10 +43,28 @@ export function SessionsTab({
 }) {
   const isMod = role === "owner" || role === "moderator";
   const [subs, setSubs] = useState<Submission[] | null>(null);
+  // Mods need rooms for the "pre-assign to room" dropdown; everyone (mods +
+  // participants) needs them to derive the available room-feature tags
+  // shown in the "Required room features" picker — so we fetch unconditionally.
+  const [rooms, setRooms] = useState<Room[]>([]);
+  useEffect(() => {
+    api.rooms.list({ slug }).then(setRooms).catch(() => setRooms([]));
+  }, [slug]);
+  // Distinct tag values across all rooms in this conference. The picker
+  // only offers these — selecting a tag no room has would just make the
+  // session unplaceable.
+  const availableRoomTags = Array.from(
+    new Set(rooms.flatMap((r) => r.tags)),
+  ).sort();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [tags, setTags] = useState("");
   const [requirements, setRequirements] = useState("");
+  // Required room features chosen at create time. Set of tag values picked
+  // from the conference's available room tags. Persisted as the session's
+  // `room_requirements` — the algorithm filters candidate rooms to those
+  // whose tag set is a superset of this selection.
+  const [roomRequirements, setRoomRequirements] = useState<string[]>([]);
   const [adding, setAdding] = useState(false);
   const [filter, setFilter] = useState<SessionFilter>(
     isMod ? "all" : "published",
@@ -86,11 +105,13 @@ export function SessionsTab({
         description,
         tags: parseLabels(tags),
         requirements: parseLabels(requirements),
+        room_requirements: roomRequirements,
       });
       setTitle("");
       setDescription("");
       setTags("");
       setRequirements("");
+      setRoomRequirements([]);
       setAdding(false);
       setSubmitNotice(
         isMod
@@ -226,6 +247,11 @@ export function SessionsTab({
             value={requirements}
             onChange={(e) => setRequirements(e.target.value)}
           />
+          <RoomTagPicker
+            availableTags={availableRoomTags}
+            selected={roomRequirements}
+            onChange={setRoomRequirements}
+          />
           <Stack direction="row" gap="condensed">
             <Button type="submit" variant="primary">
               Submit
@@ -276,6 +302,11 @@ export function SessionsTab({
               canEdit={canEdit(s)}
               canDelete={canEdit(s)}
               isMod={isMod}
+              roomName={
+                s.pre_assigned_room_id === null
+                  ? null
+                  : rooms.find((r) => r.id === s.pre_assigned_room_id)?.name ?? null
+              }
               onStar={() => toggleStar(s)}
               onEdit={() => setEditingId(s.id)}
               onDelete={() => deleteSubmission(s)}
@@ -297,6 +328,8 @@ export function SessionsTab({
             submission={editingSub}
             isMod={isMod}
             conferenceDefaultMaxPlacements={submissionMaxPlacementsDefault}
+            rooms={rooms}
+            availableRoomTags={availableRoomTags}
             onCancel={() => setEditingId(null)}
             onSaved={async () => {
               setEditingId(null);
@@ -325,6 +358,7 @@ function SessionCard({
   canEdit,
   canDelete,
   isMod,
+  roomName,
   onStar,
   onEdit,
   onDelete,
@@ -334,6 +368,9 @@ function SessionCard({
   canEdit: boolean;
   canDelete: boolean;
   isMod: boolean;
+  /** Pre-assigned room name when set, used to render the pinned badge.
+   * Null when the submission isn't pinned or the room isn't loaded. */
+  roomName: string | null;
   onStar: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -375,6 +412,17 @@ function SessionCard({
           <Badge variant="default">
             {s.manually_finished ? "finished (manual)" : "finished"}
           </Badge>
+        )}
+        {roomName && (
+          <Badge variant="attention">pinned: {roomName}</Badge>
+        )}
+        {s.room_requirements.length > 0 && (
+          <Badge variant="default">
+            needs: {s.room_requirements.join(", ")}
+          </Badge>
+        )}
+        {s.allow_overlapping_placements && (
+          <Badge variant="default">allows overlap</Badge>
         )}
         <Pill>★ {s.star_count}</Pill>
         {submitterLabel(s) && (
@@ -546,6 +594,8 @@ function SessionEditForm({
   submission,
   isMod,
   conferenceDefaultMaxPlacements,
+  rooms,
+  availableRoomTags,
   onCancel,
   onSaved,
 }: {
@@ -553,6 +603,12 @@ function SessionEditForm({
   submission: Submission;
   isMod: boolean;
   conferenceDefaultMaxPlacements: number | null;
+  /** Conference rooms — only used to render the mod-only pre-assignment
+   * dropdown. Empty for participants (the dropdown is gated behind isMod). */
+  rooms: Room[];
+  /** Distinct tag values across all conference rooms. The "required room
+   * features" picker offers exactly these — no free text. */
+  availableRoomTags: string[];
   onCancel: () => void;
   onSaved: () => Promise<void> | void;
 }) {
@@ -562,6 +618,14 @@ function SessionEditForm({
   const [requirements, setRequirements] = useState(
     submission.requirements.join(", "),
   );
+  // Editable for participants while the session is still "submitted", and
+  // for mods regardless of status. The submission becoming "published"
+  // effectively freezes this set for the submitter via the existing
+  // already_decided gate; we mirror that here.
+  const [roomRequirements, setRoomRequirements] = useState<string[]>(
+    submission.room_requirements,
+  );
+  const requirementsLocked = !isMod && submission.status !== "submitted";
   // Mod-only state. `inherit` means "use the conference default" (stored as
   // null on the row); `once` and `limited` set an explicit per-submission cap.
   const [capMode, setCapMode] = useState<"inherit" | "once" | "limited">(() => {
@@ -576,6 +640,19 @@ function SessionEditForm({
   );
   const [manuallyFinished, setManuallyFinished] = useState(
     submission.manually_finished,
+  );
+  // Allow this session (and its submitter) to be scheduled in multiple
+  // overlapping slots — useful for recurring workshops. Default off
+  // enforces the strict no-overlap rule.
+  const [allowOverlap, setAllowOverlap] = useState(
+    submission.allow_overlapping_placements,
+  );
+  // Pre-assigned room. "" means "auto" (no pin); otherwise the room id as a
+  // string (Select returns string values).
+  const [preAssignedRoomId, setPreAssignedRoomId] = useState<string>(
+    submission.pre_assigned_room_id === null
+      ? ""
+      : String(submission.pre_assigned_room_id),
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -594,6 +671,9 @@ function SessionEditForm({
         requirements: string[];
         max_placements?: number | null;
         manually_finished?: boolean;
+        pre_assigned_room_id?: number | null;
+        allow_overlapping_placements?: boolean;
+        room_requirements?: string[];
       } = {
         slug,
         id: submission.id,
@@ -602,6 +682,11 @@ function SessionEditForm({
         tags: parseLabels(tags),
         requirements: parseLabels(requirements),
       };
+      // Only send room_requirements when the field is editable, so the
+      // server never sees a stale value from a frozen edit screen.
+      if (!requirementsLocked) {
+        patch.room_requirements = roomRequirements;
+      }
       if (isMod) {
         let next: number | null;
         if (capMode === "inherit") next = null;
@@ -617,6 +702,9 @@ function SessionEditForm({
         }
         patch.max_placements = next;
         patch.manually_finished = manuallyFinished;
+        patch.pre_assigned_room_id =
+          preAssignedRoomId === "" ? null : Number.parseInt(preAssignedRoomId, 10);
+        patch.allow_overlapping_placements = allowOverlap;
       }
       await api.submissions.update(patch);
       await onSaved();
@@ -661,6 +749,17 @@ function SessionEditForm({
           value={requirements}
           onChange={(e) => setRequirements(e.target.value)}
         />
+        <RoomTagPicker
+          availableTags={availableRoomTags}
+          selected={roomRequirements}
+          onChange={setRoomRequirements}
+          disabled={requirementsLocked}
+        />
+        {requirementsLocked && (
+          <Text muted>
+            Required room features can't be changed after publishing.
+          </Text>
+        )}
         {isMod && (
           <>
             <Select
@@ -708,6 +807,31 @@ function SessionEditForm({
                 regardless of count
               </span>
             </label>
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 13,
+                color: "var(--fgColor-default, var(--uncon-fg, inherit))",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={allowOverlap}
+                onChange={(e) => setAllowOverlap(e.target.checked)}
+              />
+              Allow placement in overlapping slots
+              <span
+                style={{
+                  color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
+                  fontSize: 12,
+                }}
+              >
+                — let this session run (or its submitter host) in slots
+                whose times overlap. Use for recurring workshops.
+              </span>
+            </label>
             <div
               style={{
                 fontSize: 12,
@@ -716,6 +840,28 @@ function SessionEditForm({
             >
               Currently placed {submission.placement_count}{" "}
               {submission.placement_count === 1 ? "time" : "times"}.
+            </div>
+            <Select
+              label="Pre-assign to room"
+              value={preAssignedRoomId}
+              onChange={(e) => setPreAssignedRoomId(e.target.value)}
+              options={[
+                { value: "", label: "Auto (assign to any room)" },
+                ...rooms.map((r) => ({
+                  value: String(r.id),
+                  label: `${r.name} (capacity ${r.capacity})`,
+                })),
+              ]}
+            />
+            <div
+              style={{
+                fontSize: 12,
+                color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
+              }}
+            >
+              Pre-assigned sessions always go to their pinned room in any
+              unconference slot they land in. The slot's assignment will be
+              blocked if two pre-assigned sessions compete for the same room.
             </div>
           </>
         )}
@@ -728,6 +874,81 @@ function SessionEditForm({
           </Button>
         </Stack>
       </Form>
+    </Stack>
+  );
+}
+
+// Multi-tag picker for "required room features". Only renders tags that
+// actually exist on at least one room in the conference; selecting a tag
+// no room carries would make the session unplaceable, so we don't offer
+// free-text input. Renders a notice when the conference has no room tags
+// at all (the picker is a no-op until a mod tags some rooms).
+function RoomTagPicker({
+  availableTags, selected, onChange, disabled,
+}: {
+  availableTags: string[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+  disabled?: boolean;
+}) {
+  const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
+  if (availableTags.length === 0) {
+    return (
+      <Stack gap="condensed">
+        <div style={{ fontSize: 13, fontWeight: 500 }}>Required room features</div>
+        <Text muted>
+          No room has any feature tags yet. Ask a moderator to tag rooms
+          (e.g. "projector", "whiteboard") in the Rooms tab to enable this.
+        </Text>
+      </Stack>
+    );
+  }
+  const selectedSet = new Set(selected);
+  function toggle(tag: string) {
+    if (disabled) return;
+    if (selectedSet.has(tag)) onChange(selected.filter((t) => t !== tag));
+    else onChange([...selected, tag]);
+  }
+  return (
+    <Stack gap="condensed">
+      <div style={{ fontSize: 13, fontWeight: 500 }}>Required room features</div>
+      <div style={{ fontSize: 12, color: muted }}>
+        The assigned room must have all selected features. Leave empty if any
+        room works.
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {availableTags.map((tag) => {
+          const on = selectedSet.has(tag);
+          return (
+            <label
+              key={tag}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                padding: "4px 8px",
+                borderRadius: 999,
+                fontSize: 12,
+                border: "1px solid var(--borderColor-default, var(--uncon-border, #d0d7de))",
+                background: on
+                  ? "var(--bgColor-accent-muted, rgba(9,105,218,0.15))"
+                  : "var(--bgColor-default, transparent)",
+                cursor: disabled ? "not-allowed" : "pointer",
+                opacity: disabled ? 0.6 : 1,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={on}
+                disabled={disabled}
+                onChange={() => toggle(tag)}
+                style={{ margin: 0 }}
+              />
+              {tag}
+            </label>
+          );
+        })}
+      </div>
     </Stack>
   );
 }

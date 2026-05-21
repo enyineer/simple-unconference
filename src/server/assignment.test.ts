@@ -18,6 +18,7 @@ function input(parts: {
   priorAssignments?: AssignmentInput["priorAssignments"];
   avoidRepeats?: boolean;
   fixedAssignments?: AssignmentInput["fixedAssignments"];
+  preAssignments?: AssignmentInput["preAssignments"];
 }): AssignmentInput {
   return {
     rooms: parts.rooms ?? [],
@@ -26,6 +27,7 @@ function input(parts: {
     priorAssignments: parts.priorAssignments,
     avoidRepeats: parts.avoidRepeats,
     fixedAssignments: parts.fixedAssignments,
+    preAssignments: parts.preAssignments,
   };
 }
 
@@ -1123,5 +1125,127 @@ describe("pairKey", () => {
   test("is order-independent and canonical (smaller id first)", () => {
     expect(pairKey(3, 7)).toBe("3:7");
     expect(pairKey(7, 3)).toBe("3:7");
+  });
+});
+
+describe("assignUnconferenceSlot — pre-assignments", () => {
+  test("pre-assigned submission gets its pinned room regardless of star count", () => {
+    // Submission 100 has more stars but submission 200 is pinned to room 1
+    // (the largest). Without the pin, 100 would win room 1.
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 50 }, { id: 2, capacity: 10 }],
+      submissions: [{ id: 100 }, { id: 200 }],
+      stars: new Map([
+        [1, new Set([100])],
+        [2, new Set([100])],
+        [3, new Set([100])],
+        [4, new Set([200])],
+      ]),
+      preAssignments: new Map([[200, 1]]),
+    }));
+
+    const placeFor = (sid: number) =>
+      result.placements.find((p) => p.submission_id === sid)?.room_id;
+    expect(placeFor(200)).toBe(1); // pinned wins biggest room
+    expect(placeFor(100)).toBe(2); // popular falls back to smaller
+  });
+
+  test("pre-assigned submission still gets users via the normal flow", () => {
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 5 }, { id: 2, capacity: 5 }],
+      submissions: [{ id: 100 }, { id: 200 }],
+      stars: new Map([
+        [1, new Set([200])],
+        [2, new Set([200])],
+        [3, new Set([100])],
+      ]),
+      preAssignments: new Map([[200, 1]]),
+    }));
+
+    // Both submissions placed; users distributed by their stars.
+    expect(result.placements.find((p) => p.submission_id === 200)?.room_id).toBe(1);
+    expect(result.user_assignments).toContainEqual(
+      expect.objectContaining({ user_id: 1, submission_id: 200 }),
+    );
+    expect(result.user_assignments).toContainEqual(
+      expect.objectContaining({ user_id: 3, submission_id: 100 }),
+    );
+  });
+
+  test("pre-assignment outside the submission pool is ignored (no throw)", () => {
+    // Submission 999 isn't in the eligible pool — silently dropped by the
+    // algorithm. The route layer wouldn't pass this in practice, but the
+    // algorithm tolerates stale pins so a deleted/excluded submission's pin
+    // doesn't crash the slot.
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 10 }],
+      submissions: [{ id: 100 }],
+      stars: new Map([[1, new Set([100])]]),
+      preAssignments: new Map([[999, 1]]),
+    }));
+
+    expect(result.placements).toHaveLength(1);
+    expect(result.placements[0]!.submission_id).toBe(100);
+    expect(result.placements[0]!.room_id).toBe(1);
+  });
+
+  test("throws when two pre-assignments target the same room (caller bug)", () => {
+    // The route layer's conflict gate prevents this from happening in
+    // production, but the algorithm enforces the invariant defensively so
+    // a regression surfaces loudly rather than producing a degenerate result.
+    expect(() => assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 10 }, { id: 2, capacity: 10 }],
+      submissions: [{ id: 100 }, { id: 200 }],
+      stars: new Map(),
+      preAssignments: new Map([[100, 1], [200, 1]]),
+    }))).toThrow(/conflict/);
+  });
+
+  test("throws when pre-assignment room isn't in rooms input (caller bug)", () => {
+    expect(() => assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 10 }],
+      submissions: [{ id: 100 }],
+      stars: new Map(),
+      preAssignments: new Map([[100, 99]]),
+    }))).toThrow(/not in the slot's room set/);
+  });
+
+  test("pin on a session outside top-N is silently dropped", () => {
+    // 1 room, 2 subs. Top-N = [100] (more stars). Sub 200 is pinned to
+    // room 1, but it doesn't make the cut — pin is ignored, and sub 100
+    // (the popular one) takes the room. No conflict raised: stars decide
+    // placement, not pins.
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 10 }],
+      submissions: [{ id: 100 }, { id: 200 }],
+      stars: new Map([
+        [1, new Set([100])],
+        [2, new Set([100])],
+        [3, new Set([200])],
+      ]),
+      preAssignments: new Map([[200, 1]]),
+    }));
+
+    expect(result.placements).toHaveLength(1);
+    expect(result.placements[0]!.submission_id).toBe(100);
+    expect(result.placements[0]!.room_id).toBe(1);
+  });
+
+  test("pinned submitter still hosts their own session", () => {
+    // Submission 200 is pinned to room 1; user 9 is its submitter and gets
+    // pinned as host even when they didn't star it.
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 5 }, { id: 2, capacity: 5 }],
+      submissions: [{ id: 100 }, { id: 200, submitter_id: 9 }],
+      stars: new Map([
+        [9, new Set()],
+        [1, new Set([100])],
+      ]),
+      preAssignments: new Map([[200, 1]]),
+    }));
+
+    expect(result.user_assignments).toContainEqual(
+      expect.objectContaining({ user_id: 9, submission_id: 200 }),
+    );
   });
 });

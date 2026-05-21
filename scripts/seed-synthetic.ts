@@ -209,6 +209,14 @@ async function main() {
     requirements?: string[];
     maxPlacements?: number | null; // undefined = inherit default (=1)
     manuallyFinished?: boolean;
+    // --- assignment controls (mod-set) -------------------------------------
+    // Mod pin: the room name to pin this submission to. Resolved against the
+    // already-created `rooms` array at insert time.
+    preAssignedRoomName?: string;
+    // Required room features (tag values). Must match an existing room tag.
+    roomRequirements?: string[];
+    // Lets the session be placed in overlapping slots (recurring workshops).
+    allowOverlappingPlacements?: boolean;
   };
   const submissionsSpec: SubSpec[] = [
     { title: "Modern TypeScript in 2026", submitter: "alice@example.com",
@@ -265,11 +273,43 @@ async function main() {
     { title: "10x developer manifesto", submitter: "felix@example.com",
       description: "(do not approve)",
       status: "rejected", tags: ["talk"] },
+
+    // ----- Demo: conflict-triggering submissions (for testing the resolve
+    // panel UI). These are scoped to the "Conflict demo" unconference slot
+    // created below; running that slot's assignment will surface both a
+    // `duplicate_room` conflict (two sessions pinned to Main Hall) and an
+    // `unsatisfiable_requirements` conflict (a session needing projector +
+    // whiteboard whose only matching room is also pinned). The "Recurring
+    // Workshop" submission has `allowOverlappingPlacements: true` so you
+    // can verify the "allows overlap" badge + behavior.
+    { title: "Demo: Live Coding Showcase", submitter: "alice@example.com",
+      description: "Pinned to Main Hall (will collide with the next demo session).",
+      status: "published", tags: ["demo"],
+      preAssignedRoomName: "Main Hall" },
+    { title: "Demo: Keynote Encore", submitter: "bob@example.com",
+      description: "Also pinned to Main Hall — triggers a duplicate-room conflict.",
+      status: "published", tags: ["demo"],
+      preAssignedRoomName: "Main Hall" },
+    { title: "Demo: Multimedia Workshop", submitter: "gabi@example.com",
+      description: "Needs both projector AND whiteboard. Only Workshop A satisfies that — and Workshop A is pinned to another session in the demo, so this one will surface as `unsatisfiable_requirements`.",
+      status: "published", tags: ["demo"],
+      roomRequirements: ["projector", "whiteboard"] },
+    { title: "Demo: Pinned to Workshop A", submitter: "carla@example.com",
+      description: "Pinned to Workshop A so the Multimedia Workshop's tag matching can't find a free projector+whiteboard room.",
+      status: "published", tags: ["demo"],
+      preAssignedRoomName: "Workshop A" },
+    { title: "Demo: Recurring Workshop", submitter: "daniel@example.com",
+      description: "Has `allow_overlapping_placements` on — can be scheduled in overlapping slots.",
+      status: "published", tags: ["demo"], maxPlacements: null,
+      allowOverlappingPlacements: true },
   ];
 
   const submissions: { id: number; title: string; submitterId: number; status: string }[] = [];
   for (const s of submissionsSpec) {
     const submitter = peopleByEmail.get(s.submitter)!;
+    const pinnedRoomId = s.preAssignedRoomName
+      ? roomByName(s.preAssignedRoomName).id
+      : null;
     const row = await prisma.submission.create({
       data: {
         conferenceId: conf.id,
@@ -279,9 +319,14 @@ async function main() {
         status: s.status,
         maxPlacements: s.maxPlacements,
         manuallyFinished: s.manuallyFinished ?? false,
+        preAssignedRoomId: pinnedRoomId,
+        allowOverlappingPlacements: s.allowOverlappingPlacements ?? false,
         tags: s.tags ? { create: s.tags.map((value) => ({ value })) } : undefined,
         requirements: s.requirements
           ? { create: s.requirements.map((value) => ({ value })) }
+          : undefined,
+        roomRequirements: s.roomRequirements
+          ? { create: s.roomRequirements.map((value) => ({ value })) }
           : undefined,
       },
     });
@@ -440,8 +485,13 @@ async function main() {
     },
   });
   const publishedSubs = submissions.filter((s) => s.status === "published");
+  // Demo (conflict-trigger) submissions live in a dedicated slot below — keep
+  // them out of the regular unconference rounds so the main demo data still
+  // produces clean placements.
+  const isDemoSub = (title: string) => title.startsWith("Demo: ");
   const eligibleSubs1 = publishedSubs
-    .filter((s) => s.title !== "Vim vs Emacs: a fair fight"); // manually-finished is excluded
+    .filter((s) => s.title !== "Vim vs Emacs: a fair fight") // manually-finished
+    .filter((s) => !isDemoSub(s.title));
   const stars1 = new Map<number, Set<number>>();
   for (const [email, titles] of starGraph) {
     const uid = peopleByEmail.get(email)!.id;
@@ -569,6 +619,42 @@ async function main() {
       data: { manual: true },
     });
   }
+
+  // S6.5 — Conflict-demo unconference slot (intentionally NOT pre-run so
+  // moderators can click "Run assignment" and exercise the resolve panel).
+  //
+  // Scoped to the "Demo: …" submissions seeded above:
+  //   - Two sessions pinned to Main Hall  → duplicate_room conflict.
+  //   - "Demo: Pinned to Workshop A"      → claims Workshop A.
+  //   - "Demo: Multimedia Workshop"       → needs projector+whiteboard
+  //     (only Workshop A satisfies both, and it's pinned) →
+  //     unsatisfiable_requirements conflict.
+  //   - "Demo: Recurring Workshop"        → flagged allow-overlap (mostly
+  //     here so the badge shows somewhere).
+  const demoSubs = submissions.filter((s) => s.title.startsWith("Demo: "));
+  const demoRoomSet = [
+    roomByName("Main Hall"),
+    roomByName("Workshop A"),
+    roomByName("Workshop B"),
+    roomByName("Lab 1"),
+  ];
+  await prisma.agendaSlot.create({
+    data: {
+      conferenceId: conf.id, type: "unconference",
+      title: "Unconference round 3 (conflict demo)",
+      description: "Click 'Run assignment' to surface a duplicate-room conflict and an unmet-requirements conflict — built for testing the resolve panel.",
+      startsAt: dayInTz(D1, 15, 0), endsAt: dayInTz(D1, 16, 0),
+      unconfUseAllRooms: false,
+      unconfUseAllSubmissions: false,
+      unconfAvoidRepeats: true,
+      selectedRooms: {
+        create: demoRoomSet.map((r) => ({ roomId: r.id })),
+      },
+      selectedSubmissions: {
+        create: demoSubs.map((s) => ({ submissionId: s.id })),
+      },
+    },
+  });
 
   // S7 — Coffee mixer #2 (mixer, NOT YET RUN — moderator UI shows "run mixer")
   await prisma.agendaSlot.create({
