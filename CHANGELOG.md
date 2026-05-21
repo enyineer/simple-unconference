@@ -1,5 +1,15 @@
 # simple-unconference
 
+## 0.6.1
+
+### Patch Changes
+
+- [`8a2b12b`](https://github.com/enyineer/simple-unconference/commit/8a2b12bad53b8a092fed3d8ffa519354315d9410) Thanks [@enyineer](https://github.com/enyineer)! - Fix Turnstile race where the form rejected a verified widget with "Please complete the verification challenge before continuing."
+
+  The previous flow stored the token in React state via the widget's `callback`, then read that state at submit time. If the user clicked the submit button between Cloudflare painting the green checkmark and the callback landing in React state, the submit handler saw an empty token and short-circuited with the captcha error.
+
+  `TurnstileWidget` is now a `forwardRef` exposing a `TurnstileWidgetHandle` with `getResponse()` (delegates to `window.turnstile.getResponse(widgetId)`) and `reset()`. `Login.tsx` and `Join.tsx` read the token straight from the widget at submit time instead of from React state, and call `reset()` on error to mint a fresh single-use token for the retry.
+
 ## 0.6.0
 
 ### Minor Changes
@@ -40,7 +50,7 @@
   - **Owner-side quota hint** on the global Conferences page. Counts conferences the viewer owns against `MAX_CONFERENCES_PER_USER` (now exposed via `config.get`), with the same yellow-at-80% / red-at-cap colour treatment.
   - **Per-user session cap visibility** on the Sessions tab. Shows "X of N session submissions used" using a new `my_session_count` field on `conferences.get` — counts ALL the viewer's submissions including rejected and finished ones, since those occupy quota slots but aren't returned by `submissions.list` for non-mods. Stays accurate across creates/deletes via an `onSessionMutated` refresh hook.
 
-  Net result: nobody hits a wall as a surprise; the first quota_exceeded is the _third_ signal you've had a chance to act on.
+  Net result: nobody hits a wall as a surprise; the first quota*exceeded is the \_third* signal you've had a chance to act on.
 
 ## 0.5.0
 
