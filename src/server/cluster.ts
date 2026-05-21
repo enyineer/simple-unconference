@@ -80,6 +80,20 @@ export interface WorkerCountInput {
 export interface WorkerCountDecision {
   count: number;
   reason: string;
+  // Operator-facing warnings: emitted when a manual `WORKERS=<N>` override
+  // exceeds what the auto rule would have picked given the same cgroup
+  // limits. Each string is meant to be printed verbatim at startup.
+  warnings: string[];
+}
+
+// CPU + memory "budgets" — how many workers the auto rule would allow given
+// these limits, ignoring the global HARD_CAP. Used both by auto mode and by
+// the warning logic for manual mode.
+function autoBudgets(limits: CgroupLimits): { byCpu: number | null; byMem: number | null } {
+  const byCpu = limits.cores === null ? null : Math.max(1, Math.round(limits.cores));
+  const memMiB = limits.memoryBytes === null ? null : limits.memoryBytes / (1024 * 1024);
+  const byMem = memMiB === null ? null : Math.max(1, Math.floor(memMiB / PER_WORKER_MIB));
+  return { byCpu, byMem };
 }
 
 // Decides how many workers to spawn. Pure — call from tests with synthetic
@@ -87,33 +101,65 @@ export interface WorkerCountDecision {
 export function computeWorkerCount(input: WorkerCountInput): WorkerCountDecision {
   const raw = (input.setting ?? "").trim();
   if (raw === "" || raw === "1") {
-    return { count: 1, reason: "single-process mode (WORKERS=1)" };
+    return { count: 1, reason: "single-process mode (WORKERS=1)", warnings: [] };
   }
 
   if (raw.toLowerCase() !== "auto") {
     const n = Number(raw);
     if (!Number.isInteger(n) || n < 1) {
-      return { count: 1, reason: `WORKERS="${raw}" is not a positive integer; using 1` };
+      return {
+        count: 1,
+        reason: `WORKERS="${raw}" is not a positive integer; using 1`,
+        warnings: [],
+      };
     }
     const capped = Math.min(n, HARD_CAP);
     const note = capped < n ? ` (capped from ${n} to HARD_CAP=${HARD_CAP})` : "";
-    return { count: capped, reason: `manual override (WORKERS=${n})${note}` };
+
+    // Warn when the manual count exceeds what auto-sizing would have picked.
+    // We can only warn when the relevant cgroup info is actually available;
+    // outside a container we don't second-guess the operator.
+    const { byCpu, byMem } = autoBudgets(input.limits);
+    const warnings: string[] = [];
+    if (byCpu !== null && capped > byCpu) {
+      const coreStr = input.limits.cores!.toFixed(2);
+      warnings.push(
+        `WORKERS=${capped} exceeds CPU budget (~${byCpu} worker(s) per ${coreStr} core(s) detected). ` +
+          `Workers will contend for CPU and throughput typically degrades vs. ${byCpu} worker(s). ` +
+          `Either raise resources.limits.cpu or lower WORKERS.`,
+      );
+    }
+    if (byMem !== null && capped > byMem) {
+      const memMiB = Math.round(input.limits.memoryBytes! / (1024 * 1024));
+      warnings.push(
+        `WORKERS=${capped} exceeds memory budget (~${byMem} worker(s) fit in ${memMiB}MiB at ${PER_WORKER_MIB}MiB baseline each). ` +
+          `Later workers may OOM-kill at startup. ` +
+          `Either raise resources.limits.memory or lower WORKERS.`,
+      );
+    }
+    return { count: capped, reason: `manual override (WORKERS=${n})${note}`, warnings };
   }
 
   // auto
   const { cores, memoryBytes } = input.limits;
   if (cores === null && memoryBytes === null) {
-    return { count: 1, reason: "WORKERS=auto but no cgroup limits detected; using 1" };
+    return {
+      count: 1,
+      reason: "WORKERS=auto but no cgroup limits detected; using 1",
+      warnings: [],
+    };
   }
-  const byCpu = cores === null ? HARD_CAP : Math.max(1, Math.round(cores));
-  const memMiB = memoryBytes === null ? null : memoryBytes / (1024 * 1024);
-  const byMem = memMiB === null ? HARD_CAP : Math.max(1, Math.floor(memMiB / PER_WORKER_MIB));
-  const count = Math.min(byCpu, byMem, HARD_CAP);
+  const { byCpu, byMem } = autoBudgets(input.limits);
+  const cpuBudget = byCpu ?? HARD_CAP;
+  const memBudget = byMem ?? HARD_CAP;
+  const count = Math.min(cpuBudget, memBudget, HARD_CAP);
   const cpuStr = cores === null ? "unlimited" : `${cores.toFixed(2)} core(s)`;
+  const memMiB = memoryBytes === null ? null : memoryBytes / (1024 * 1024);
   const memStr = memMiB === null ? "unlimited" : `${Math.round(memMiB)}MiB`;
   return {
     count,
-    reason: `auto: cpu=${cpuStr} (->${byCpu}) mem=${memStr} (->${byMem}@${PER_WORKER_MIB}MiB/w) cap=${HARD_CAP}`,
+    reason: `auto: cpu=${cpuStr} (->${cpuBudget}) mem=${memStr} (->${memBudget}@${PER_WORKER_MIB}MiB/w) cap=${HARD_CAP}`,
+    warnings: [],
   };
 }
 
@@ -264,6 +310,7 @@ async function main(): Promise<void> {
   const limits = readCgroupLimits();
   const decision = computeWorkerCount({ setting: process.env.WORKERS, limits });
   console.log(`[cluster] WORKERS=${process.env.WORKERS ?? "<unset>"} -> ${decision.count} (${decision.reason})`);
+  for (const w of decision.warnings) console.warn(`[cluster] WARNING: ${w}`);
 
   if (decision.count === 1) {
     // Skip fork: import + call directly so there's no extra process.

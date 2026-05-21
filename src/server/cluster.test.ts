@@ -130,6 +130,72 @@ describe("computeWorkerCount", () => {
   });
 });
 
+describe("computeWorkerCount warnings (manual oversubscription)", () => {
+  test("no warnings when WORKERS=1 regardless of resources", () => {
+    const d = computeWorkerCount({ setting: "1", limits: { cores: 0.1, memoryBytes: 64 * MiB } });
+    expect(d.warnings).toEqual([]);
+  });
+
+  test("no warnings on auto (auto already respects budgets)", () => {
+    const d = computeWorkerCount({
+      setting: "auto",
+      limits: { cores: 0.5, memoryBytes: 256 * MiB },
+    });
+    expect(d.warnings).toEqual([]);
+  });
+
+  test("no warnings when no cgroup info is available (can't second-guess)", () => {
+    const d = computeWorkerCount({ setting: "4", limits: unlimited });
+    expect(d.count).toBe(4);
+    expect(d.warnings).toEqual([]);
+  });
+
+  test("warns when manual count exceeds CPU budget", () => {
+    // 1 core detected; user asked for 4 workers.
+    const d = computeWorkerCount({
+      setting: "4",
+      limits: { cores: 1, memoryBytes: 4 * 1024 * MiB }, // plenty of mem
+    });
+    expect(d.count).toBe(4);
+    expect(d.warnings.length).toBe(1);
+    expect(d.warnings[0]).toContain("exceeds CPU budget");
+    expect(d.warnings[0]).toContain("WORKERS=4");
+  });
+
+  test("warns when manual count exceeds memory budget", () => {
+    // Plenty of CPU; only 384MiB memory => 2 worker baseline; user asked 4.
+    const d = computeWorkerCount({
+      setting: "4",
+      limits: { cores: 16, memoryBytes: 384 * MiB },
+    });
+    expect(d.count).toBe(4);
+    expect(d.warnings.length).toBe(1);
+    expect(d.warnings[0]).toContain("exceeds memory budget");
+    expect(d.warnings[0]).toContain("384MiB");
+  });
+
+  test("emits both warnings when both budgets are exceeded", () => {
+    const d = computeWorkerCount({
+      setting: "8",
+      limits: { cores: 1, memoryBytes: 512 * MiB },
+    });
+    expect(d.count).toBe(8);
+    expect(d.warnings.length).toBe(2);
+    expect(d.warnings.some((w) => w.includes("CPU budget"))).toBe(true);
+    expect(d.warnings.some((w) => w.includes("memory budget"))).toBe(true);
+  });
+
+  test("no warning when manual count matches the auto budget exactly", () => {
+    // round(2) = 2 by CPU; 2GiB/192 = 10 by mem; user picks 2 = no oversub.
+    const d = computeWorkerCount({
+      setting: "2",
+      limits: { cores: 2, memoryBytes: 2 * 1024 * MiB },
+    });
+    expect(d.count).toBe(2);
+    expect(d.warnings).toEqual([]);
+  });
+});
+
 describe("readCgroupLimits (parser, with injected reader)", () => {
   test("parses cgroup v2 cpu.max + memory.max", () => {
     const fake = (p: string) => {
