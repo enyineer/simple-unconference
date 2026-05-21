@@ -53,6 +53,25 @@ describe("auth flow (global owner)", () => {
       c2.rpc.auth.login({ email: "carol@example.com", password: "wrong" }),
     ).rejects.toBeInstanceOf(ORPCError);
   });
+
+  test("deleteSelf removes the calling owner, clears cookie, and refuses without auth", async () => {
+    // Anonymous client cannot call deleteSelf at all.
+    const anon = new Client(ctx.app);
+    await expect(anon.rpc.auth.deleteSelf()).rejects.toBeInstanceOf(ORPCError);
+
+    // Sign up, verify the account exists, then delete it.
+    const c = new Client(ctx.app);
+    await signupAndLogin(c, "ephemeral@example.com");
+    await c.rpc.auth.me();
+    await c.rpc.auth.deleteSelf();
+
+    // Same client: cookie is cleared, so /me is unauthorized.
+    await expect(c.rpc.auth.me()).rejects.toBeInstanceOf(ORPCError);
+
+    // The email is free again — a fresh signup with the same email succeeds.
+    const c2 = new Client(ctx.app);
+    await signupAndLogin(c2, "ephemeral@example.com");
+  });
 });
 
 describe("public config + DISABLE_SIGNUP", () => {

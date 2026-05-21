@@ -259,6 +259,17 @@ const authRouter = {
   me: authed.auth.me.handler(async ({ context }) => {
     return toUserOut(context.user);
   }),
+
+  // Self-service deletion of the calling owner's User row. Sessions cascade
+  // (FK onDelete: Cascade), so all the user's other devices are signed out.
+  // Conferences they still own keep existing — ownerUserId is SetNull at
+  // the FK level. Callers that want a fully clean slate should delete their
+  // conferences via conferences.delete() first.
+  deleteSelf: authed.auth.deleteSelf.handler(async ({ context }) => {
+    await context.prisma.user.delete({ where: { id: context.user.id } });
+    clearOwnerCookie(context.responseHeaders);
+    return { ok: true as const };
+  }),
 };
 
 // =========================================================================

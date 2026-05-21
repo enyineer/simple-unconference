@@ -423,6 +423,11 @@ export const contract = {
     login: oc.input(LoginSchema).output(type<UserOut>()),
     logout: oc.output(type<Ok>()),
     me: oc.output(type<UserOut>()),
+    // Self-service account deletion. Removes the calling owner's User row;
+    // any conferences they still own become orphaned (ownerUserId -> null
+    // per the schema's SetNull rule). Cookies are cleared. Used by the
+    // loadtest teardown to leave instances clean after runs.
+    deleteSelf: oc.output(type<Ok>()),
   },
   conferences: {
     list: oc.output(type<ConfSummary[]>()),

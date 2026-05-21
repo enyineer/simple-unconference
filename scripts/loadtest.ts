@@ -32,10 +32,17 @@ interface Args {
   users: number;
   durationMs: number;
   thinkMs: number;
+  cleanup: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-  const out: Args = { base: "http://localhost:3000", users: 50, durationMs: 30_000, thinkMs: 0 };
+  const out: Args = {
+    base: "http://localhost:3000",
+    users: 50,
+    durationMs: 30_000,
+    thinkMs: 0,
+    cleanup: true,
+  };
   const need = (i: number, flag: string): string => {
     const v = argv[i];
     if (v === undefined) throw new Error(`missing value for ${flag}`);
@@ -47,6 +54,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--users" || a === "-u") out.users = Number(need(++i, a));
     else if (a === "--duration" || a === "-d") out.durationMs = parseDuration(need(++i, a));
     else if (a === "--think-ms") out.thinkMs = Number(need(++i, a));
+    else if (a === "--no-cleanup") out.cleanup = false;
     else if (a === "--help" || a === "-h") { printHelp(); process.exit(0); }
   }
   if (!Number.isFinite(out.users) || out.users < 1) throw new Error("--users must be >= 1");
@@ -69,6 +77,8 @@ function printHelp() {
   --users <n>, -u       Concurrent virtual users (default: 50)
   --duration <t>, -d    Run duration, e.g. 30s, 2m (default: 30s)
   --think-ms <n>        Per-VU pause between requests (default: 0)
+  --no-cleanup          Leave the loadtest owner + conference in place
+                        (default: delete both after the run)
   --help, -h            Show this help
 `);
 }
@@ -152,6 +162,33 @@ export async function bootstrap(baseUrl: string): Promise<{ rpc: RouterClient<Ap
   if (missing > 0) console.log(`[bootstrap] added ${missing} session(s) (target ${TARGET_SESSIONS})`);
 
   return { rpc: s.rpc };
+}
+
+// Removes the loadtest owner + conference from the target instance.
+// Always called in main()'s `finally` so even a mid-run crash cleans up.
+// Each step is best-effort: if the conference is already gone (idempotent
+// re-runs) or the user can't be deleted because the server doesn't expose
+// deleteSelf yet (older releases), we swallow the error and continue.
+export async function teardown(rpc: RouterClient<AppRouter>): Promise<void> {
+  try {
+    await rpc.conferences.delete({ slug: CONF_SLUG });
+    console.log("[teardown] removed loadtest conference");
+  } catch (e) {
+    if (e instanceof ORPCError && (e.message === "not_found" || e.code === "NOT_FOUND")) {
+      // Already gone — fine.
+    } else {
+      console.warn(`[teardown] conference delete failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  try {
+    await rpc.auth.deleteSelf();
+    console.log("[teardown] removed loadtest owner account");
+  } catch (e) {
+    console.warn(
+      `[teardown] account delete failed: ${e instanceof Error ? e.message : String(e)}. ` +
+        `If the target is on an older release without auth.deleteSelf, remove the row manually.`,
+    );
+  }
 }
 
 // ---------- load runner ----------
@@ -306,18 +343,23 @@ async function main() {
   console.log(`[loadtest] target=${args.base} users=${args.users} duration=${fmtMs(args.durationMs)}`);
   const { rpc } = await bootstrap(args.base);
 
-  console.log(`[loadtest] warming up ${args.users} VU(s)...`);
-  const samples: Sample[] = [];
-  const deadline = Date.now() + args.durationMs;
-  const start = performance.now();
-  const tasks: Promise<void>[] = [];
-  for (let i = 0; i < args.users; i++) {
-    tasks.push(runVU(rpc, CONF_SLUG, deadline, args.thinkMs, samples));
-  }
-  await Promise.all(tasks);
-  const elapsed = performance.now() - start;
+  try {
+    console.log(`[loadtest] warming up ${args.users} VU(s)...`);
+    const samples: Sample[] = [];
+    const deadline = Date.now() + args.durationMs;
+    const start = performance.now();
+    const tasks: Promise<void>[] = [];
+    for (let i = 0; i < args.users; i++) {
+      tasks.push(runVU(rpc, CONF_SLUG, deadline, args.thinkMs, samples));
+    }
+    await Promise.all(tasks);
+    const elapsed = performance.now() - start;
 
-  printReport(args, samples, elapsed);
+    printReport(args, samples, elapsed);
+  } finally {
+    if (args.cleanup) await teardown(rpc);
+    else console.log("[loadtest] --no-cleanup: leaving loadtest data in place");
+  }
 }
 
 if (import.meta.main) {
