@@ -59,7 +59,11 @@ function mimeFor(path: string): string {
   return "application/octet-stream";
 }
 
-if (import.meta.main) {
+// Starts the HTTP server. Exported so the cluster launcher can call it in
+// single-worker mode without spawning a child. `reusePort: true` lets the
+// kernel load-balance new connections across multiple processes sharing
+// this port (used by the cluster launcher; harmless with a single worker).
+export function startServer(): void {
   const app = buildApp();
   const port = Number(process.env.PORT ?? 3000);
   const distDir = join(import.meta.dir, "../../dist");
@@ -67,6 +71,7 @@ if (import.meta.main) {
 
   Bun.serve({
     port,
+    reusePort: true,
     fetch(req) {
       const url = new URL(req.url);
       if (url.pathname.startsWith("/api/")) return app.fetch(req);
@@ -77,8 +82,13 @@ if (import.meta.main) {
       return new Response("Not Found (no static dist; in dev open the Vite URL)", { status: 404 });
     },
   });
+  const workerTag = process.env.WORKER_ID !== undefined ? ` [w${process.env.WORKER_ID}]` : "";
   console.log(
-    `simple-unconference API: http://localhost:${port}` +
+    `simple-unconference API${workerTag}: http://localhost:${port}` +
       (wantsStatic ? " (serving dist/ statically)" : " (dev: open Vite at http://localhost:5173)"),
   );
+}
+
+if (import.meta.main) {
+  startServer();
 }

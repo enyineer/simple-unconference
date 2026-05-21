@@ -42,4 +42,4 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD wget -qO- "http://127.0.0.1:${PORT}/api/health" || exit 1
 
-CMD ["sh", "-c", "bunx prisma migrate deploy && exec bun src/server/index.ts"]
+CMD ["sh", "-c", "bunx prisma migrate deploy && exec bun src/server/cluster.ts"]

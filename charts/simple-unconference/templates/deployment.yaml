@@ -58,6 +58,10 @@ spec:
             - name: DISABLE_SIGNUP
               value: "1"
             {{- end }}
+            {{- if and .Values.workers .Values.workers.count }}
+            - name: WORKERS
+              value: {{ .Values.workers.count | quote }}
+            {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

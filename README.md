@@ -67,6 +67,7 @@ Override `DATABASE_URL` if you want to point at libSQL/Turso instead of the bund
 | `PORT` | `3000` | TCP port the Bun/Hono server binds to inside the container. |
 | `SERVE_STATIC` | `1` | Set to `0` in dev to let Vite serve the SPA; production images keep this on. |
 | `DISABLE_SIGNUP` | _unset_ | When set to `1`/`true`/`yes`, disables **global owner signup**. The signup form is hidden on the login page and `POST /api/auth/signup` returns `403 signup_disabled`. Existing accounts can still log in. Does **not** affect per-conference participant signup; conference-level joining is controlled by each conference's own settings. |
+| `WORKERS` | `1` | Number of Bun worker processes inside the container. `1` runs single-process (no fork). `auto` derives the count from cgroup CPU + memory limits: `min(round(cores), floor(mem_MiB / 192), 8)`. A specific integer (e.g. `4`) forces that count, clamped to 8. Workers share the listening port via `SO_REUSEPORT`. SQLite WAL serializes writes across workers; reads fan out fully. Bump `resources.limits.memory` by ~150Mi per additional worker. |
 
 ## Deploy to Kubernetes (Helm)
 
@@ -102,6 +103,12 @@ auth:
   # Lock down owner signup once the first account is created. Maps to the
   # DISABLE_SIGNUP env var on the container.
   disableSignup: true
+
+workers:
+  # "1" (default), "auto" (derive from cpu/memory limits), or a specific
+  # integer. Adds horizontal fan-out inside the single pod via SO_REUSEPORT.
+  # See the WORKERS row in the env-var table above for the auto-calc rule.
+  count: "auto"
 ```
 
 Source: [`charts/simple-unconference/`](charts/simple-unconference/). The chart provisions a `Deployment` (Recreate strategy so the RWO PVC hands cleanly between pods), `Service`, optional `Ingress`, the SQLite `PersistentVolumeClaim`, and a `Secret` carrying `DATABASE_URL`. Probes hit `/api/health`.

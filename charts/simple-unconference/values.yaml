@@ -71,6 +71,22 @@ database:
     existingSecret: ""
     existingSecretKey: DATABASE_URL
 
+# Number of Bun worker processes inside the container. Workers share the
+# listening port via SO_REUSEPORT, so this fans out a single pod without
+# adding replicas (SQLite mode requires replicaCount=1).
+#
+# Values:
+#   "1"     - single in-process server. No fork. Default and safest.
+#   "auto"  - derive from cgroup-reported CPU + memory limits.
+#             Rule: workers = min(round(cpu_cores), floor(mem_MiB / 192), 8).
+#             So 2000m+1Gi -> 2, 4000m+1Gi -> 4, 500m+512Mi -> 1.
+#   "<N>"   - force exactly N (clamped to 8).
+#
+# Bump resources.limits.memory by ~150Mi for each additional worker beyond
+# the first; each Bun process has its own runtime + Prisma client baseline.
+workers:
+  count: "1"
+
 # Auth-related toggles. These map to environment variables on the container.
 auth:
   # Disable global user signup (the owner-side account creation on the
