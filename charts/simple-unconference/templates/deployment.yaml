@@ -54,6 +54,10 @@ spec:
                 secretKeyRef:
                   name: {{ include "simple-unconference.secretName" . }}
                   key: {{ include "simple-unconference.secretKey" . }}
+            {{- if .Values.auth.disableSignup }}
+            - name: DISABLE_SIGNUP
+              value: "1"
+            {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

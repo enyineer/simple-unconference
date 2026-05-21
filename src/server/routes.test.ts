@@ -55,6 +55,42 @@ describe("auth flow (global owner)", () => {
   });
 });
 
+describe("public config + DISABLE_SIGNUP", () => {
+  let ctx: TestApp;
+  beforeAll(() => { ctx = setupTestApp(); });
+  afterAll(async () => { await ctx.cleanup(); });
+
+  test("config reflects DISABLE_SIGNUP and signup is rejected when disabled", async () => {
+    const prev = process.env.DISABLE_SIGNUP;
+    try {
+      // Default: signup enabled, account creation works.
+      delete process.env.DISABLE_SIGNUP;
+      const open = new Client(ctx.app);
+      expect(await open.rpc.config.get()).toEqual({ signup_enabled: true });
+      await open.rpc.auth.signup({ email: "before@example.com", password: "secret123" });
+
+      // Flip the env var: config flips and signup gets a domain error.
+      process.env.DISABLE_SIGNUP = "1";
+      const locked = new Client(ctx.app);
+      expect(await locked.rpc.config.get()).toEqual({ signup_enabled: false });
+      try {
+        await locked.rpc.auth.signup({ email: "blocked@example.com", password: "secret123" });
+        throw new Error("expected signup to be rejected");
+      } catch (e) {
+        expect(e).toBeInstanceOf(ORPCError);
+        expect((e as ORPCError<string, unknown>).message).toBe("signup_disabled");
+      }
+
+      // Existing accounts can still log in while signup is disabled.
+      await locked.rpc.auth.login({ email: "before@example.com", password: "secret123" });
+      expect(await locked.rpc.auth.me()).toMatchObject({ email: "before@example.com" });
+    } finally {
+      if (prev === undefined) delete process.env.DISABLE_SIGNUP;
+      else process.env.DISABLE_SIGNUP = prev;
+    }
+  });
+});
+
 describe("conferences + roles", () => {
   let ctx: TestApp;
   beforeAll(() => { ctx = setupTestApp(); });

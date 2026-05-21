@@ -201,11 +201,33 @@ function toConfMeOut(identity: {
 }
 
 // =========================================================================
+// PUBLIC CONFIG
+// =========================================================================
+
+// Truthy = signup blocked. Treats "1"/"true"/"yes" (any case) as on; anything
+// else (including unset) leaves global signup enabled — safe default for
+// existing deployments.
+function isSignupDisabled(): boolean {
+  const v = process.env.DISABLE_SIGNUP;
+  if (!v) return false;
+  return /^(1|true|yes)$/i.test(v.trim());
+}
+
+const configRouter = {
+  get: base.config.get.handler(async () => {
+    return { signup_enabled: !isSignupDisabled() };
+  }),
+};
+
+// =========================================================================
 // AUTH
 // =========================================================================
 
 const authRouter = {
   signup: base.auth.signup.handler(async ({ input, context }) => {
+    if (isSignupDisabled()) {
+      throw new ORPCError("FORBIDDEN", { message: "signup_disabled" });
+    }
     const existing = await context.prisma.user.findUnique({ where: { email: input.email } });
     if (existing) throw new ORPCError("CONFLICT", { message: "email_taken" });
     const passwordHash = await hashPassword(input.password);
@@ -3025,6 +3047,7 @@ const notificationsRouter = {
 
 export function buildRouter() {
   return base.router({
+    config: configRouter,
     auth: authRouter,
     conferences: conferenceRouter,
     rooms: roomsRouter,

@@ -1,4 +1,4 @@
-# Simple Unconference Web App
+# Simple Unconference Web App - Unconf
 
 A self-hostable platform for running unconferences end-to-end: people, rooms, sessions, scheduling, mixers, expert bookings and notifications — all in one app.
 
@@ -59,6 +59,15 @@ volumes:
 
 Override `DATABASE_URL` if you want to point at libSQL/Turso instead of the bundled SQLite file. Override `PORT` to bind a different port inside the container. The image exposes a healthcheck at `GET /api/health`.
 
+### Configuration (environment variables)
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DATABASE_URL` | `file:./data/prod.sqlite` | libSQL URL. Use `file:…` for local SQLite, or a `libsql://…` URL for Turso. |
+| `PORT` | `3000` | TCP port the Bun/Hono server binds to inside the container. |
+| `SERVE_STATIC` | `1` | Set to `0` in dev to let Vite serve the SPA; production images keep this on. |
+| `DISABLE_SIGNUP` | _unset_ | When set to `1`/`true`/`yes`, disables **global owner signup**. The signup form is hidden on the login page and `POST /api/auth/signup` returns `403 signup_disabled`. Existing accounts can still log in. Does **not** affect per-conference participant signup; conference-level joining is controlled by each conference's own settings. |
+
 ## Deploy to Kubernetes (Helm)
 
 A Helm chart is published alongside each release at [`oci://ghcr.io/enyineer/charts/simple-unconference`](https://github.com/enyineer/simple-unconference/pkgs/container/charts%2Fsimple-unconference). Chart and `appVersion` are kept in lockstep with the app version, so the chart tag matches the image tag (`0.3.0`, `0.4.0`, …).
@@ -88,6 +97,11 @@ database:
       enabled: true
       size: 5Gi
       storageClass: standard  # or: existingClaim: my-pvc
+
+auth:
+  # Lock down owner signup once the first account is created. Maps to the
+  # DISABLE_SIGNUP env var on the container.
+  disableSignup: true
 ```
 
 Source: [`charts/simple-unconference/`](charts/simple-unconference/). The chart provisions a `Deployment` (Recreate strategy so the RWO PVC hands cleanly between pods), `Service`, optional `Ingress`, the SQLite `PersistentVolumeClaim`, and a `Secret` carrying `DATABASE_URL`. Probes hit `/api/health`.

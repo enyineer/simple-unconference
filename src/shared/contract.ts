@@ -406,7 +406,18 @@ interface NotificationListOut {
   unread_count: number;
 }
 
+// ----- public config (anonymous) -----------------------------------------
+
+// Returned to anyone (no auth). Used by the login screen to know which
+// affordances to show before any session exists.
+interface PublicConfigOut {
+  signup_enabled: boolean;
+}
+
 export const contract = {
+  config: {
+    get: oc.output(type<PublicConfigOut>()),
+  },
   auth: {
     signup: oc.input(SignupSchema).output(type<UserOut>()),
     login: oc.input(LoginSchema).output(type<UserOut>()),
