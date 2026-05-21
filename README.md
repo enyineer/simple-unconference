@@ -2,6 +2,8 @@
 
 A self-hostable platform for running unconferences end-to-end: people, rooms, sessions, scheduling, mixers, expert bookings and notifications — all in one app.
 
+> **Public instance:** A free, public, hosted instance lives at **<https://unconference.enking.dev>** — feel free to try it before deciding to self-host. The instance runs the same chart this repo ships, with [Public-instance hardening](#public-instance-hardening) enabled (per-account quotas, login lockout, Cloudflare Turnstile on signup/login/join). It targets events up to ~2000 attendees; for larger events please self-host.
+
 ![Agenda overview](screenshots/agenda-overview.webp)
 
 ## Stack
@@ -68,6 +70,22 @@ Override `DATABASE_URL` if you want to point at libSQL/Turso instead of the bund
 | `SERVE_STATIC` | `1` | Set to `0` in dev to let Vite serve the SPA; production images keep this on. |
 | `DISABLE_SIGNUP` | _unset_ | When set to `1`/`true`/`yes`, disables **global owner signup**. The signup form is hidden on the login page and `POST /api/auth/signup` returns `403 signup_disabled`. Existing accounts can still log in. Does **not** affect per-conference participant signup; conference-level joining is controlled by each conference's own settings. |
 | `WORKERS` | `1` | Number of Bun worker processes inside the container. `1` runs single-process (no fork). `auto` derives the count from cgroup CPU + memory limits: `min(round(cores), floor(mem_MiB / 192), 8)`. A specific integer (e.g. `4`) forces that count, clamped to 8. Workers share the listening port via `SO_REUSEPORT`. SQLite WAL serializes writes across workers; reads fan out fully. Bump `resources.limits.memory` by ~150Mi per additional worker. |
+
+**Public-instance hardening** — all of these are opt-in via env and default to values that work for a free public instance running events up to ~2000 attendees. Set any value to `0` to disable that specific cap. See [Public Instance Hardening](#public-instance-hardening) for the full design.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MAX_CONFERENCES_PER_USER` | `3` | Hard cap on conferences a single global User may own. Throws `quota_exceeded` on `conferences.create` when reached. |
+| `MAX_SESSIONS_PER_USER_PER_CONFERENCE` | `5` | Hard cap on sessions a single submitter may create in one conference (covers mod-on-behalf-of attribution too). |
+| `MAX_PARTICIPANTS_PER_CONFERENCE` | `2500` | Hard cap on `ConferenceIdentity` rows per conference. Enforced on `claimInvite` + `signupViaLink`. |
+| `MAX_PENDING_INVITES_PER_CONFERENCE` | `2500` | Hard cap on unclaimed invites per conference. Prevents an abusive moderator from spamming invites then bot-redeeming them. |
+| `MAX_ROOMS_PER_CONFERENCE` | `100` | Hard cap on rooms per conference. |
+| `LOGIN_FAIL_LIMIT` | `5` | Failed logins per email within `LOGIN_FAIL_WINDOW_MIN` before the email is locked for `LOGIN_LOCKOUT_MIN`. NAT-blind (per-email, not per-IP). `0` disables. |
+| `LOGIN_FAIL_WINDOW_MIN` | `15` | Window the failure counter accumulates over, in minutes. |
+| `LOGIN_LOCKOUT_MIN` | `15` | How long the email is locked after hitting the failure limit, in minutes. |
+| `WRITES_PER_HOUR_PER_USER` | `600` | Sliding-window cap on expensive write operations per User per hour (`conferences.create`, `submissions.create`, etc). Catches scripted abuse from compromised accounts. `0` disables. |
+| `TURNSTILE_SITE_KEY` | _unset_ | Cloudflare Turnstile public key. Sent to the SPA so it can render the widget on signup / login / join pages. |
+| `TURNSTILE_SECRET_KEY` | _unset_ | Cloudflare Turnstile secret key. When set, the server requires a valid Turnstile token on `auth.signup`, `auth.login`, `conferences.claimInvite`, and `conferences.signupViaLink`. Leave unset for a no-op. |
 
 ## Deploy to Kubernetes (Helm)
 
@@ -322,6 +340,19 @@ The default matrix walks `1w/0.5c/512Mi` (chart default) up to `4w/4c/2Gi`. Outp
 Requires `docker` on `PATH` (a `docker`-aliased `podman` also works). Each iteration uses an ephemeral container with no mounted volume, so the database is fresh per run — no carry-over between configs. Press Ctrl-C and the in-flight container is stopped before exit.
 
 A reference sweep on a developer laptop is checked in at [docs/loadtest-results.md](docs/loadtest-results.md) to give a feel for how `workers.count` and `resources.limits` interact for this workload. Results from that machine are **not representative of production** — different hardware, the PVC storage class, ingress/TLS in the request path, and whether the client lives inside or outside the cluster will all move the numbers. Run the sweep against your own infrastructure for actual capacity-planning numbers.
+
+## Public Instance Hardening
+
+If you're hosting the app on the open internet (like the free instance at <https://unconference.enking.dev>) the defaults aim to keep you safe from the realistic abuse vectors without breaking the venue-WLAN traffic pattern where dozens-to-hundreds of legitimate attendees share one NAT. Four layers, each addressing a different scenario:
+
+1. **Cloudflare Turnstile** at the edge of the high-abuse endpoints — invisible to most users, challenges suspicious traffic. Configure both [`TURNSTILE_SITE_KEY`](#configuration-environment-variables) and `TURNSTILE_SECRET_KEY` to enable. When set, gated endpoints are `auth.signup`, `auth.login`, `conferences.claimInvite`, and `conferences.signupViaLink`. Per-conference identity login (`conferences.login`) and all read endpoints stay un-gated because the conference slug + email combination already scopes them tightly and read traffic doesn't write to the DB.
+2. **Per-email failed-login lockout** for credential stuffing. NAT-blind by design (per-email, not per-IP), so a venue Wi-Fi can have hundreds of attendees logging in concurrently without anyone getting locked out. Defaults to 5 failures / 15 min → 15 min lockout. Tune via `LOGIN_FAIL_*` env vars.
+3. **Per-account write rate** (sliding 1-hour window, default 600 writes/account) catches a compromised real account being used as a spam vehicle. Applied to expensive `create`/`update` operations only; stars and notification marks are exempt because legitimate bursts during agenda review are normal.
+4. **Per-account / per-conference quotas** are the hard ceilings on what one user or conference can accumulate. Defaults are sized for ~2000-attendee events with ~5 sessions per attendee; raise them via env for private instances if you need more, or lower for stricter public hosting.
+
+Why per-IP is **not** in the list: hundreds of attendees share one outbound IP from the venue Wi-Fi. Per-IP limits on interactive paths would 429 everyone exactly when the app needs to work. The only IP-adjacent thing here is Turnstile, which Cloudflare scores adaptively — it's designed for exactly this scenario.
+
+Every individual layer can be disabled by setting its env var to `0` (or leaving Turnstile's keys empty), so private deployments where you trust your users can run wide-open. The Helm chart's [`limits:`](charts/simple-unconference/values.yaml) and [`turnstile:`](charts/simple-unconference/values.yaml) blocks emit these env vars on the container.
 
 ## Adding a design system
 

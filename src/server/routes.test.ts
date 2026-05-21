@@ -12,6 +12,8 @@ import {
   setupTestApp, Client, ORPCError, type TestApp,
   inviteAndClaim, signupViaJoinLink,
 } from "./test-helpers";
+import { hashPassword } from "./auth";
+import { LIMITS } from "./lib/limits";
 
 async function signupAndLogin(c: Client, email: string, password = "secret123", name = "User") {
   return await c.rpc.auth.signup({ email, password, name });
@@ -187,13 +189,13 @@ describe("public config + DISABLE_SIGNUP", () => {
       // Default: signup enabled, account creation works.
       delete process.env.DISABLE_SIGNUP;
       const open = new Client(ctx.app);
-      expect(await open.rpc.config.get()).toEqual({ signup_enabled: true });
+      expect(await open.rpc.config.get()).toEqual({ signup_enabled: true, turnstile_site_key: null });
       await open.rpc.auth.signup({ email: "before@example.com", password: "secret123" });
 
       // Flip the env var: config flips and signup gets a domain error.
       process.env.DISABLE_SIGNUP = "1";
       const locked = new Client(ctx.app);
-      expect(await locked.rpc.config.get()).toEqual({ signup_enabled: false });
+      expect(await locked.rpc.config.get()).toEqual({ signup_enabled: false, turnstile_site_key: null });
       try {
         await locked.rpc.auth.signup({ email: "blocked@example.com", password: "secret123" });
         throw new Error("expected signup to be rejected");
@@ -3295,5 +3297,147 @@ describe("notifications", () => {
     const bInbox = await b.rpc.notifications.list({ slug: conf.slug });
     expect(aInbox.items.find((n) => n.kind === "submission_published")).toBeDefined();
     expect(bInbox.items.find((n) => n.kind === "submission_published")).toBeUndefined();
+  });
+});
+
+describe("public-instance defenses: quotas + lockout", () => {
+  let ctx: TestApp;
+  beforeAll(() => { ctx = setupTestApp(); });
+  afterAll(async () => { await ctx.cleanup(); });
+
+  test("conferences.create caps at MAX_CONFERENCES_PER_USER", async () => {
+    const c = new Client(ctx.app);
+    await signupAndLogin(c, "quota-conf@example.com");
+    for (let i = 0; i < LIMITS.maxConferencesPerUser; i++) {
+      await c.rpc.conferences.create({ name: `Conf ${i + 1}` });
+    }
+    try {
+      await c.rpc.conferences.create({ name: "Over the line" });
+      throw new Error("expected quota_exceeded");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ORPCError);
+      const err = e as ORPCError<string, { resource?: string; limit?: number }>;
+      expect(err.message).toBe("quota_exceeded");
+      expect(err.data?.resource).toBe("conferences_per_user");
+      expect(err.data?.limit).toBe(LIMITS.maxConferencesPerUser);
+    }
+  });
+
+  test("submissions.create caps at MAX_SESSIONS_PER_USER_PER_CONFERENCE per submitter", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "quota-sessions@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Cap Session Conf" });
+    // Owner can submit on their own behalf up to the limit, then is blocked.
+    for (let i = 0; i < LIMITS.maxSessionsPerUserPerConference; i++) {
+      await owner.rpc.submissions.create({ slug: conf.slug, title: `S${i + 1}` });
+    }
+    await expect(
+      owner.rpc.submissions.create({ slug: conf.slug, title: "Over" }),
+    ).rejects.toMatchObject({ message: "quota_exceeded" });
+  });
+
+  test("login lockout fires after LOGIN_FAIL_LIMIT wrong passwords for one email", async () => {
+    const c = new Client(ctx.app);
+    await signupAndLogin(c, "lockable@example.com", "correct-password");
+
+    // Burn through the budget with bad passwords from a fresh client.
+    const attacker = new Client(ctx.app);
+    for (let i = 0; i < LIMITS.loginFailLimit; i++) {
+      await expect(
+        attacker.rpc.auth.login({ email: "lockable@example.com", password: "wrong" }),
+      ).rejects.toMatchObject({ message: "invalid_credentials" });
+    }
+    // Next attempt — even with the CORRECT password — is rejected as locked.
+    await expect(
+      attacker.rpc.auth.login({ email: "lockable@example.com", password: "correct-password" }),
+    ).rejects.toMatchObject({ message: "account_locked" });
+
+    // Untargeted accounts are unaffected.
+    const other = new Client(ctx.app);
+    await signupAndLogin(other, "other@example.com");
+  });
+
+  test("successful login resets the failure counter", async () => {
+    const c = new Client(ctx.app);
+    await signupAndLogin(c, "reset-me@example.com", "real-password");
+    const attacker = new Client(ctx.app);
+    // Submit (limit - 1) bad attempts so we're one away from lockout.
+    for (let i = 0; i < LIMITS.loginFailLimit - 1; i++) {
+      await expect(
+        attacker.rpc.auth.login({ email: "reset-me@example.com", password: "nope" }),
+      ).rejects.toMatchObject({ message: "invalid_credentials" });
+    }
+    // A successful login (from anywhere) clears the counter for this email.
+    await c.rpc.auth.login({ email: "reset-me@example.com", password: "real-password" });
+    // Attacker can now keep guessing without immediately hitting the lock.
+    for (let i = 0; i < LIMITS.loginFailLimit - 1; i++) {
+      await expect(
+        attacker.rpc.auth.login({ email: "reset-me@example.com", password: "nope" }),
+      ).rejects.toMatchObject({ message: "invalid_credentials" });
+    }
+  });
+});
+
+describe("public-instance defenses: turnstile gating", () => {
+  let ctx: TestApp;
+  beforeAll(() => {
+    process.env.TURNSTILE_SECRET_KEY = "test-secret-key";
+    ctx = setupTestApp();
+  });
+  afterAll(async () => {
+    await ctx.cleanup();
+    delete process.env.TURNSTILE_SECRET_KEY;
+  });
+
+  test("signup without a token is rejected with captcha_required", async () => {
+    const c = new Client(ctx.app);
+    await expect(
+      c.rpc.auth.signup({ email: "noturnstile@example.com", password: "secret123" }),
+    ).rejects.toMatchObject({ message: "captcha_required" });
+  });
+
+  test("login without a token is rejected with captcha_required (existing accounts too)", async () => {
+    // Seed an account directly via Prisma to bypass the signup gate.
+    await ctx.prisma.user.create({
+      data: {
+        email: "preseeded@example.com",
+        passwordHash: await hashPassword("password123"),
+      },
+    });
+    const c = new Client(ctx.app);
+    await expect(
+      c.rpc.auth.login({ email: "preseeded@example.com", password: "password123" }),
+    ).rejects.toMatchObject({ message: "captcha_required" });
+  });
+
+  test("claimInvite is gated with Turnstile (mod can't bot-mint identities)", async () => {
+    // Set up a conference + invite (Turnstile is on, so signup itself needs
+    // a token — bypass by seeding the owner directly).
+    const owner = await ctx.prisma.user.create({
+      data: {
+        email: "modturn@example.com",
+        passwordHash: await hashPassword("password123"),
+      },
+    });
+    const conf = await ctx.prisma.conference.create({
+      data: { name: "Gated", slug: "gated", ownerId: owner.id, timezone: "UTC" },
+    });
+    const invite = await ctx.prisma.conferenceInvite.create({
+      data: {
+        conferenceId: conf.id,
+        email: "invitee@example.com",
+        token: "invite-token-test",
+        role: "participant",
+        expiresAt: new Date(Date.now() + 24 * 60 * 60_000),
+      },
+    });
+    const c = new Client(ctx.app);
+    await expect(
+      c.rpc.conferences.claimInvite({
+        slug: conf.slug,
+        token: invite.token,
+        password: "secret123",
+      }),
+    ).rejects.toMatchObject({ message: "captcha_required" });
   });
 });

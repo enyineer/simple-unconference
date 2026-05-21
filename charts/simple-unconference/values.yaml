@@ -96,6 +96,32 @@ auth:
   # unaffected and remains controlled by the conference's own settings.
   disableSignup: false
 
+# Per-account / per-conference quotas. Each maps to an env var on the
+# container. Set any value to 0 to disable the corresponding cap (useful
+# for private deployments). Defaults target a free public instance hosting
+# events up to ~2000 attendees with ~5 sessions per user.
+limits:
+  maxConferencesPerUser: 3                # MAX_CONFERENCES_PER_USER
+  maxSessionsPerUserPerConference: 5      # MAX_SESSIONS_PER_USER_PER_CONFERENCE
+  maxParticipantsPerConference: 2500      # MAX_PARTICIPANTS_PER_CONFERENCE
+  maxPendingInvitesPerConference: 2500    # MAX_PENDING_INVITES_PER_CONFERENCE
+  maxRoomsPerConference: 100              # MAX_ROOMS_PER_CONFERENCE
+  # Per-email failed-login lockout (NAT-blind; safe with venue WLAN).
+  loginFailLimit: 5                       # LOGIN_FAIL_LIMIT (0 disables)
+  loginFailWindowMin: 15                  # LOGIN_FAIL_WINDOW_MIN
+  loginLockoutMin: 15                     # LOGIN_LOCKOUT_MIN
+  # Per-account sliding-window write rate. 600/hour is well above any real
+  # interactive user; catches scripted abuse from a compromised account.
+  writesPerHourPerUser: 600               # WRITES_PER_HOUR_PER_USER (0 disables)
+
+# Cloudflare Turnstile (CAPTCHA). When BOTH keys are set the server requires
+# a valid token on auth.signup, auth.login, and conferences.signupViaLink.
+# Leave both empty for a no-op deployment. Per-conference logins and invite
+# claims are NOT gated by Turnstile by design — see README.
+turnstile:
+  siteKey: ""    # TURNSTILE_SITE_KEY (sent to clients; safe to expose)
+  secretKey: ""  # TURNSTILE_SECRET_KEY (used server-side to verify tokens)
+
 # Extra env vars appended to the container.
 # Example: [{ name: SERVE_STATIC, value: "1" }]
 env: []

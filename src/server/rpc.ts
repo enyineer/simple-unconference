@@ -29,6 +29,13 @@ import {
 import { assignUnconferenceSlot, assignMixerSlot, pairKey, type AssignmentInput } from "./assignment";
 import { deriveSlots, pickAvailableRoom } from "./experts";
 import { notify, notifyMany, modIdentityIds } from "./notifications";
+import {
+  LIMITS,
+  assertQuota,
+  assertLoginAllowed, recordLoginFailure, recordLoginSuccess,
+  recordWrite,
+} from "./lib/limits";
+import { assertTurnstile, turnstileSiteKey } from "./lib/turnstile";
 
 // ----- shared types ---------------------------------------------------------
 
@@ -215,7 +222,10 @@ function isSignupDisabled(): boolean {
 
 const configRouter = {
   get: base.config.get.handler(async () => {
-    return { signup_enabled: !isSignupDisabled() };
+    return {
+      signup_enabled: !isSignupDisabled(),
+      turnstile_site_key: turnstileSiteKey(),
+    };
   }),
 };
 
@@ -228,6 +238,7 @@ const authRouter = {
     if (isSignupDisabled()) {
       throw new ORPCError("FORBIDDEN", { message: "signup_disabled" });
     }
+    await assertTurnstile(input.turnstile_token);
     const existing = await context.prisma.user.findUnique({ where: { email: input.email } });
     if (existing) throw new ORPCError("CONFLICT", { message: "email_taken" });
     const passwordHash = await hashPassword(input.password);
@@ -240,10 +251,16 @@ const authRouter = {
   }),
 
   login: base.auth.login.handler(async ({ input, context }) => {
+    // Per-email lockout runs BEFORE Turnstile so we don't burn challenge
+    // resources on already-locked accounts.
+    assertLoginAllowed(input.email);
+    await assertTurnstile(input.turnstile_token);
     const user = await context.prisma.user.findUnique({ where: { email: input.email } });
     if (!user || !(await verifyPassword(input.password, user.passwordHash))) {
+      recordLoginFailure(input.email);
       throw new ORPCError("UNAUTHORIZED", { message: "invalid_credentials" });
     }
+    recordLoginSuccess(input.email);
     const token = await createOwnerSession(context.prisma, user.id);
     setOwnerCookie(context.responseHeaders, token);
     return toUserOut(user);
@@ -310,6 +327,12 @@ const conferenceRouter = {
   }),
 
   create: authed.conferences.create.handler(async ({ input, context }) => {
+    const ownedCount = await context.prisma.conference.count({
+      where: { ownerId: context.user.id },
+    });
+    assertQuota("conferences_per_user", LIMITS.maxConferencesPerUser, ownedCount);
+    recordWrite(context.user.id);
+
     const baseSlug = slugify(input.name);
     let slug = baseSlug;
     let n = 1;
@@ -487,6 +510,11 @@ const conferenceRouter = {
   // =========================================================================
 
   createInvite: requireConf("moderator").conferences.createInvite.handler(async ({ input, context }) => {
+    const pendingCount = await context.prisma.conferenceInvite.count({
+      where: { conferenceId: context.conferenceId, claimedAt: null },
+    });
+    assertQuota("pending_invites_per_conference", LIMITS.maxPendingInvitesPerConference, pendingCount);
+
     const existing = await context.prisma.conferenceIdentity.findUnique({
       where: { conferenceId_email: { conferenceId: context.conferenceId, email: input.email } },
       select: { id: true },
@@ -684,6 +712,11 @@ const conferenceRouter = {
   }),
 
   claimInvite: base.conferences.claimInvite.handler(async ({ input, context }) => {
+    // Gate with Turnstile so a hostile mod can't burn the participant cap
+    // by self-inviting + bot-redeeming 2500 fake addresses they control.
+    // Legitimate invitees see the same invisible auto-pass as elsewhere.
+    await assertTurnstile(input.turnstile_token);
+
     const conf = await context.prisma.conference.findUnique({
       where: { slug: input.slug }, select: { id: true },
     });
@@ -698,6 +731,10 @@ const conferenceRouter = {
     if (invite.expiresAt.getTime() <= Date.now()) {
       throw new ORPCError("CONFLICT", { message: "expired" });
     }
+    const identityCount = await context.prisma.conferenceIdentity.count({
+      where: { conferenceId: conf.id },
+    });
+    assertQuota("participants_per_conference", LIMITS.maxParticipantsPerConference, identityCount);
     const dup = await context.prisma.conferenceIdentity.findUnique({
       where: { conferenceId_email: { conferenceId: conf.id, email: invite.email } },
       select: { id: true },
@@ -728,6 +765,8 @@ const conferenceRouter = {
   }),
 
   signupViaLink: base.conferences.signupViaLink.handler(async ({ input, context }) => {
+    await assertTurnstile(input.turnstile_token);
+
     const conf = await context.prisma.conference.findUnique({
       where: { slug: input.slug }, select: { id: true },
     });
@@ -744,6 +783,10 @@ const conferenceRouter = {
     if (link.maxUses !== null && link.usedCount >= link.maxUses) {
       throw new ORPCError("CONFLICT", { message: "join_link_exhausted" });
     }
+    const identityCount = await context.prisma.conferenceIdentity.count({
+      where: { conferenceId: conf.id },
+    });
+    assertQuota("participants_per_conference", LIMITS.maxParticipantsPerConference, identityCount);
     const dup = await context.prisma.conferenceIdentity.findUnique({
       where: { conferenceId_email: { conferenceId: conf.id, email: input.email } },
       select: { id: true },
@@ -774,6 +817,12 @@ const conferenceRouter = {
   }),
 
   login: base.conferences.login.handler(async ({ input, context }) => {
+    // Scope the lockout key with the slug so an attacker can't burn another
+    // conference's lockout budget for the same email, and the per-event
+    // counter cleanly isolates from the global `auth.login` counter.
+    const lockoutKey = `conf:${input.slug}:${input.email}`;
+    assertLoginAllowed(lockoutKey);
+
     const conf = await context.prisma.conference.findUnique({
       where: { slug: input.slug }, select: { id: true },
     });
@@ -783,8 +832,10 @@ const conferenceRouter = {
     });
     if (!identity || !identity.passwordHash
         || !(await verifyPassword(input.password, identity.passwordHash))) {
+      recordLoginFailure(lockoutKey);
       throw new ORPCError("UNAUTHORIZED", { message: "invalid_credentials" });
     }
+    recordLoginSuccess(lockoutKey);
     const sessionToken = await createIdentitySession(context.prisma, identity.id);
     setIdentityCookie(context.responseHeaders, conf.id, sessionToken);
     return toConfMeOut(identity);
@@ -862,6 +913,11 @@ const roomsRouter = {
   }),
 
   create: requireConf("moderator").rooms.create.handler(async ({ input, context }) => {
+    const roomCount = await context.prisma.room.count({
+      where: { conferenceId: context.conferenceId },
+    });
+    assertQuota("rooms_per_conference", LIMITS.maxRoomsPerConference, roomCount);
+
     const tags = normalizeLabels(input.tags);
     const room = await context.prisma.room.create({
       data: {
@@ -1073,6 +1129,25 @@ const submissionsRouter = {
         submitterId = identity.id;
       }
     }
+    // Per-user-per-conference cap. Counts submissions already attributed
+    // to the eventual submitterId (including mod-on-behalf-of cases) so
+    // dumping submissions through a moderator hits the same ceiling.
+    const submitterSubmissionCount = await context.prisma.submission.count({
+      where: { conferenceId: context.conferenceId, submitterId },
+    });
+    assertQuota(
+      "sessions_per_user_per_conference",
+      LIMITS.maxSessionsPerUserPerConference,
+      submitterSubmissionCount,
+    );
+    // Per-account write rate — uses the actor's global user id when they
+    // have one (owners), or falls back to a negative-id keyed sentinel for
+    // identity-only actors so participants still get a per-identity budget.
+    const actorKey = context.principal.kind === "owner"
+      ? context.principal.user.id
+      : -actorIdentityId(context);
+    recordWrite(actorKey);
+
     const created = await context.prisma.submission.create({
       data: {
         conferenceId: context.conferenceId, submitterId,

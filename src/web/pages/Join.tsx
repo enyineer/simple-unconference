@@ -14,6 +14,7 @@ import {
 import { api, errorCode, errorFields } from "../api";
 import { useForm } from "../useForm";
 import { InviteClaimSchema, SignupViaLinkSchema, safeParse } from "../../shared/schemas";
+import { TurnstileWidget } from "../components/TurnstileWidget";
 
 type Mode =
   | { kind: "loading" }
@@ -40,6 +41,19 @@ export function JoinPage({
   const [mode, setMode] = useState<Mode>({ kind: "loading" });
   const [topError, setTopError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Only required for the join_link flow (open-link signup). Invite claims
+  // are gated by the invite token itself, so we leave them un-Turnstile'd
+  // to avoid friction-blocking legitimate invitees.
+  const [turnstileSiteKey, setTurnstileSiteKey] = useState<string | null>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string>("");
+
+  useEffect(() => {
+    let cancelled = false;
+    api.config.get()
+      .then((c) => { if (!cancelled) setTurnstileSiteKey(c.turnstile_site_key); })
+      .catch(() => { /* leave null — server will reject if it ends up enforcing */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // Both flows share the same field set; the invite flow locks the email.
   const form = useForm(SignupViaLinkSchema, {
@@ -85,10 +99,15 @@ export function JoinPage({
     if (!token) return;
 
     if (mode.kind === "invite") {
+      if (turnstileSiteKey !== null && turnstileToken === "") {
+        setTopError("Please complete the verification challenge before continuing.");
+        return;
+      }
       const r = safeParse(InviteClaimSchema, {
         token,
         password: form.values.password,
         name: form.values.name,
+        turnstile_token: turnstileToken || undefined,
       });
       if (!r.ok) { form.setErrors(r.errors); return; }
       setBusy(true);
@@ -99,12 +118,20 @@ export function JoinPage({
         const fields = errorFields(err);
         if (fields) form.setErrors(fields);
         else setTopError(humanError(errorCode(err)));
+        setTurnstileToken("");
       } finally { setBusy(false); }
       return;
     }
 
     if (mode.kind === "join_link") {
-      const r = safeParse(SignupViaLinkSchema, form.values);
+      if (turnstileSiteKey !== null && turnstileToken === "") {
+        setTopError("Please complete the verification challenge before continuing.");
+        return;
+      }
+      const r = safeParse(SignupViaLinkSchema, {
+        ...form.values,
+        turnstile_token: turnstileToken || undefined,
+      });
       if (!r.ok) { form.setErrors(r.errors); return; }
       setBusy(true);
       try {
@@ -114,6 +141,9 @@ export function JoinPage({
         const fields = errorFields(err);
         if (fields) form.setErrors(fields);
         else setTopError(humanError(errorCode(err)));
+        // Turnstile tokens are single-use; clear so the widget mints a fresh
+        // one for the retry.
+        setTurnstileToken("");
       } finally { setBusy(false); }
     }
   }
@@ -186,6 +216,9 @@ export function JoinPage({
               onChange={(e) => form.setValue("password", e.target.value)}
               error={form.fieldError("password")}
             />
+            {turnstileSiteKey !== null && (
+              <TurnstileWidget siteKey={turnstileSiteKey} onVerify={setTurnstileToken} />
+            )}
             <Stack direction="row" gap="condensed" align="center">
               <Button type="submit" variant="primary" disabled={busy}>
                 {isInvite ? "Join conference" : "Sign up"}
@@ -212,5 +245,8 @@ function humanError(code: string): string {
     join_link_exhausted: "This join link is no longer accepting new sign-ups.",
     email_already_in_conference: "An account with that email already exists in this conference. Try signing in instead.",
     conference_not_found: "We couldn't find that conference.",
+    captcha_required: "Please complete the verification challenge.",
+    captcha_failed: "Verification failed. Refresh and try again.",
+    quota_exceeded: "This conference has reached its participant limit. Contact the organizer.",
   } as Record<string, string>)[code] ?? code;
 }

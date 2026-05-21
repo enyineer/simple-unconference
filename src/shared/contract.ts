@@ -410,9 +410,13 @@ interface NotificationListOut {
 // ----- public config (anonymous) -----------------------------------------
 
 // Returned to anyone (no auth). Used by the login screen to know which
-// affordances to show before any session exists.
+// affordances to show before any session exists. `turnstile_site_key` is
+// null when Cloudflare Turnstile is disabled on this instance; non-null
+// means the client must render the widget and submit a token with
+// signup / login / signupViaLink.
 interface PublicConfigOut {
   signup_enabled: boolean;
+  turnstile_site_key: string | null;
 }
 
 export const contract = {

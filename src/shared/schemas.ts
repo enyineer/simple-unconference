@@ -26,10 +26,18 @@ const PosInt = v.pipe(
 
 // ----- auth ---------------------------------------------------------------
 
+// Optional Cloudflare Turnstile response token. The frontend attaches it when
+// TURNSTILE_SITE_KEY is configured on the backend; the server validates it
+// against challenges.cloudflare.com/turnstile/v0/siteverify. Always optional
+// at the schema level — backend decides whether to require it based on whether
+// TURNSTILE_SECRET_KEY is set.
+const TurnstileToken = v.optional(v.pipe(v.string(), v.maxLength(4096)));
+
 export const SignupSchema = v.object({
   email: Email,
   password: Password,
   name: v.optional(v.pipe(v.string(), v.trim())),
+  turnstile_token: TurnstileToken,
 });
 export type SignupInput = v.InferOutput<typeof SignupSchema>;
 
@@ -39,6 +47,7 @@ export type ColorMode = v.InferOutput<typeof ColorModeSchema>;
 export const LoginSchema = v.object({
   email: Email,
   password: v.pipe(v.string(), v.minLength(1, "Password is required.")),
+  turnstile_token: TurnstileToken,
 });
 export type LoginInput = v.InferOutput<typeof LoginSchema>;
 
@@ -107,6 +116,7 @@ export const InviteClaimSchema = v.object({
   token: NonEmpty("Token"),
   password: Password,
   name: v.optional(v.pipe(v.string(), v.trim())),
+  turnstile_token: TurnstileToken,
 });
 export type InviteClaimInput = v.InferOutput<typeof InviteClaimSchema>;
 
@@ -117,6 +127,7 @@ export const SignupViaLinkSchema = v.object({
   email: Email,
   password: Password,
   name: v.optional(v.pipe(v.string(), v.trim())),
+  turnstile_token: TurnstileToken,
 });
 export type SignupViaLinkInput = v.InferOutput<typeof SignupViaLinkSchema>;
 

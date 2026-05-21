@@ -5,6 +5,7 @@ import {
 import { api, errorCode, errorFields } from "../api";
 import { useForm } from "../useForm";
 import { LoginSchema, SignupSchema, safeParse } from "../../shared/schemas";
+import { TurnstileWidget } from "../components/TurnstileWidget";
 
 const REPO_URL = "https://github.com/enyineer/simple-unconference";
 const REPO_API = "https://api.github.com/repos/enyineer/simple-unconference";
@@ -314,12 +315,20 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
   // null = still loading; true/false = known. Defaults to permissive (true)
   // on fetch failure so a transient outage doesn't lock out new owners.
   const [signupEnabled, setSignupEnabled] = useState<boolean | null>(null);
+  // Non-null when the server has Turnstile configured. Drives whether we
+  // render the widget at all + whether we hold the form until a token arrives.
+  const [turnstileSiteKey, setTurnstileSiteKey] = useState<string | null>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string>("");
   const stars = useGitHubStars();
 
   useEffect(() => {
     let cancelled = false;
     api.config.get()
-      .then((c) => { if (!cancelled) setSignupEnabled(c.signup_enabled); })
+      .then((c) => {
+        if (cancelled) return;
+        setSignupEnabled(c.signup_enabled);
+        setTurnstileSiteKey(c.turnstile_site_key);
+      })
       .catch(() => { if (!cancelled) setSignupEnabled(true); });
     return () => { cancelled = true; };
   }, []);
@@ -336,9 +345,22 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setTopError(null);
+
+    // Hold the form until the widget has minted a token. We only enforce this
+    // client-side as UX — the server will reject the call with captcha_required
+    // if the token is missing or stale anyway.
+    if (turnstileSiteKey !== null && turnstileToken === "") {
+      setTopError("Please complete the verification challenge before continuing.");
+      return;
+    }
+
+    const baseFields = mode === "login"
+      ? { email: form.values.email, password: form.values.password }
+      : form.values;
+    const withToken = { ...baseFields, turnstile_token: turnstileToken || undefined };
     const r = mode === "login"
-      ? safeParse(LoginSchema, { email: form.values.email, password: form.values.password })
-      : safeParse(SignupSchema, form.values);
+      ? safeParse(LoginSchema, withToken)
+      : safeParse(SignupSchema, withToken);
     if (!r.ok) {
       form.setErrors(r.errors);
       return;
@@ -347,15 +369,18 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
     setBusy(true);
     try {
       if (mode === "login") {
-        await api.auth.login(r.data as { email: string; password: string });
+        await api.auth.login(r.data as { email: string; password: string; turnstile_token?: string });
       } else {
-        await api.auth.signup(r.data as { email: string; password: string; name?: string });
+        await api.auth.signup(r.data as { email: string; password: string; name?: string; turnstile_token?: string });
       }
       onLoggedIn();
     } catch (e) {
       const fields = errorFields(e);
       if (fields) form.setErrors(fields);
       else setTopError(humanError(errorCode(e)));
+      // Turnstile tokens are single-use; clear so the widget re-mints one
+      // for the next attempt. The widget's expired-callback also nukes it.
+      setTurnstileToken("");
     } finally {
       setBusy(false);
     }
@@ -397,6 +422,9 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
                     error={form.fieldError("name")}
                   />
                 )}
+                {turnstileSiteKey !== null && (
+                  <TurnstileWidget siteKey={turnstileSiteKey} onVerify={setTurnstileToken} />
+                )}
                 <Stack direction="row" gap="condensed" align="center">
                   <Button type="submit" variant="primary" disabled={busy}>
                     {mode === "login" ? "Sign in" : "Create account"}
@@ -435,5 +463,9 @@ function humanError(code: string): string {
     invalid_credentials: "Wrong email or password.",
     email_taken: "Email is already registered.",
     signup_disabled: "Signup is disabled on this instance.",
+    account_locked: "Too many failed attempts. Try again in a few minutes.",
+    captcha_required: "Please complete the verification challenge.",
+    captcha_failed: "Verification failed. Refresh and try again.",
+    rate_limited: "You're doing that too fast. Slow down and try again shortly.",
   }[code] ?? code;
 }

@@ -8,6 +8,7 @@ import { createORPCClient, ORPCError } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { RouterClient } from "@orpc/server";
 import type { AppRouter } from "./rpc";
+import { __resetLimitsState } from "./lib/limits";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +21,10 @@ export interface TestApp {
 }
 
 export function setupTestApp(): TestApp {
+  // Reset in-memory anti-abuse stores so per-describe tests don't leak state
+  // (login lockouts and write-rate counters live at module scope).
+  __resetLimitsState();
+
   const dir = mkdtempSync(join(tmpdir(), "uncon-test-"));
   const dbPath = join(dir, "test.sqlite");
   const url = `file:${dbPath}`;

@@ -62,6 +62,34 @@ spec:
             - name: WORKERS
               value: {{ .Values.workers.count | quote }}
             {{- end }}
+            {{- with .Values.limits }}
+            - name: MAX_CONFERENCES_PER_USER
+              value: {{ .maxConferencesPerUser | quote }}
+            - name: MAX_SESSIONS_PER_USER_PER_CONFERENCE
+              value: {{ .maxSessionsPerUserPerConference | quote }}
+            - name: MAX_PARTICIPANTS_PER_CONFERENCE
+              value: {{ .maxParticipantsPerConference | quote }}
+            - name: MAX_PENDING_INVITES_PER_CONFERENCE
+              value: {{ .maxPendingInvitesPerConference | quote }}
+            - name: MAX_ROOMS_PER_CONFERENCE
+              value: {{ .maxRoomsPerConference | quote }}
+            - name: LOGIN_FAIL_LIMIT
+              value: {{ .loginFailLimit | quote }}
+            - name: LOGIN_FAIL_WINDOW_MIN
+              value: {{ .loginFailWindowMin | quote }}
+            - name: LOGIN_LOCKOUT_MIN
+              value: {{ .loginLockoutMin | quote }}
+            - name: WRITES_PER_HOUR_PER_USER
+              value: {{ .writesPerHourPerUser | quote }}
+            {{- end }}
+            {{- if and .Values.turnstile .Values.turnstile.siteKey }}
+            - name: TURNSTILE_SITE_KEY
+              value: {{ .Values.turnstile.siteKey | quote }}
+            {{- end }}
+            {{- if and .Values.turnstile .Values.turnstile.secretKey }}
+            - name: TURNSTILE_SECRET_KEY
+              value: {{ .Values.turnstile.secretKey | quote }}
+            {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
