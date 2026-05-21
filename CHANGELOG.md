@@ -1,5 +1,20 @@
 # simple-unconference
 
+## 0.6.3
+
+### Patch Changes
+
+- [`78f7582`](https://github.com/enyineer/simple-unconference/commit/78f75822a882d62113a49b1f562e5c1a1b7059f5) Thanks [@enyineer](https://github.com/enyineer)! - Chart: annotate the SQLite PVC with `helm.sh/resource-policy: keep` so `helm uninstall` no longer drops the database.
+
+  Local-path (and many other dynamic) storage classes default to `persistentVolumeReclaimPolicy: Delete`. Combined with helm owning the PVC, a stray `helm uninstall` (or a GitOps controller recreating the release) would delete the PVC → PV → on-disk SQLite file with no recourse. The `keep` policy makes Helm leave the PVC alone on uninstall; if you actually want to drop the data, `kubectl delete pvc <name>` it explicitly.
+
+  Existing installs aren't migrated automatically — annotate the PVC in place once:
+
+  ```
+  kubectl -n <ns> annotate pvc <release>-simple-unconference-data \
+    helm.sh/resource-policy=keep
+  ```
+
 ## 0.6.2
 
 ### Patch Changes
