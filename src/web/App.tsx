@@ -8,15 +8,22 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 
 // Lazy-load each page in its own chunk.
 const LoginPage = lazy(() =>
-  import("./pages/Login").then((m) => ({ default: m.LoginPage })));
+  import("./pages/Login").then((m) => ({ default: m.LoginPage })),
+);
 const ConferencesPage = lazy(() =>
-  import("./pages/Conferences").then((m) => ({ default: m.ConferencesPage })));
+  import("./pages/Conferences").then((m) => ({ default: m.ConferencesPage })),
+);
 const ConferencePage = lazy(() =>
-  import("./pages/Conference").then((m) => ({ default: m.ConferencePage })));
+  import("./pages/Conference").then((m) => ({ default: m.ConferencePage })),
+);
 const JoinPage = lazy(() =>
-  import("./pages/Join").then((m) => ({ default: m.JoinPage })));
+  import("./pages/Join").then((m) => ({ default: m.JoinPage })),
+);
 const ConferenceLoginPage = lazy(() =>
-  import("./pages/ConferenceLogin").then((m) => ({ default: m.ConferenceLoginPage })));
+  import("./pages/ConferenceLogin").then((m) => ({
+    default: m.ConferenceLoginPage,
+  })),
+);
 
 // Owner identity (global User). Only used by the owner-facing ConferencesPage
 // and the global LoginPage. No `color_mode` here — that preference lives on
@@ -38,13 +45,146 @@ export interface ConfMe {
   color_mode: ColorMode;
 }
 
-interface ConferenceSummary { slug: string; design_system: string; }
+interface ConferenceSummary {
+  slug: string;
+  design_system: string;
+}
 
 function MinimalLoading() {
   return (
-    <div style={{ padding: 24, fontFamily: "system-ui", color: "var(--fgColor-default, inherit)" }}>
+    <div
+      style={{
+        padding: 24,
+        fontFamily: "system-ui",
+        color: "var(--fgColor-default, inherit)",
+      }}
+    >
       Loading…
     </div>
+  );
+}
+
+// Footer is intentionally NOT wired through the design-system wrappers — we
+// want plain inheritable colors so links can match the muted foreground.
+// Primer exposes it as `--fgColor-muted`; the minimal plugin uses
+// `--uncon-fg-muted`. Both border vars get the same treatment.
+function FooterIconLink({
+  href,
+  label,
+  children,
+}: {
+  href: string;
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={label}
+      title={label}
+      className="app-footer-link"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 36,
+        height: 36,
+        borderRadius: 999,
+        color: "inherit",
+        textDecoration: "none",
+        transition:
+          "color 120ms ease, background 120ms ease, transform 120ms ease",
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
+const FOOTER_HOVER_STYLE = `
+.app-footer-link:hover {
+  color: var(--fgColor-default, var(--uncon-fg, inherit));
+  background: var(--bgColor-muted, var(--uncon-bg-subtle, rgba(127,127,127,0.08)));
+  transform: translateY(-1px);
+}
+.app-footer-link:focus-visible {
+  outline: 2px solid var(--fgColor-accent, var(--uncon-primary, #2563eb));
+  outline-offset: 2px;
+}
+`;
+
+function Footer() {
+  return (
+    <footer
+      style={{
+        marginTop: 32,
+        padding: "20px 24px 28px",
+        borderTop:
+          "1px solid var(--borderColor-muted, var(--uncon-border-muted, rgba(127,127,127,0.18)))",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 8,
+        color: "var(--fgColor-muted, var(--uncon-fg-muted, #6b7280))",
+        fontSize: 12,
+        letterSpacing: 0.2,
+      }}
+    >
+      <style>{FOOTER_HOVER_STYLE}</style>
+      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+        <FooterIconLink
+          href="https://github.com/enyineer/simple-unconference"
+          label="GitHub repository"
+        >
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path d="M12 .5C5.73.5.75 5.48.75 11.75c0 4.96 3.22 9.16 7.69 10.65.56.1.77-.24.77-.54v-2.1c-3.13.68-3.79-1.32-3.79-1.32-.51-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.69.08-.69 1.13.08 1.72 1.16 1.72 1.16 1 1.72 2.63 1.22 3.27.93.1-.73.39-1.22.71-1.5-2.5-.29-5.13-1.25-5.13-5.56 0-1.23.44-2.23 1.16-3.02-.12-.29-.5-1.44.11-3 0 0 .95-.3 3.1 1.15a10.7 10.7 0 0 1 5.64 0c2.15-1.45 3.1-1.15 3.1-1.15.61 1.56.23 2.71.11 3 .72.79 1.16 1.79 1.16 3.02 0 4.32-2.63 5.27-5.14 5.55.4.35.76 1.03.76 2.08v3.08c0 .3.2.65.78.54 4.46-1.49 7.68-5.69 7.68-10.65C23.25 5.48 18.27.5 12 .5z" />
+          </svg>
+        </FooterIconLink>
+        <FooterIconLink href="https://enking.dev" label="enking.dev">
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <path d="M3 12h18" />
+            <path d="M12 3a13.5 13.5 0 0 1 0 18a13.5 13.5 0 0 1 0-18z" />
+          </svg>
+        </FooterIconLink>
+      </div>
+      <div style={{ opacity: 0.75 }}>
+        Crafted by{" "}
+        <a
+          href="https://enking.dev"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="app-footer-link"
+          style={{
+            color: "inherit",
+            textDecoration: "none",
+            fontWeight: 500,
+            padding: "0 4px",
+            borderRadius: 4,
+          }}
+        >
+          enking.dev
+        </a>
+      </div>
+    </footer>
   );
 }
 
@@ -70,20 +210,35 @@ export function App() {
   const [confDs, setConfDs] = useState<string | null>(null);
 
   async function loadOwner() {
-    try { setOwner(await api.auth.me()); }
-    catch { setOwner(null); }
+    try {
+      setOwner(await api.auth.me());
+    } catch {
+      setOwner(null);
+    }
   }
-  useEffect(() => { loadOwner(); }, []);
+  useEffect(() => {
+    loadOwner();
+  }, []);
 
   // Per-conference identity: fetch whenever the active conference slug changes.
   useEffect(() => {
-    if (!confSlug) { setConfMe(undefined); return; }
+    if (!confSlug) {
+      setConfMe(undefined);
+      return;
+    }
     let cancelled = false;
     setConfMe(undefined);
-    api.conferences.me({ slug: confSlug })
-      .then((m) => { if (!cancelled) setConfMe(m); })
-      .catch(() => { if (!cancelled) setConfMe(null); });
-    return () => { cancelled = true; };
+    api.conferences
+      .me({ slug: confSlug })
+      .then((m) => {
+        if (!cancelled) setConfMe(m);
+      })
+      .catch(() => {
+        if (!cancelled) setConfMe(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [confSlug]);
 
   // Design system: fetch per-conference. Anonymous (no auth required for the
@@ -91,33 +246,49 @@ export function App() {
   // the default plugin if not authorized yet so JoinPage / ConferenceLogin
   // still render with sensible branding).
   useEffect(() => {
-    if (!confSlug) { setConfDs(null); return; }
+    if (!confSlug) {
+      setConfDs(null);
+      return;
+    }
     let cancelled = false;
-    api.conferences.get({ slug: confSlug })
-      .then((c: ConferenceSummary) => { if (!cancelled) setConfDs(c.design_system || DEFAULT_PLUGIN_ID); })
-      .catch(() => { if (!cancelled) setConfDs(DEFAULT_PLUGIN_ID); });
-    return () => { cancelled = true; };
+    api.conferences
+      .get({ slug: confSlug })
+      .then((c: ConferenceSummary) => {
+        if (!cancelled) setConfDs(c.design_system || DEFAULT_PLUGIN_ID);
+      })
+      .catch(() => {
+        if (!cancelled) setConfDs(DEFAULT_PLUGIN_ID);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [confSlug]);
 
   const activePluginId = confSlug && confDs ? confDs : DEFAULT_PLUGIN_ID;
   const activeColorMode: ColorMode = confSlug
-    ? (confMe?.color_mode ?? "auto")
+    ? confMe?.color_mode ?? "auto"
     : ownerColorMode;
 
   // Color-mode setter — applies to whichever scope is active.
-  const setColorMode = useCallback(async (mode: ColorMode) => {
-    if (confSlug && confMe) {
-      setConfMe({ ...confMe, color_mode: mode });
-      try {
-        const updated = await api.conferences.updateConfMe({ slug: confSlug, color_mode: mode });
-        setConfMe(updated);
-      } catch (e) {
-        if (e instanceof ApiError) setConfMe(confMe);
+  const setColorMode = useCallback(
+    async (mode: ColorMode) => {
+      if (confSlug && confMe) {
+        setConfMe({ ...confMe, color_mode: mode });
+        try {
+          const updated = await api.conferences.updateConfMe({
+            slug: confSlug,
+            color_mode: mode,
+          });
+          setConfMe(updated);
+        } catch (e) {
+          if (e instanceof ApiError) setConfMe(confMe);
+        }
+        return;
       }
-      return;
-    }
-    setOwnerColorMode(mode);
-  }, [confSlug, confMe]);
+      setOwnerColorMode(mode);
+    },
+    [confSlug, confMe],
+  );
 
   function renderPage() {
     // ----- anonymous, conference-scoped routes -----
@@ -186,10 +357,9 @@ export function App() {
       fallback={<MinimalLoading />}
     >
       <ErrorBoundary resetKey={path}>
-        <Suspense fallback={<MinimalLoading />}>
-          {renderPage()}
-        </Suspense>
+        <Suspense fallback={<MinimalLoading />}>{renderPage()}</Suspense>
       </ErrorBoundary>
+      <Footer />
     </DesignSystemProvider>
   );
 }

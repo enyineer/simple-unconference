@@ -1,4 +1,4 @@
-# simple-unconference
+# Simple Unconference Web App
 
 A self-hostable platform for running unconferences end-to-end: people, rooms, sessions, scheduling, mixers, expert bookings and notifications — all in one app.
 
