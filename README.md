@@ -59,6 +59,55 @@ volumes:
 
 Override `DATABASE_URL` if you want to point at libSQL/Turso instead of the bundled SQLite file. Override `PORT` to bind a different port inside the container. The image exposes a healthcheck at `GET /api/health`.
 
+## Deploy to Kubernetes (Helm)
+
+A Helm chart is published alongside each release at [`oci://ghcr.io/enyineer/charts/simple-unconference`](https://github.com/enyineer/simple-unconference/pkgs/container/charts%2Fsimple-unconference). Chart and `appVersion` are kept in lockstep with the app version, so the chart tag matches the image tag (`0.3.0`, `0.4.0`, …).
+
+```bash
+# install with defaults (sqlite + 1Gi PVC at /app/data)
+helm install unconf oci://ghcr.io/enyineer/charts/simple-unconference --version <version>
+
+# upgrade
+helm upgrade unconf oci://ghcr.io/enyineer/charts/simple-unconference --version <new-version>
+```
+
+Useful values:
+
+```yaml
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: unconference.example.org
+      paths: [{ path: /, pathType: Prefix }]
+
+database:
+  type: sqlite
+  sqlite:
+    persistence:
+      enabled: true
+      size: 5Gi
+      storageClass: standard  # or: existingClaim: my-pvc
+```
+
+Source: [`charts/simple-unconference/`](charts/simple-unconference/). The chart provisions a `Deployment` (Recreate strategy so the RWO PVC hands cleanly between pods), `Service`, optional `Ingress`, the SQLite `PersistentVolumeClaim`, and a `Secret` carrying `DATABASE_URL`. Probes hit `/api/health`.
+
+**Postgres mode is wired but not yet usable.** `database.type: postgres` will assemble a `DATABASE_URL` from `host`/`user`/`password`/`database`/`sslmode` (or pull a full URL from an `existingSecret`), but the app currently uses the [`@prisma/adapter-libsql`](src/server/db.ts) driver-adapter and the Prisma schema is pinned to `provider = "sqlite"`. Until those are swapped (and the migrations regenerated for the postgres provider), running the chart in postgres mode will boot the app against a connection it can't speak. Tracked as a future enhancement; sqlite mode is the supported path today.
+
+## One-click PaaS deploys
+
+The app needs a **persistent disk** (for `/app/data/prod.sqlite`) and a **long-running process** (Bun + Hono), so serverless platforms like **Vercel** and **Netlify** are not a fit — their ephemeral filesystems would lose the database on every cold start, and the Hono server isn't a function. Use a PaaS that runs containers with attached volumes:
+
+| Provider | How |
+| --- | --- |
+| **Railway** | New Service → *Deploy from Docker image* → `ghcr.io/enyineer/simple-unconference:latest`. Attach a Volume mounted at `/app/data`. Expose port `3000`. |
+| **Render** | New Web Service → *Deploy an existing image* → `ghcr.io/enyineer/simple-unconference:latest`. Add a Persistent Disk mounted at `/app/data`. Health check path: `/api/health`. |
+| **Fly.io** | `fly launch --image ghcr.io/enyineer/simple-unconference:latest --internal-port 3000` then `fly volumes create data --size 1` and mount it at `/app/data` in `fly.toml`. |
+| **DigitalOcean App Platform** | Create App → *Container Image* (DOCR or external registry) → `ghcr.io/enyineer/simple-unconference:latest`. Add a persistent volume at `/app/data`. |
+| **Hetzner / Scaleway / any VM** | Use the [Docker Compose](#deploy-with-docker) snippet above. |
+
+A true "Deploy to …" button needs a provider-specific config file (`render.yaml`, Railway template, `fly.toml`, …) and isn't shipped yet — file an issue if you'd like one for a specific provider.
+
 ## Features
 
 ### Sessions
