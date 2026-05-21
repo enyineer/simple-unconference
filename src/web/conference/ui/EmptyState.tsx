@@ -2,7 +2,16 @@
 // scheduled yet" placeholders so the layout doesn't look broken when a tab
 // has no content.
 
-export function EmptyState({ message }: { message: string }) {
+import type { ReactNode } from "react";
+
+export function EmptyState({
+  message,
+  action,
+}: {
+  message: string;
+  /** Optional CTA rendered below the message (e.g. "Clear filters"). */
+  action?: ReactNode;
+}) {
   return (
     <div style={{
       padding: 24,
@@ -11,8 +20,13 @@ export function EmptyState({ message }: { message: string }) {
       color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
       fontSize: 13,
       textAlign: "center",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      gap: 12,
     }}>
-      {message}
+      <div>{message}</div>
+      {action}
     </div>
   );
 }
