@@ -9,6 +9,7 @@
     "start": "bun src/server/index.ts",
     "test": "bun test",
     "test:scale": "bun test src/server/assignment.scale.test.ts",
+    "loadtest": "bun scripts/loadtest.ts",
     "build": "vite build",
     "preview": "vite preview",
     "changeset": "changeset",

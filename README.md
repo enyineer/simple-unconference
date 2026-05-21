@@ -267,6 +267,34 @@ bun test src/server/routes.test.ts          # HTTP integration
 
 The assignment algorithm is a pure function and the most heavily covered piece (units + scale + integration). Integration tests run against a fresh per-describe SQLite file.
 
+## Load testing
+
+A self-contained load runner ships in [`scripts/loadtest.ts`](scripts/loadtest.ts). It bootstraps a known scenario (one owner, one conference, eight published sessions — created on first run, reused on subsequent runs) and then hammers the read paths an attendee actually hits from `--users` concurrent virtual users for `--duration` seconds.
+
+```bash
+# defaults: 50 users, 30s, http://localhost:3000
+bun run loadtest
+
+# remote target, longer run
+bun run loadtest -- --base https://unconf.example.com --users 200 --duration 90s
+
+# add per-VU pause to simulate think time
+bun run loadtest -- --users 500 --think-ms 100
+```
+
+Output is a per-endpoint latency table plus a capacity verdict:
+
+```
+=== Capacity ===
+State:                HEALTHY | STRESSED | OVERLOADED
+Estimated capacity:   ~N active users at this configuration
+Note:                 …
+```
+
+The active-user estimate assumes ~0.5 req/s per attendee (the `NotificationBell` polls every 30s plus light interactive traffic). For "what resources do I need" runs, point the script at different chart configurations (`workers.count`, `resources.limits.cpu/memory`) and compare the verdict + estimate across runs. The script needs a running server (local `bun run start` or a deployed instance) and is idempotent across runs — leftover data is harmless.
+
+If `DISABLE_SIGNUP` is set on the target, the script tries `auth.login` directly so re-runs against locked-down instances still work as long as the owner account already exists.
+
 ## Adding a design system
 
 1. Implement [`DesignSystem`](src/web/design-system/core/contract.tsx) in `src/web/design-system/<id>/index.tsx`.
