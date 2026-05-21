@@ -17,7 +17,8 @@ type NotificationKind =
   | "unconf_assigned"
   | "mixer_assigned"
   | "expert_booked"
-  | "expert_booking_cancelled";
+  | "expert_booking_cancelled"
+  | "quota_threshold";
 
 interface NotificationItem {
   id: number;
@@ -395,6 +396,7 @@ function KindIcon({ kind }: { kind: NotificationKind }) {
     expert_booked: "var(--bgColor-success-muted, rgba(31,136,61,0.14))",
     expert_booking_cancelled:
       "var(--bgColor-danger-muted, rgba(207,34,46,0.14))",
+    quota_threshold: "var(--bgColor-attention-muted, rgba(187,128,9,0.16))",
   };
   const fgByKind: Record<NotificationKind, string> = {
     submission_published: "var(--fgColor-success, #1f883d)",
@@ -404,6 +406,7 @@ function KindIcon({ kind }: { kind: NotificationKind }) {
     mixer_assigned: "var(--fgColor-accent, #2563eb)",
     expert_booked: "var(--fgColor-success, #1f883d)",
     expert_booking_cancelled: "var(--fgColor-danger, #cf222e)",
+    quota_threshold: "var(--fgColor-attention, #9a6700)",
   };
   const glyph: Record<NotificationKind, string> = {
     submission_published: "✓",
@@ -413,6 +416,7 @@ function KindIcon({ kind }: { kind: NotificationKind }) {
     mixer_assigned: "→",
     expert_booked: "★",
     expert_booking_cancelled: "×",
+    quota_threshold: "%",
   };
   return (
     <span

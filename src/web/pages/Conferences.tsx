@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  PageLayout, Heading, Stack, Button, TextInput, Form, Banner, Sheet, Spinner,
+  PageLayout, Heading, Stack, Button, TextInput, Form, Banner, Sheet, Spinner, Text,
 } from "../design-system";
 import type { ColorMode } from "../design-system/core/contract";
 import { AccountMenu } from "../components/AccountMenu";
 import { api, errorCode } from "../api";
+import { quotaErrorMessage } from "../quotaErrors";
 import { detectLocalTimeZone, listTimeZones } from "../../shared/tz";
 import { SearchableSelect } from "../conference/ui/SearchableSelect";
 
@@ -30,12 +31,23 @@ export function ConferencesPage({
 }: ConferencesPageProps) {
   const [confs, setConfs] = useState<Conf[] | null>(null);
   const [creating, setCreating] = useState(false);
+  // null limit = no per-account cap on this instance; null overall = still
+  // loading config.get. We hide the quota line in both cases.
+  const [maxConferences, setMaxConferences] = useState<number | null | undefined>(undefined);
 
   async function refresh() {
     try { setConfs(await api.conferences.list()); }
     catch { setConfs([]); }
   }
   useEffect(() => { refresh(); }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.config.get()
+      .then((c) => { if (!cancelled) setMaxConferences(c.max_conferences_per_user); })
+      .catch(() => { if (!cancelled) setMaxConferences(null); });
+    return () => { cancelled = true; };
+  }, []);
 
   async function logout() {
     await api.auth.logout();
@@ -89,6 +101,17 @@ export function ConferencesPage({
               />
             ))}
           </Stack>
+        )}
+
+        {/* Owner quota hint. Only counts conferences the viewer actually owns
+            (not ones they were invited into as moderator/participant). Hidden
+            when the instance disables the cap (limit=null) or while config
+            is still loading. */}
+        {confs !== null && maxConferences !== undefined && maxConferences !== null && (
+          <OwnerQuotaHint
+            current={confs.filter((c) => c.role === "owner").length}
+            limit={maxConferences}
+          />
         )}
       </Stack>
     </PageLayout>
@@ -244,7 +267,7 @@ function NewConferenceForm({
       const conf = await api.conferences.create({ name, timezone });
       await onCreated(conf.slug);
     } catch (e) {
-      setError(errorCode(e));
+      setError(quotaErrorMessage(e) ?? errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -276,5 +299,27 @@ function NewConferenceForm({
         </Stack>
       </Form>
     </Stack>
+  );
+}
+
+// Quota hint shown beneath the conference list. Stays subtle when there's
+// headroom; goes warning-coloured at 80% and critical at the cap, mirroring
+// the SettingsTab usage bars so the visual language is consistent.
+function OwnerQuotaHint({ current, limit }: { current: number; limit: number }) {
+  const ratio = current / limit;
+  const state: "ok" | "warn" | "full" =
+    ratio >= 1 ? "full" : ratio >= 0.8 ? "warn" : "ok";
+  const color =
+    state === "full" ? "var(--fgColor-danger, #cf222e)"
+      : state === "warn" ? "var(--fgColor-attention, #9a6700)"
+        : "var(--fgColor-muted, #6e7781)";
+  const message =
+    state === "full"
+      ? `You've reached this instance's cap of ${limit} owned conference${limit === 1 ? "" : "s"}. Delete or transfer one before creating another.`
+      : `${current} of ${limit} owned conference${limit === 1 ? "" : "s"} used on this instance.`;
+  return (
+    <Text>
+      <span style={{ color, fontSize: 13 }}>{message}</span>
+    </Text>
   );
 }

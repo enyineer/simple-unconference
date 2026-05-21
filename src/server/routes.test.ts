@@ -189,13 +189,23 @@ describe("public config + DISABLE_SIGNUP", () => {
       // Default: signup enabled, account creation works.
       delete process.env.DISABLE_SIGNUP;
       const open = new Client(ctx.app);
-      expect(await open.rpc.config.get()).toEqual({ signup_enabled: true, turnstile_site_key: null });
+      expect(await open.rpc.config.get()).toEqual({
+        signup_enabled: true,
+        turnstile_site_key: null,
+        max_conferences_per_user: LIMITS.maxConferencesPerUser,
+        max_sessions_per_user_per_conference: LIMITS.maxSessionsPerUserPerConference,
+      });
       await open.rpc.auth.signup({ email: "before@example.com", password: "secret123" });
 
       // Flip the env var: config flips and signup gets a domain error.
       process.env.DISABLE_SIGNUP = "1";
       const locked = new Client(ctx.app);
-      expect(await locked.rpc.config.get()).toEqual({ signup_enabled: false, turnstile_site_key: null });
+      expect(await locked.rpc.config.get()).toEqual({
+        signup_enabled: false,
+        turnstile_site_key: null,
+        max_conferences_per_user: LIMITS.maxConferencesPerUser,
+        max_sessions_per_user_per_conference: LIMITS.maxSessionsPerUserPerConference,
+      });
       try {
         await locked.rpc.auth.signup({ email: "blocked@example.com", password: "secret123" });
         throw new Error("expected signup to be rejected");

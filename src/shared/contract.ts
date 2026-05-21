@@ -69,9 +69,28 @@ interface ConfCreated {
   id: number; name: string; slug: string;
   owner_id: number; timezone: string; created_at: number;
 }
+// Live counters versus their configured caps. Each entry carries `null`
+// for `limit` when the corresponding env var is 0 (unlimited) so the UI
+// can skip rendering a progress bar in that case.
+interface ConfUsage {
+  participants:    { current: number; limit: number | null };
+  pending_invites: { current: number; limit: number | null };
+  rooms:           { current: number; limit: number | null };
+  // Per-user cap, so no per-conference limit to render — just the total
+  // count for visibility. limit is always null here.
+  total_sessions:  { current: number; limit: null };
+}
+
 interface ConfDetail extends ConfCreated {
   design_system: string;
   my_role: "owner" | "moderator" | "participant";
+  // Total submissions in this conference attributed to the calling identity,
+  // counting every status (submitted, published, rejected, finished). Mirrors
+  // exactly what the server's per-user-per-conference quota checks against,
+  // so the Sessions tab can render "X / N" without filtering a list the
+  // caller may not see in full (rejected/finished submissions are hidden
+  // from non-mod viewers in `submissions.list`).
+  my_session_count: number;
   // Default avoid-repeats mode applied to new mixer slots. Mods can flip this
   // per slot via `agenda.updateSlot` (`mixer_avoid_repeats`).
   mixer_avoid_repeats_default: boolean;
@@ -83,6 +102,10 @@ interface ConfDetail extends ConfCreated {
   // participant-facing submit UI hides itself; the server rejects
   // `submissions.create` from participants with a 403.
   participant_submissions_enabled: boolean;
+  // Mod-only quota visibility. `null` for participants; populated only when
+  // the caller is moderator or owner. Surfaces in the Settings tab's Usage
+  // card.
+  usage: ConfUsage | null;
 }
 
 interface ParticipantOut {
@@ -389,7 +412,8 @@ type NotificationKind =
   | "unconf_assigned"
   | "mixer_assigned"
   | "expert_booked"
-  | "expert_booking_cancelled";
+  | "expert_booking_cancelled"
+  | "quota_threshold";
 
 interface NotificationOut {
   id: number;
@@ -413,10 +437,17 @@ interface NotificationListOut {
 // affordances to show before any session exists. `turnstile_site_key` is
 // null when Cloudflare Turnstile is disabled on this instance; non-null
 // means the client must render the widget and submit a token with
-// signup / login / signupViaLink.
+// signup / login / signupViaLink. `max_conferences_per_user` is null when
+// the cap is disabled; the Conferences overview surfaces it as a quota
+// hint alongside the count the user already owns.
 interface PublicConfigOut {
   signup_enabled: boolean;
   turnstile_site_key: string | null;
+  max_conferences_per_user: number | null;
+  // Per-user cap on submissions within a single conference. Surfaced so the
+  // Sessions tab can show "X of N submitted" before the user tries to add
+  // their (N+1)th one.
+  max_sessions_per_user_per_conference: number | null;
 }
 
 export const contract = {

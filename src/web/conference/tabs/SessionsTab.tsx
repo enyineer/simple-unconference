@@ -14,6 +14,7 @@ import {
   Textarea,
 } from "../../design-system";
 import { api, ApiError, errorCode } from "../../api";
+import { quotaErrorMessage } from "../../quotaErrors";
 import type { Participant, Role, Room, Submission } from "../types";
 import { parseLabels, submitterLabel } from "../helpers";
 import { EmptyState } from "../ui/EmptyState";
@@ -31,6 +32,9 @@ export function SessionsTab({
   role,
   submissionMaxPlacementsDefault,
   participantSubmissionsEnabled,
+  mySessionCount,
+  maxSessionsPerUser,
+  onSessionMutated,
 }: {
   slug: string;
   role: Role;
@@ -41,6 +45,14 @@ export function SessionsTab({
    * button is hidden for them and a short notice explains why. Mods + owners
    * always see the button. */
   participantSubmissionsEnabled: boolean;
+  /** Submissions in this conference owned by the calling identity (every
+   *  status, not just visible ones). Drives the "X / N submitted" hint. */
+  mySessionCount: number;
+  /** Per-user-per-conference cap from the instance config. null = disabled. */
+  maxSessionsPerUser: number | null;
+  /** Tell the parent to refresh `conferences.get` after a create/delete so
+   *  mySessionCount stays accurate without polling. */
+  onSessionMutated: () => void;
 }) {
   const isMod = role === "owner" || role === "moderator";
   const [subs, setSubs] = useState<Submission[] | null>(null);
@@ -120,6 +132,7 @@ export function SessionsTab({
     try {
       await api.submissions.delete({ slug, id: s.id });
       await refresh();
+      onSessionMutated();
     } catch (e) {
       alert(errorCode(e));
     }
@@ -266,6 +279,14 @@ export function SessionsTab({
         </Banner>
       )}
 
+      {/* Per-user quota hint. Hidden when the cap is disabled (limit=null)
+          or when the viewer can't submit anyway (participant + submissions
+          closed). Counts ALL the viewer's submissions, including rejected
+          / finished, since those consume cap slots. */}
+      {maxSessionsPerUser !== null && (isMod || participantSubmissionsEnabled) && (
+        <MySessionQuotaHint current={mySessionCount} limit={maxSessionsPerUser} />
+      )}
+
       {submitNotice && <Banner variant="success">{submitNotice}</Banner>}
 
       <Sheet
@@ -291,6 +312,7 @@ export function SessionsTab({
                   : "Submitted. A moderator will review it before others can see it. You can edit and delete it from this page until then.",
               );
               await refresh();
+              onSessionMutated();
             }}
           />
         )}
@@ -396,6 +418,7 @@ export function SessionsTab({
             onSaved={async () => {
               setEditingId(null);
               await refresh();
+              onSessionMutated();
             }}
           />
         )}
@@ -1094,7 +1117,7 @@ function SessionForm(props: SessionFormProps) {
       }
       await onSaved();
     } catch (e) {
-      setError(errorCode(e));
+      setError(quotaErrorMessage(e) ?? errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -1391,5 +1414,28 @@ function RoomTagPicker({
         })}
       </div>
     </Stack>
+  );
+}
+
+// Mod- and participant-facing reminder of the per-user submission cap on
+// this conference. The count includes rejected/finished sessions since
+// those still occupy quota slots on the server (participants would not see
+// them in `submissions.list`, hence the explicit prop instead of filtering
+// the visible list).
+function MySessionQuotaHint({ current, limit }: { current: number; limit: number }) {
+  const remaining = Math.max(0, limit - current);
+  const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
+  const accent = remaining === 0
+    ? "var(--fgColor-danger, #cf222e)"
+    : remaining <= Math.max(1, Math.floor(limit * 0.2))
+      ? "var(--fgColor-attention, #9a6700)"
+      : muted;
+  const message = remaining === 0
+    ? `You've used all ${limit} of your session submissions for this conference. Delete one of yours to free up a slot.`
+    : `${current} of ${limit} session submissions used (${remaining} remaining).`;
+  return (
+    <Text>
+      <span style={{ color: accent, fontSize: 13 }}>{message}</span>
+    </Text>
   );
 }

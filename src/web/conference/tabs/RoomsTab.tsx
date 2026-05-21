@@ -3,6 +3,7 @@ import {
   Banner, Button, Form, Heading, Sheet, Spinner, Stack, TextInput, Textarea,
 } from "../../design-system";
 import { api, ApiError, errorCode } from "../../api";
+import { quotaErrorMessage } from "../../quotaErrors";
 import type { Room } from "../types";
 import { parseLabels } from "../helpers";
 import { EmptyState } from "../ui/EmptyState";
@@ -37,7 +38,7 @@ export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
       setName(""); setCapacity("20"); setDescription(""); setTags("");
       setAdding(false);
       await refresh();
-    } catch (e) { setError(errorCode(e)); }
+    } catch (e) { setError(quotaErrorMessage(e) ?? errorCode(e)); }
   }
 
   async function remove(id: number) {

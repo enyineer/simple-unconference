@@ -49,6 +49,10 @@ export function ConferencePage({
   const [conf, setConf] = useState<ConferenceDetail | null>(null);
   const [tab, setTab] = useState<Tab>("sessions");
   const [error, setError] = useState<string | null>(null);
+  // Instance-wide per-user submission cap, surfaced via the public config
+  // endpoint so SessionsTab can render an "X / N" hint. null = cap disabled
+  // on this instance; undefined = still loading.
+  const [maxSessionsPerUser, setMaxSessionsPerUser] = useState<number | null | undefined>(undefined);
 
   useEffect(() => {
     setError(null);
@@ -56,6 +60,14 @@ export function ConferencePage({
       .then(setConf)
       .catch((e: unknown) => setError(e instanceof ApiError ? errorCode(e) : "error"));
   }, [slug]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.config.get()
+      .then((c) => { if (!cancelled) setMaxSessionsPerUser(c.max_sessions_per_user_per_conference); })
+      .catch(() => { if (!cancelled) setMaxSessionsPerUser(null); });
+    return () => { cancelled = true; };
+  }, []);
 
   async function handleSignOut() {
     await api.conferences.logout({ slug });
@@ -105,6 +117,12 @@ export function ConferencePage({
             role={conf.my_role}
             submissionMaxPlacementsDefault={conf.submission_max_placements_default}
             participantSubmissionsEnabled={conf.participant_submissions_enabled}
+            mySessionCount={conf.my_session_count}
+            maxSessionsPerUser={maxSessionsPerUser ?? null}
+            onSessionMutated={() => {
+              // refetch the conference so my_session_count stays accurate.
+              api.conferences.get({ slug }).then(setConf).catch(() => { /* keep current */ });
+            }}
           />
         )}
         {tab === "agenda"   && <AgendaTab slug={slug} isMod={isMod} timeZone={conf.timezone} mixerAvoidRepeatsDefault={conf.mixer_avoid_repeats_default} />}
@@ -119,6 +137,7 @@ export function ConferencePage({
             currentMixerAvoidRepeats={conf.mixer_avoid_repeats_default}
             currentSubmissionMaxPlacements={conf.submission_max_placements_default}
             currentParticipantSubmissionsEnabled={conf.participant_submissions_enabled}
+            usage={conf.usage}
             onNameChange={(name) => setConf({ ...conf, name })}
             onDsChange={(id) => {
               setConf({ ...conf, design_system: id });

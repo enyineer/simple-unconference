@@ -5,6 +5,13 @@
 
 export type Role = "owner" | "moderator" | "participant";
 
+export interface ConferenceUsage {
+  participants:    { current: number; limit: number | null };
+  pending_invites: { current: number; limit: number | null };
+  rooms:           { current: number; limit: number | null };
+  total_sessions:  { current: number; limit: null };
+}
+
 export interface ConferenceDetail {
   id: number;
   name: string;
@@ -26,6 +33,13 @@ export interface ConferenceDetail {
    *  short notice; the server rejects `submissions.create` with 403. */
   participant_submissions_enabled: boolean;
   my_role: Role;
+  /** Submissions in this conference owned by the calling identity, counting
+   *  every status. Mirrors the server's per-user-per-conference cap exactly,
+   *  so the Sessions tab can render "X / N" honestly even for participants
+   *  who don't see their own rejected/finished sessions in submissions.list. */
+  my_session_count: number;
+  /** Mod-only quota snapshot. Null when the caller is a participant. */
+  usage: ConferenceUsage | null;
 }
 
 export interface Participant {

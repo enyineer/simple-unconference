@@ -3,6 +3,7 @@ import {
   Badge, Banner, Button, Form, Heading, Sheet, Spinner, Stack, TextInput, Textarea, Text,
 } from "../../design-system";
 import { api, errorCode } from "../../api";
+import { quotaErrorMessage } from "../../quotaErrors";
 import type { Participant, Role } from "../types";
 import { EmptyState } from "../ui/EmptyState";
 import { Tip } from "../ui/Tip";
@@ -66,7 +67,7 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
       setSingleEmail("");
       await refresh();
     } catch (e) {
-      setInviteError(humanInviteError(errorCode(e)));
+      setInviteError(quotaErrorMessage(e) ?? humanInviteError(errorCode(e)));
     }
   }
 
@@ -82,7 +83,7 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
       setBulkCsv("");
       await refresh();
     } catch (e) {
-      setInviteError(humanInviteError(errorCode(e)));
+      setInviteError(quotaErrorMessage(e) ?? humanInviteError(errorCode(e)));
     }
   }
 

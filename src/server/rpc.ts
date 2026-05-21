@@ -28,7 +28,7 @@ import {
 } from "./lib/permissions";
 import { assignUnconferenceSlot, assignMixerSlot, pairKey, type AssignmentInput } from "./assignment";
 import { deriveSlots, pickAvailableRoom } from "./experts";
-import { notify, notifyMany, modIdentityIds } from "./notifications";
+import { notify, notifyMany, modIdentityIds, notifyQuotaThreshold } from "./notifications";
 import {
   LIMITS,
   assertQuota,
@@ -225,6 +225,12 @@ const configRouter = {
     return {
       signup_enabled: !isSignupDisabled(),
       turnstile_site_key: turnstileSiteKey(),
+      max_conferences_per_user:
+        LIMITS.maxConferencesPerUser === 0 ? null : LIMITS.maxConferencesPerUser,
+      max_sessions_per_user_per_conference:
+        LIMITS.maxSessionsPerUserPerConference === 0
+          ? null
+          : LIMITS.maxSessionsPerUserPerConference,
     };
   }),
 };
@@ -357,6 +363,44 @@ const conferenceRouter = {
     const conf = await context.prisma.conference.findUniqueOrThrow({
       where: { id: context.conferenceId },
     });
+
+    // Cap-relevant submission count for the *current* identity, regardless
+    // of role. Hidden statuses (rejected, finished) still consume quota slots,
+    // so the client needs the true number — not just what `submissions.list`
+    // returns to them.
+    const mySessionCount = await context.prisma.submission.count({
+      where: { conferenceId: context.conferenceId, submitterId: actorIdentityId(context) },
+    });
+
+    // Mod-only usage counters. Participants see `usage: null` — keeping the
+    // four counts off the public path also avoids leaking exact attendee
+    // counts to non-mods.
+    const isMod = context.principal.role === "owner" || context.principal.role === "moderator";
+    type Usage = {
+      participants:    { current: number; limit: number | null };
+      pending_invites: { current: number; limit: number | null };
+      rooms:           { current: number; limit: number | null };
+      total_sessions:  { current: number; limit: null };
+    };
+    let usage: Usage | null = null;
+    if (isMod) {
+      const [participants, pendingInvites, rooms, totalSessions] = await Promise.all([
+        context.prisma.conferenceIdentity.count({ where: { conferenceId: context.conferenceId } }),
+        context.prisma.conferenceInvite.count({
+          where: { conferenceId: context.conferenceId, claimedAt: null },
+        }),
+        context.prisma.room.count({ where: { conferenceId: context.conferenceId } }),
+        context.prisma.submission.count({ where: { conferenceId: context.conferenceId } }),
+      ]);
+      const toLimit = (n: number) => (n === 0 ? null : n); // 0 = unlimited per LIMITS convention
+      usage = {
+        participants:    { current: participants, limit: toLimit(LIMITS.maxParticipantsPerConference) },
+        pending_invites: { current: pendingInvites, limit: toLimit(LIMITS.maxPendingInvitesPerConference) },
+        rooms:           { current: rooms, limit: toLimit(LIMITS.maxRoomsPerConference) },
+        total_sessions:  { current: totalSessions, limit: null },
+      };
+    }
+
     return {
       id: conf.id, name: conf.name, slug: conf.slug,
       owner_id: conf.ownerId, created_at: conf.createdAt.getTime(),
@@ -366,6 +410,8 @@ const conferenceRouter = {
       submission_max_placements_default: conf.submissionMaxPlacementsDefault,
       participant_submissions_enabled: conf.participantSubmissionsEnabled,
       my_role: context.principal.role,
+      my_session_count: mySessionCount,
+      usage,
     };
   }),
 
@@ -536,6 +582,18 @@ const conferenceRouter = {
         role: "participant",
         expiresAt: new Date(Date.now() + INVITE_TTL_MS),
       },
+    });
+    // Re-count after insert and fire a threshold heads-up if this insert
+    // crossed 80% or hit the cap exactly. Fire-and-forget; mods don't need
+    // to wait for the inbox write.
+    const pendingNow = await context.prisma.conferenceInvite.count({
+      where: { conferenceId: context.conferenceId, claimedAt: null },
+    });
+    void notifyQuotaThreshold(context.prisma, context.conferenceId, {
+      resource: "pending_invites_per_conference",
+      label: "Pending invites",
+      current: pendingNow,
+      limit: LIMITS.maxPendingInvitesPerConference,
     });
     return toInviteOut({ ...invite, conference: { slug: conf.slug } });
   }),
@@ -759,6 +817,15 @@ const conferenceRouter = {
       });
       return created;
     });
+    const participantsNow = await context.prisma.conferenceIdentity.count({
+      where: { conferenceId: conf.id },
+    });
+    void notifyQuotaThreshold(context.prisma, conf.id, {
+      resource: "participants_per_conference",
+      label: "Participants",
+      current: participantsNow,
+      limit: LIMITS.maxParticipantsPerConference,
+    });
     const sessionToken = await createIdentitySession(context.prisma, identity.id);
     setIdentityCookie(context.responseHeaders, conf.id, sessionToken);
     return toConfMeOut(identity);
@@ -810,6 +877,15 @@ const conferenceRouter = {
         data: { usedCount: { increment: 1 } },
       });
       return created;
+    });
+    const participantsNow = await context.prisma.conferenceIdentity.count({
+      where: { conferenceId: conf.id },
+    });
+    void notifyQuotaThreshold(context.prisma, conf.id, {
+      resource: "participants_per_conference",
+      label: "Participants",
+      current: participantsNow,
+      limit: LIMITS.maxParticipantsPerConference,
     });
     const sessionToken = await createIdentitySession(context.prisma, identity.id);
     setIdentityCookie(context.responseHeaders, conf.id, sessionToken);
@@ -927,6 +1003,12 @@ const roomsRouter = {
         tags: { create: tags.map((value) => ({ value })) },
       },
       include: { tags: { select: { value: true }, orderBy: { value: "asc" } } },
+    });
+    void notifyQuotaThreshold(context.prisma, context.conferenceId, {
+      resource: "rooms_per_conference",
+      label: "Rooms",
+      current: roomCount + 1,
+      limit: LIMITS.maxRoomsPerConference,
     });
     return {
       id: room.id, name: room.name, capacity: room.capacity,

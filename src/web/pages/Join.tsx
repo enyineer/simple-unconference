@@ -15,6 +15,7 @@ import { api, errorCode, errorFields } from "../api";
 import { useForm } from "../useForm";
 import { InviteClaimSchema, SignupViaLinkSchema, safeParse } from "../../shared/schemas";
 import { TurnstileWidget } from "../components/TurnstileWidget";
+import { quotaErrorMessage } from "../quotaErrors";
 
 type Mode =
   | { kind: "loading" }
@@ -117,7 +118,7 @@ export function JoinPage({
       } catch (err) {
         const fields = errorFields(err);
         if (fields) form.setErrors(fields);
-        else setTopError(humanError(errorCode(err)));
+        else setTopError(quotaErrorMessage(err) ?? humanError(errorCode(err)));
         setTurnstileToken("");
       } finally { setBusy(false); }
       return;
@@ -140,7 +141,7 @@ export function JoinPage({
       } catch (err) {
         const fields = errorFields(err);
         if (fields) form.setErrors(fields);
-        else setTopError(humanError(errorCode(err)));
+        else setTopError(quotaErrorMessage(err) ?? humanError(errorCode(err)));
         // Turnstile tokens are single-use; clear so the widget mints a fresh
         // one for the retry.
         setTurnstileToken("");
