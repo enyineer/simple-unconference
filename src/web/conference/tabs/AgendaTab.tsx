@@ -1059,26 +1059,30 @@ function TrackEditor({
             <label
               style={{
                 display: "flex",
-                alignItems: "center",
-                gap: 8,
+                alignItems: "flex-start",
+                gap: 10,
                 fontSize: 13,
                 color: "var(--fgColor-default, var(--uncon-fg, inherit))",
+                cursor: "pointer",
               }}
             >
               <input
                 type="checkbox"
                 checked={mandatory}
                 onChange={(e) => setMandatory(e.target.checked)}
+                style={{ marginTop: 3, flexShrink: 0 }}
               />
-              Required for all participants
-              <span
-                style={{
-                  color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
-                  fontSize: 12,
-                }}
-              >
-                — adds to every schedule, can&apos;t be unstarred (use for keynotes,
-                opening/closing)
+              <span style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+                <span style={{ fontWeight: 500 }}>Required for all participants</span>
+                <span
+                  style={{
+                    color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
+                    fontSize: 12,
+                    lineHeight: "16px",
+                  }}
+                >
+                  Adds to every schedule, can&apos;t be unstarred. Use for keynotes, opening/closing.
+                </span>
               </span>
             </label>
             <Stack direction="row" gap="condensed">

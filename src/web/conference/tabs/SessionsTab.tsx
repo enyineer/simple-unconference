@@ -1256,56 +1256,18 @@ function SessionForm(props: SessionFormProps) {
                 onChange={(e) => setCapValue(e.target.value)}
               />
             )}
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                fontSize: 13,
-                color: "var(--fgColor-default, var(--uncon-fg, inherit))",
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={manuallyFinished}
-                onChange={(e) => setManuallyFinished(e.target.checked)}
-              />
-              Mark as finished
-              <span
-                style={{
-                  color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
-                  fontSize: 12,
-                }}
-              >
-                — hides from participants and excludes from assignment,
-                regardless of count
-              </span>
-            </label>
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                fontSize: 13,
-                color: "var(--fgColor-default, var(--uncon-fg, inherit))",
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={allowOverlap}
-                onChange={(e) => setAllowOverlap(e.target.checked)}
-              />
-              Allow placement in overlapping slots
-              <span
-                style={{
-                  color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
-                  fontSize: 12,
-                }}
-              >
-                — let this session run (or its submitter host) in slots
-                whose times overlap. Use for recurring workshops.
-              </span>
-            </label>
+            <CheckboxField
+              checked={manuallyFinished}
+              onChange={setManuallyFinished}
+              label="Mark as finished"
+              description="Hides from participants and excludes from assignment, regardless of count."
+            />
+            <CheckboxField
+              checked={allowOverlap}
+              onChange={setAllowOverlap}
+              label="Allow placement in overlapping slots"
+              description="Let this session run (or its submitter host) in slots whose times overlap. Use for recurring workshops."
+            />
             {existing && (
               <div
                 style={{
@@ -1421,6 +1383,51 @@ function RoomTagPicker({
         })}
       </div>
     </Stack>
+  );
+}
+
+// Two-line checkbox row: bold label on the first line next to the box,
+// muted description aligned underneath. Replaces the older single-line
+// "label — muted hint" layout, which crowded into a tiny column on the
+// right of the box and wrapped awkwardly on narrow viewports.
+function CheckboxField({
+  checked, onChange, label, description,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  label: string;
+  description: string;
+}) {
+  return (
+    <label
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 10,
+        fontSize: 13,
+        color: "var(--fgColor-default, var(--uncon-fg, inherit))",
+        cursor: "pointer",
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        style={{ marginTop: 3, flexShrink: 0 }}
+      />
+      <span style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+        <span style={{ fontWeight: 500 }}>{label}</span>
+        <span
+          style={{
+            color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
+            fontSize: 12,
+            lineHeight: "16px",
+          }}
+        >
+          {description}
+        </span>
+      </span>
+    </label>
   );
 }
 

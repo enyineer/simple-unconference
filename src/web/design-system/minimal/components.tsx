@@ -141,7 +141,15 @@ export const Heading: DesignSystem["Heading"] = ({ children, level = 1 }) => {
 };
 
 export const Text: DesignSystem["Text"] = ({ children, muted }) => (
-  <span style={{ color: muted ? "var(--uncon-fg-muted)" : "var(--uncon-fg)" }}>{children}</span>
+  // `muted` is used throughout the app for supporting/hint copy. Render at
+  // the hint size so it matches the inline `fontSize: 12` hints used in
+  // forms instead of the larger default body size.
+  <span style={muted
+    ? { color: "var(--uncon-fg-muted)", fontSize: 12, lineHeight: "16px" }
+    : { color: "var(--uncon-fg)" }}
+  >
+    {children}
+  </span>
 );
 
 export const Link: DesignSystem["Link"] = ({ href, onClick, children }) => (

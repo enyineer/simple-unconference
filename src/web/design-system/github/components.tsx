@@ -101,7 +101,17 @@ export const Heading: DesignSystem["Heading"] = ({ children, level = 1 }) => {
 };
 
 export const Text: DesignSystem["Text"] = ({ children, muted }) => (
-  <PText style={{ color: muted ? "var(--fgColor-muted)" : "var(--fgColor-default)" }}>{children}</PText>
+  // `muted` is used throughout the app for supporting/hint copy (loading
+  // states, empty states, field-level explanations). The default body size
+  // (~14px from Primer's BaseStyles) made these hints look larger than the
+  // inline `fontSize: 12` hints scattered through forms, so muted text is
+  // explicitly rendered at the hint size to match.
+  <PText style={muted
+    ? { color: "var(--fgColor-muted)", fontSize: 12, lineHeight: "16px" }
+    : { color: "var(--fgColor-default)" }}
+  >
+    {children}
+  </PText>
 );
 
 export const Link: DesignSystem["Link"] = ({ href, onClick, children }) => (
