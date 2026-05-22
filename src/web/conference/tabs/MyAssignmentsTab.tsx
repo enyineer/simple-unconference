@@ -418,7 +418,16 @@ function CalendarSubscribe({ slug }: { slug: string }) {
 
   const url = path ? `${window.location.origin}${path}` : "";
   // webcal:// scheme makes most native calendar apps offer one-click subscribe
-  // on link click (Apple Calendar, Outlook, Thunderbird). Falls back to https.
+  // on link click (Apple Calendar, Outlook, Thunderbird, Chrome Android).
+  // Firefox Android deliberately blocks dispatch of non-allowlisted schemes
+  // to external apps (Mozilla policy, not a per-device bug), so the click is
+  // silently dropped there. Serving https:// instead would just download a
+  // one-time .ics snapshot — losing the auto-update behavior promised by
+  // the panel — so we show paste-by-URL instructions on Firefox Android
+  // rather than a button that imports without subscribing.
+  const isFirefoxAndroid = typeof navigator !== "undefined"
+    && /Firefox/.test(navigator.userAgent)
+    && /Android/.test(navigator.userAgent);
   const webcalUrl = path
     ? `webcal://${window.location.host}${path}`
     : "";
@@ -544,35 +553,58 @@ function CalendarSubscribe({ slug }: { slug: string }) {
                 display: "flex", alignItems: "center", justifyContent: "space-between",
                 gap: 8, marginTop: 10, flexWrap: "wrap",
               }}>
-                {/* Rendered as a real anchor (not a button calling
-                    `window.location.assign`) so the browser treats the click
-                    as a normal link navigation. Firefox Android silently
-                    drops `location.assign` to unknown schemes like webcal://;
-                    a real <a href> click invokes the system intent resolver
-                    instead, letting the OS hand off to a calendar app. */}
-                <a
-                  href={webcalUrl}
-                  aria-disabled={busy || undefined}
-                  style={{
-                    display: "inline-block",
-                    padding: "5px 12px",
-                    borderRadius: 6,
-                    border: "1px solid rgba(27,31,36,0.15)",
-                    background: busy
-                      ? "var(--bgColor-disabled, var(--uncon-bg-subtle, #6e7781))"
-                      : "var(--button-primary-bgColor-rest, var(--bgColor-success-emphasis, #1f883d))",
-                    color: "var(--button-primary-fgColor-rest, #ffffff)",
-                    fontFamily: "inherit",
-                    fontSize: 12,
-                    fontWeight: 600,
-                    lineHeight: "20px",
-                    textDecoration: "none",
-                    cursor: busy ? "default" : "pointer",
-                    pointerEvents: busy ? "none" : undefined,
-                  }}
-                >
-                  Open in calendar app
-                </a>
+                {isFirefoxAndroid ? (
+                  // Firefox for Android can't launch external apps from
+                  // webcal:// links, and importing the https:// .ics would
+                  // be a one-time snapshot — not the subscription this
+                  // panel promises. So instead of a broken/misleading
+                  // button, tell the user how to subscribe manually using
+                  // the URL above.
+                  <div
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      fontSize: 12,
+                      color: muted,
+                      lineHeight: "16px",
+                    }}
+                  >
+                    Firefox for Android can&apos;t open calendar links
+                    directly. Copy the URL above and paste it into your
+                    calendar app&apos;s &quot;Add by URL&quot; / &quot;Add
+                    subscription&quot; setting to subscribe with
+                    auto-updates.
+                  </div>
+                ) : (
+                  // Rendered as a real anchor (not a button calling
+                  // `window.location.assign`) so the browser treats the
+                  // click as a normal link navigation. The webcal:// scheme
+                  // is dispatched to the OS intent resolver, which hands
+                  // off to Apple Calendar / Outlook / Google Calendar etc.
+                  <a
+                    href={webcalUrl}
+                    aria-disabled={busy || undefined}
+                    style={{
+                      display: "inline-block",
+                      padding: "5px 12px",
+                      borderRadius: 6,
+                      border: "1px solid rgba(27,31,36,0.15)",
+                      background: busy
+                        ? "var(--bgColor-disabled, var(--uncon-bg-subtle, #6e7781))"
+                        : "var(--button-primary-bgColor-rest, var(--bgColor-success-emphasis, #1f883d))",
+                      color: "var(--button-primary-fgColor-rest, #ffffff)",
+                      fontFamily: "inherit",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      lineHeight: "20px",
+                      textDecoration: "none",
+                      cursor: busy ? "default" : "pointer",
+                      pointerEvents: busy ? "none" : undefined,
+                    }}
+                  >
+                    Open in calendar app
+                  </a>
+                )}
                 <button
                   type="button"
                   onClick={reset}
