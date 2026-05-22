@@ -1,5 +1,118 @@
 # simple-unconference
 
+## 0.7.0
+
+### Minor Changes
+
+- [`4fe5b60`](https://github.com/enyineer/simple-unconference/commit/4fe5b60118e562dd4fbb4fc3c1704a590de4a2ad) Thanks [@enyineer](https://github.com/enyineer)! - Path C follow-ups: parallel-star correctness, auto-room scheduling for planned tracks, and soft capacity warnings.
+
+  **Algorithm correctness (Path C gap fix).** A participant who starred a session that's scheduled as a planned track in an _overlapping_ slot now correctly counts as busy in the unconference algorithm — they're locked into the planned track and will no longer be auto-placed into a parallel unconference session. Previously the busy-user set only considered explicit `UserAssignment` rows, so derived planned-track attendance was invisible to the algo. The same fix applies to `avoidRepeats` cross-slot history: a starred planned-track session counts as already attended for rotation purposes. Submitters and mandatory tracks follow the same rule — if the planned track is mandatory in an overlapping slot, every participant is busy; if you submitted the session, you're busy regardless of stars. No algorithm change in `assignment.ts` — only the route-layer data feed.
+
+  **Auto-room scheduling for planned tracks.** New moderator action _Add session → Auto-assign room_. Mods pick a Submission; the server picks the room using a deterministic priority: `Submission.preAssignedRoomId` (hard pin) → `Submission.roomRequirements` (tag constraints) → largest free room in the slot's effective scope. Conflicts come back as a structured payload — `pin_room_taken`, `pin_room_out_of_scope`, `unsatisfiable_requirements`, or `no_free_room` — surfaced as readable toasts that tell the mod what to clear, repin, or reconfigure. The existing per-room "pin to this room" buttons remain as a secondary affordance. Implemented as a new RPC `agenda.scheduleSubmission`; no schema change. The unconference matcher is untouched.
+
+  **Soft capacity warnings.** When the number of stars on a session exceeds the room's capacity, both moderators and participants now see a clear advisory badge:
+
+  - **Moderator side:** the planned-track editor and the unconference-placement detail both show `⚠ Room may be full (stars/capacity)`. Hovering reveals how many starrers are likely unplaced.
+  - **Participant side:** the `My schedule` row for a planned track shows `room may be crowded (stars/capacity)`, signalling that arriving early or watching for an upgrade is worthwhile.
+
+  Capacity is advisory only — the algorithm still places popular sessions in whatever room is largest, and stars are never refused. To clarify a question that came up: a much-starred session is **always placed**. The unconference top-N is purely star-driven; capacity only clips per-user assignments, not the placement itself. So a 100-star, 50-cap session runs as expected; 50 attendees are placed; the remaining starrers either land in another starred session or appear as unplaced (with the option to switch).
+
+  **Internals.** `AssignmentOut` gains `expected_attendance` and `room_capacity` (static rows only). `PlacementOut` gains `star_count` and `room_capacity`. `AssignmentRulesModal` has a new _Planned tracks & soft capacity_ section explaining the unified star model, the cross-slot busy rule, and the advisory nature of the warning. Regression tests cover all four new busy-user paths (star, submitter, mandatory, avoid-repeats derivation) and every conflict reason of `scheduleSubmission`.
+
+- [`884d091`](https://github.com/enyineer/simple-unconference/commit/884d091d8ebfef113f421abca35fe427779391b5) Thanks [@enyineer](https://github.com/enyineer)! - Moderators can now export all pending invites as CSV from the People tab.
+
+  The "Pending invites" section now has a "Download CSV" button (visible to moderators and owners) that downloads every still-unclaimed invite with `email, role, token, url, created_at, expires_at`. The file is RFC 4180-escaped and ships with a UTF-8 BOM so Excel opens non-ASCII addresses correctly. Useful for feeding invite links into mail-merge tools or other systems without copying each row by hand.
+
+- [`60ddda3`](https://github.com/enyineer/simple-unconference/commit/60ddda3e4b6831937cae85913fc57076d94aed4c) Thanks [@enyineer](https://github.com/enyineer)! - Mods and owners no longer count against the per-user session submission cap.
+
+  `MAX_SESSIONS_PER_USER_PER_CONFERENCE` (default 5) exists to prevent participant spam — but it also blocked organizers from seeding the agenda with keynotes, sponsor talks, and prepared workshops before opening submissions to the room. The cap is now skipped server-side for moderator/owner principals (including the mod-on-behalf-of-a-participant path: if a mod explicitly attributes a session to someone else, the attributee's cap doesn't apply either, since the mod has made the trust decision).
+
+  The Sessions tab no longer renders the "X / N submissions used" hint for mods/owners; participants still see their remaining quota and still get a `quota_exceeded` error past the cap.
+
+  Other instance-scale caps (`MAX_PARTICIPANTS_PER_CONFERENCE`, `MAX_PENDING_INVITES_PER_CONFERENCE`, `MAX_ROOMS_PER_CONFERENCE`, `MAX_CONFERENCES_PER_USER`, `WRITES_PER_HOUR_PER_USER`, login lockout) are unchanged — they guard resource bounds, not user behavior, and bypassing them for mods would defeat their actual purpose.
+
+- [`5a39ad7`](https://github.com/enyineer/simple-unconference/commit/5a39ad707dd17206c350b9920f4ed5c13daad829) Thanks [@enyineer](https://github.com/enyineer)! - Mods can now duplicate any agenda slot as a linked offering. Use cases: the same workshop running in a 10am and a 2pm block, a keynote repeated for capacity, an open discussion offered three times a day.
+
+  A duplicated slot joins (or creates) a `SlotSeries`. The series owns the shared config — room pool, eligible submissions, repeat-avoidance flags, type — and is edited once via the series form; per-instance fields (time, title, description) remain on each offering. Each slot in the calendar shows an "Offering N of M" badge with prev/next arrows for jumping between siblings without closing the sheet.
+
+  For planned slots, the source's `TrackAssignment` rows are copied onto the new offering so the duplicate carries the same content (subject to the explicit per-offering placement-cap warning shown when duplicating). When a `setSeries` edit would orphan existing tracks/placements (e.g. removing a room that's already used), the server short-circuits with a confirmation request listing exactly what would be removed; the mod re-submits with `confirm: true` to cascade-delete and apply.
+
+  For unconference + mixer slots, the assignment algorithm picks up a new `avoidRepeatsAcrossSiblings` series-level flag (default on): a participant placed in a session in one sibling won't be re-placed in the same session in another sibling. Turn it off for series where attending twice is the point.
+
+  Mods can detach a single offering back to standalone (snapshots the series's current config onto the slot), or dissolve the series entirely with "Disband series" (keep slots) / "Delete with offerings" (drop everything). A series that ends up with one remaining member auto-detaches — no pointless "Offering 1 of 1."
+
+  Also fixed: duplicating a planned slot used to leave the duplicate empty because `TrackAssignment` rows weren't copied.
+
+- [`60ddda3`](https://github.com/enyineer/simple-unconference/commit/60ddda3e4b6831937cae85913fc57076d94aed4c) Thanks [@enyineer](https://github.com/enyineer)! - App-wide toast notification system, transfer-ownership UI, and TabBar scrollbar fix.
+
+  **Toasts replace status banners across the app.** Action-result feedback (errors, successes, info, warnings) now surfaces as floating cards anchored to the bottom-right (full-width on mobile, safe-area aware) instead of as top-of-tab `<Banner>`s. The old pattern hid errors off-screen when a user was scrolled to a deep action (the Danger zone in Settings was the trigger); toasts decouple feedback from page scroll position. Errors and warnings hang around 8s with `role="alert"` + `aria-live="assertive"`, success/info dismiss after 5s with polite live regions, and every toast is manually dismissable.
+
+  The new `useToast()` hook (imported from `design-system/hooks`) returns `{ error, success, warning, info, dismiss }`. The provider mounts once inside `<DesignSystemProvider>` in `App.tsx`. CSS vars from the active design-system plugin drive the colors so both Primer and Minimal plugins surface toasts identically.
+
+  **Migrated to toasts**: every form-submit / button-click / mutation-result feedback site — Login, ConferenceLogin, Join, Conferences ("New conference"), SettingsTab (all section saves + Danger zone + Join link), RoomsTab (Add/Edit room), PeopleTab (Invite single + bulk + revoke + remove), SessionPicker (pick / unlock), MyAssignmentsTab (CalendarSubscribe reset), ExpertsTab (book / cancel / promote / demote / pool CRUD / timeframe CRUD / expert edit), and AgendaTab (assignment results — clean / partial / conflict — slot create / slot edit / conflict-resolver apply).
+
+  **Stays as inline `<Banner>`**: persistent in-context state, not user-action results — Conference.tsx fatal page-load failure, Join.tsx invite-link-can't-be-used page, ExpertsTab.tsx "you need a room or pool first" precondition warning. Form-level field errors (the `useForm` field-by-field validation) continue to render inline under each input.
+
+  **Other fixes bundled in:**
+
+  - **Owner-side "Transfer ownership" UI** in the Settings Danger zone. The backend `conferences.transferOwnership` endpoint already existed; this wires up a confirm form (email input → click Transfer → navigate back to conferences list) and maps `user_not_found` / `same_user` to friendly messages.
+  - **TabBar vertical-scrollbar fix.** `overflow-x: auto` implicitly turns `overflow-y` from `visible` into `auto` per CSS spec; combined with the buttons' `margin-bottom: -1` border-overlap trick, this surfaced a spurious vertical scrollbar in the conference page header. Pinning `overflow-y: hidden` suppresses it.
+
+- [`5a39ad7`](https://github.com/enyineer/simple-unconference/commit/5a39ad707dd17206c350b9920f4ed5c13daad829) Thanks [@enyineer](https://github.com/enyineer)! - Unified the "star" concept. A single star on a Submission now drives BOTH the unconference algorithm AND planned-slot schedule visibility — no more confusion about why starring on the Sessions tab didn't put the talk on your schedule.
+
+  **For participants:** clicking "Star" anywhere (the Sessions tab card or the calendar's star toggle on a planned track) writes the same `Submission.Star` record. Every linked planned-slot `TrackAssignment` that references a session you starred now derives onto your `My schedule` and your iCal feed automatically. Submitters always see their own scheduled speaking gigs without needing to star themselves; mandatory tracks remain force-attended for everyone.
+
+  When the same Submission is scheduled across multiple offerings (sibling slots of a series, or independent placements), one star yields multiple schedule rows; the schedule view groups them with a _"Same session also at HH:MM"_ caption so you know they're the same content. Time-overlapping starred rows surface a _"conflicts with X"_ pill.
+
+  **For mods:** every planned track is now anchored to a Submission. Custom-title tracks are gone — to schedule an invited speaker, create a Submission for them first (the editor surfaces a required session picker; the optional `speakers` field is now for co-presenter / addendum text only).
+
+  The "finished" badge has been split + renamed by cause:
+
+  - **Fully scheduled** — the submission's placement cap is reached (algorithm exclusion only).
+  - **Marked complete** — the mod manually flipped `manually_finished`.
+
+  Both are informational only under the new model: participants still see and can star these submissions, and the star still derives any linked planned tracks onto their schedule. Only the unconference algorithm pool excludes them.
+
+  **Internals:** the `StaticStar` table is gone. `TrackAssignment.submissionId` is now `NOT NULL` and the `title` column is dropped (display title comes from the linked Submission). `MyAssignments` derivation joins TrackAssignments against the user's `Star`s + mandatory + submitter-self in a single query. The `agenda.starTrack` / `agenda.unstarTrack` endpoints have been removed from the contract.
+
+  A migration mirrors any existing `StaticStar` rows into Submission stars before dropping the table. Existing custom-title tracks need converting to a Submission first (the migration errors clearly if any remain).
+
+- [`fa8775c`](https://github.com/enyineer/simple-unconference/commit/fa8775c464733d3545bb34c2ae9906799118a3a0) Thanks [@enyineer](https://github.com/enyineer)! - Per-conference user profiles, a directory tab, and link-everywhere navigation.
+
+  Each attendee can now publish a profile with a bio, pronouns, title, company, avatar, free-form web/social links, contact entries, and tags. Profiles are opt-in (a "Published" toggle gates visibility) and per-entry public flags let people share a public LinkedIn while keeping a Signal number visible only to moderators.
+
+  A new **Directory** tab (visible to all members) lists every published profile with debounced search and tag filtering. The viewer's own card is pinned at the top with "View" / "Edit" buttons, so setting up or updating your profile is one click from the directory. People + Rooms tabs remain moderator-only.
+
+  Names in the **Sessions**, **Agenda**, and **Experts** tabs render as profile links when the target has published a profile (moderators always get a link). Unlinked names remain plain text so non-mods never get a dead-end click.
+
+  Avatars are stored as 256×256 WebP under `data/avatars/<conf>/<id>.webp`, served at `/api/avatars/:slug/:identityId[/:hash]` with content-hash-based cache busting. Hashed URLs are publicly cacheable for one year when the profile is published; unpublished or stale-hash requests fall back to private or no-store caching, and any profile not visible to the viewer returns an initials SVG (never a 404) so the existence of an unpublished profile can't be probed.
+
+  Includes 14 server-side privacy regression tests, 11 avatar pipeline tests, schema migrations for `ProfileEntry`, `ProfileTag`, and the new fields on `ConferenceIdentity`, plus permission table + CLAUDE.md updates.
+
+### Patch Changes
+
+- [`5a39ad7`](https://github.com/enyineer/simple-unconference/commit/5a39ad707dd17206c350b9920f4ed5c13daad829) Thanks [@enyineer](https://github.com/enyineer)! - Calendar no longer renders adjacent slots as side-by-side columns when their displayed times read as touching.
+
+  The overlap-clustering algorithm used to compare slot times at millisecond precision while the labels round to `HH:MM`. A slot ending at `18:07:30` (labeled "18:07") next to one starting at `18:07:15` (also "18:07") got rendered side-by-side because they technically overlapped by 15 seconds, even though the labels read as adjacent. Layout now normalizes both edges to whole minutes before deciding overlap, so the rendering matches what the labels show: same-minute touches are no longer treated as overlap.
+
+- [`9168c06`](https://github.com/enyineer/simple-unconference/commit/9168c06f15a02f8812ab0f534529be7261ad45b7) Thanks [@enyineer](https://github.com/enyineer)! - `My schedule` no longer flags adjacent sessions as "conflicts with X" when their labels read as touching.
+
+  Same root cause as the calendar-overlap fix in the previous release: the conflict detector compared raw millisecond timestamps while the displayed times round to `HH:MM`. A session ending at `18:07:30` (labeled "18:07") next to one starting at `18:07:00` got tagged as a 30-second overlap even though the labels read as adjacent.
+
+  Generalized the fix instead of patching each comparison site: every user-set instant (agenda slot starts/ends, expert timeframes, expert bookings) is now clipped to the whole minute that contains it — via a shared `clipToMinute` helper applied at the write boundary (`createSlot` / `updateSlot` / `duplicateSlot` / `createTimeframe` / `book`). Client-side comparators (MyAssignments conflict detector, Calendar overlap layout) use the same helper so display always matches storage.
+
+  Includes a one-time SQL migration that floors existing `agenda_slots`, `expert_timeframes`, and `expert_bookings` timestamps to whole minutes — fixes the rendering immediately for environments that already have sub-minute legacy data without needing app-level backfill.
+
+- [`8d9ebb3`](https://github.com/enyineer/simple-unconference/commit/8d9ebb3063f75e34ad732bc45eede94ab21c7f76) Thanks [@enyineer](https://github.com/enyineer)! - `My schedule`'s "Same session also at …" caption now prefixes the day when sibling offerings span multiple days.
+
+  Previously, a session repeated across days rendered as e.g. "Same sessions also at 17:07, 20:07" with no indication that one of those was the next day — easy to misread as three same-day repeats. When the alternates cross a day boundary in the conference timezone, each entry now reads "Sat 23 May 20:07". Single-day groups are unchanged.
+
+- [`5a39ad7`](https://github.com/enyineer/simple-unconference/commit/5a39ad707dd17206c350b9920f4ed5c13daad829) Thanks [@enyineer](https://github.com/enyineer)! - Every user action now confirms via toast — no more silent deletes, no more leftover inline success banners, no more `alert()` for errors.
+
+  Audited and fixed across SessionsTab (create / delete / publish / unpublish / reject / star / unstar), AgendaTab (slot delete, track set/clear, slot configure save, mixer room selection, mixer avoid-mode), RoomsTab (create / update / delete), and PeopleTab (revoke invite, promote / demote, remove participant). Inline form-validation `Banner`s stay where they belong (next to the form input that's invalid).
+
+  Also extracted a shared `CopyButton` component so every "copy to clipboard" action gives the same feedback shape — inline label toggle (Copy → ✓ Copied for 1.5s) PLUS a success toast PLUS a `window.prompt()` fallback when the clipboard API is blocked. Previously the SettingsTab "Join link" Copy button was completely silent, while the My-schedule "Copy" button had inline-only feedback and the PeopleTab "Copy link" had nothing. All three now use the shared component and behave identically.
+
 ## 0.6.5
 
 ### Patch Changes
