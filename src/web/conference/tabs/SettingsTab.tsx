@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Banner, Button, Heading, Select, Stack, Text, TextInput,
+  Button, Heading, Select, Stack, Text, TextInput,
 } from "../../design-system";
+import { useToast } from "../../design-system/hooks";
 import type { ChangeEvent, FocusEvent } from "react";
 import { plugins as designPlugins } from "../../design-system/core/registry";
 import { listTimeZones } from "../../../shared/tz";
@@ -40,7 +41,7 @@ export function SettingsTab({
   usage,
   onNameChange, onDsChange, onTzChange, onMixerAvoidRepeatsChange,
   onSubmissionMaxPlacementsChange, onParticipantSubmissionsEnabledChange,
-  onDeleted,
+  onDeleted, onTransferred,
 }: {
   slug: string;
   currentName: string;
@@ -61,9 +62,14 @@ export function SettingsTab({
    *  The parent should navigate away — every subsequent request scoped to
    *  this slug 404s. */
   onDeleted: () => void;
+  /** Called after the owner successfully transfers the conference to another
+   *  user. The parent should navigate away — the caller has just dropped
+   *  themselves from owner to no role, so subsequent owner-only requests
+   *  will 403. */
+  onTransferred: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const toast = useToast();
   // Which section just successfully saved. Drives the per-section checkmark
   // animation; cleared automatically after 1.5s so the pulse is brief.
   const [savedKey, setSavedKey] = useState<SavedKey | null>(null);
@@ -108,18 +114,17 @@ export function SettingsTab({
     const trimmed = next.trim();
     if (trimmed.length === 0) {
       setNameDraft(currentName);
-      setMessage("Conference name cannot be empty.");
+      toast.error("Conference name cannot be empty.");
       return;
     }
     if (trimmed === currentName) return;
     setBusy(true);
-    setMessage(null);
     try {
       await api.conferences.update({ slug, name: trimmed });
       onNameChange(trimmed);
       flashSaved("name");
     } catch (e) {
-      setMessage(errorCode(e));
+      toast.error(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -128,13 +133,12 @@ export function SettingsTab({
   async function updateDs(id: string) {
     if (id === currentDs) return;
     setBusy(true);
-    setMessage(null);
     try {
       await api.conferences.update({ slug, design_system: id });
       onDsChange(id);
       flashSaved("design");
     } catch (e) {
-      setMessage(errorCode(e));
+      toast.error(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -143,13 +147,12 @@ export function SettingsTab({
   async function updateTz(next: string) {
     if (next === currentTz) return;
     setBusy(true);
-    setMessage(null);
     try {
       await api.conferences.update({ slug, timezone: next });
       onTzChange(next);
       flashSaved("timezone");
     } catch (e) {
-      setMessage(errorCode(e));
+      toast.error(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -158,13 +161,12 @@ export function SettingsTab({
   async function updateParticipantSubmissions(next: boolean) {
     if (next === currentParticipantSubmissionsEnabled) return;
     setBusy(true);
-    setMessage(null);
     try {
       await api.conferences.update({ slug, participant_submissions_enabled: next });
       onParticipantSubmissionsEnabledChange(next);
       flashSaved("participant_submissions");
     } catch (e) {
-      setMessage(errorCode(e));
+      toast.error(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -173,13 +175,12 @@ export function SettingsTab({
   async function updateMixerAvoidRepeats(next: boolean) {
     if (next === currentMixerAvoidRepeats) return;
     setBusy(true);
-    setMessage(null);
     try {
       await api.conferences.update({ slug, mixer_avoid_repeats_default: next });
       onMixerAvoidRepeatsChange(next);
       flashSaved("mixer");
     } catch (e) {
-      setMessage(errorCode(e));
+      toast.error(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -188,13 +189,12 @@ export function SettingsTab({
   async function saveCap(next: number | null) {
     if (next === currentSubmissionMaxPlacements) return;
     setBusy(true);
-    setMessage(null);
     try {
       await api.conferences.update({ slug, submission_max_placements_default: next });
       onSubmissionMaxPlacementsChange(next);
       flashSaved("session_reuse");
     } catch (e) {
-      setMessage(errorCode(e));
+      toast.error(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -219,7 +219,7 @@ export function SettingsTab({
     if (capMode !== "limited") return;
     const parsed = Number.parseInt(capValue, 10);
     if (!Number.isFinite(parsed) || parsed < 1) {
-      setMessage("Limit must be a positive whole number.");
+      toast.error("Limit must be a positive whole number.");
       return;
     }
     saveCap(parsed);
@@ -229,11 +229,10 @@ export function SettingsTab({
     <Stack gap="spacious">
       <Heading level={2}>Settings</Heading>
 
-      {/* Only error messages get a banner — successful saves use the
-          per-section checkmark animation, no big notice needed. */}
-      {message && (
-        <Banner variant="critical">{message}</Banner>
-      )}
+      {/* Errors surface as bottom-anchored toasts (via useToast) instead of
+          a top-of-tab banner, so they remain visible no matter where in the
+          form the user is when an action fails. Successful saves still use
+          the per-section checkmark animation — no notice needed. */}
 
       {usage && <UsageCard usage={usage} />}
 
@@ -364,90 +363,223 @@ export function SettingsTab({
         confName={currentName}
         busy={busy}
         onBusy={setBusy}
-        onError={setMessage}
         onDeleted={onDeleted}
+        onTransferred={onTransferred}
       />
     </Stack>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Danger zone — owner-only. Deletes the conference and every related row
-// (identities, submissions, slots, experts, notifications, ...) via the
-// schema's onDelete: Cascade rules. The owner is asked to type the
-// conference name as a guard against accidental clicks.
+// Danger zone — owner-only. Hosts two irreversible actions side by side:
+//
+//   1. Transfer ownership to another existing global user. The current
+//      owner loses owner-level access immediately; the new owner gets an
+//      auto-minted ConferenceIdentity on their next visit.
+//   2. Delete the conference and every related row (identities, submissions,
+//      slots, experts, notifications, ...) via the schema's onDelete: Cascade
+//      rules.
+//
+// Both actions require an explicit confirm step — the transfer asks for the
+// new owner's email; the delete asks the owner to retype the conference
+// name. After either succeeds the parent navigates the user away (`onBack`
+// in Conference.tsx) since neither principal still has owner-level access
+// to render the Settings tab on the next reload.
 
 function DangerZone({
-  slug, confName, busy, onBusy, onError, onDeleted,
+  slug, confName, busy, onBusy, onDeleted, onTransferred,
 }: {
   slug: string;
   confName: string;
   busy: boolean;
   onBusy: (b: boolean) => void;
-  onError: (msg: string | null) => void;
   onDeleted: () => void;
+  onTransferred: () => void;
 }) {
-  const [confirming, setConfirming] = useState(false);
-  const [typed, setTyped] = useState("");
+  return (
+    <SettingsSection
+      title="Danger zone"
+      description="These actions are irreversible. Transferring drops you from owner to no role on this conference. Deleting removes every participant, session, slot, and booking."
+    >
+      <TransferOwnershipAction
+        slug={slug}
+        busy={busy}
+        onBusy={onBusy}
+        onTransferred={onTransferred}
+      />
+      <Divider />
+      <DeleteAction
+        slug={slug}
+        confName={confName}
+        busy={busy}
+        onBusy={onBusy}
+        onDeleted={onDeleted}
+      />
+    </SettingsSection>
+  );
+}
 
-  async function doDelete() {
-    if (typed.trim() !== confName) {
-      onError("Type the conference name exactly to confirm.");
+function TransferOwnershipAction({
+  slug, busy, onBusy, onTransferred,
+}: {
+  slug: string;
+  busy: boolean;
+  onBusy: (b: boolean) => void;
+  onTransferred: () => void;
+}) {
+  const toast = useToast();
+  const [confirming, setConfirming] = useState(false);
+  const [email, setEmail] = useState("");
+
+  async function doTransfer() {
+    const trimmed = email.trim();
+    if (trimmed.length === 0) {
+      toast.error("Enter the new owner's email.");
       return;
     }
     onBusy(true);
-    onError(null);
     try {
-      await api.conferences.delete({ slug });
-      onDeleted();
+      await api.conferences.transferOwnership({ slug, new_owner_email: trimmed });
+      onTransferred();
     } catch (e) {
-      onError(errorCode(e));
+      // Server domain codes carried via ORPCError.message; surface the
+      // friendly variant rather than the raw token.
+      const code = errorCode(e);
+      toast.error(
+        code === "user_not_found" ? "No registered account uses that email."
+          : code === "same_user" ? "That email is already the owner."
+            : code,
+      );
       onBusy(false);
     }
   }
 
   return (
-    <SettingsSection
-      title="Danger zone"
-      description="Permanently delete this conference and everything inside it: participants, sessions, agenda slots, expert bookings, and notifications. This cannot be undone."
-    >
-      {!confirming ? (
-        <div>
+    <div>
+      <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Transfer ownership</div>
+      <Text muted>
+        Hand this conference over to another registered user. You lose
+        owner-level access immediately.
+      </Text>
+      <div style={{ marginTop: 12 }}>
+        {!confirming ? (
           <Button
             variant="danger"
-            onClick={() => { onError(null); setConfirming(true); setTyped(""); }}
+            onClick={() => { setConfirming(true); setEmail(""); }}
             disabled={busy}
           >
-            Delete conference
+            Transfer ownership…
           </Button>
-        </div>
-      ) : (
-        <Stack gap="condensed">
-          <Text>
-            Type <strong>{confName}</strong> to confirm. Every participant,
-            session, slot, and booking will be removed immediately.
-          </Text>
-          <TextInput
-            label="Conference name"
-            value={typed}
-            disabled={busy}
-            onChange={(e) => setTyped(e.target.value)}
-          />
-          <Stack direction="row" gap="condensed">
-            <Button
-              variant="danger"
-              onClick={doDelete}
-              disabled={busy || typed.trim() !== confName}
-            >
-              I understand, delete it
-            </Button>
-            <Button onClick={() => { setConfirming(false); setTyped(""); onError(null); }} disabled={busy}>
-              Cancel
-            </Button>
+        ) : (
+          <Stack gap="condensed">
+            <Text>
+              Enter the email of the user who should become the new owner.
+              They must already have an account on this instance.
+            </Text>
+            <TextInput
+              label="New owner email"
+              type="email"
+              value={email}
+              disabled={busy}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="someone@example.com"
+            />
+            <Stack direction="row" gap="condensed">
+              <Button
+                variant="danger"
+                onClick={doTransfer}
+                disabled={busy || email.trim().length === 0}
+              >
+                Transfer ownership
+              </Button>
+              <Button
+                onClick={() => { setConfirming(false); setEmail(""); }}
+                disabled={busy}
+              >
+                Cancel
+              </Button>
+            </Stack>
           </Stack>
-        </Stack>
-      )}
-    </SettingsSection>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DeleteAction({
+  slug, confName, busy, onBusy, onDeleted,
+}: {
+  slug: string;
+  confName: string;
+  busy: boolean;
+  onBusy: (b: boolean) => void;
+  onDeleted: () => void;
+}) {
+  const toast = useToast();
+  const [confirming, setConfirming] = useState(false);
+  const [typed, setTyped] = useState("");
+
+  async function doDelete() {
+    if (typed.trim() !== confName) {
+      toast.error("Type the conference name exactly to confirm.");
+      return;
+    }
+    onBusy(true);
+    try {
+      await api.conferences.delete({ slug });
+      onDeleted();
+    } catch (e) {
+      toast.error(errorCode(e));
+      onBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Delete conference</div>
+      <Text muted>
+        Permanently remove this conference and everything inside it.
+      </Text>
+      <div style={{ marginTop: 12 }}>
+        {!confirming ? (
+          <Button
+            variant="danger"
+            onClick={() => { setConfirming(true); setTyped(""); }}
+            disabled={busy}
+          >
+            Delete conference…
+          </Button>
+        ) : (
+          <Stack gap="condensed">
+            <Text>
+              Type <strong>{confName}</strong> to confirm. Every participant,
+              session, slot, and booking will be removed immediately.
+            </Text>
+            <TextInput
+              label="Conference name"
+              value={typed}
+              disabled={busy}
+              onChange={(e) => setTyped(e.target.value)}
+            />
+            <Stack direction="row" gap="condensed">
+              <Button
+                variant="danger"
+                onClick={doDelete}
+                disabled={busy || typed.trim() !== confName}
+              >
+                I understand, delete it
+              </Button>
+              <Button
+                onClick={() => { setConfirming(false); setTyped(""); }}
+                disabled={busy}
+              >
+                Cancel
+              </Button>
+            </Stack>
+          </Stack>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -471,9 +603,8 @@ function absoluteUrl(relative: string): string {
 }
 
 function JoinLinkSection({ slug }: { slug: string }) {
+  const toast = useToast();
   const [link, setLink] = useState<JoinLink | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [maxUsesInput, setMaxUsesInput] = useState<string>("");
   const [expiryInput, setExpiryInput] = useState<string>("");
@@ -487,43 +618,43 @@ function JoinLinkSection({ slug }: { slug: string }) {
         setMaxUsesInput(l.max_uses !== null ? String(l.max_uses) : "");
         setExpiryInput(l.expires_at !== null ? toDatetimeLocal(l.expires_at) : "");
       })
-      .catch((e) => { if (!cancelled) setError(errorCode(e)); });
+      .catch((e) => { if (!cancelled) toast.error(errorCode(e)); });
     return () => { cancelled = true; };
-  }, [slug]);
+  }, [slug, toast]);
 
   async function setEnabled(next: boolean) {
-    setBusy(true); setError(null); setInfo(null);
+    setBusy(true);
     try {
       const expires_at = expiryInput ? fromDatetimeLocal(expiryInput) : null;
       const max_uses = maxUsesInput ? parsePositiveInt(maxUsesInput) : null;
       const l = await api.conferences.setJoinLink({ slug, enabled: next, expires_at, max_uses });
       setLink(l);
-      setInfo(next ? "Join link enabled." : "Join link disabled.");
-    } catch (e) { setError(errorCode(e)); }
+      toast.success(next ? "Join link enabled." : "Join link disabled.");
+    } catch (e) { toast.error(errorCode(e)); }
     finally { setBusy(false); }
   }
 
   async function saveLimits() {
     if (!link) return;
-    setBusy(true); setError(null); setInfo(null);
+    setBusy(true);
     try {
       const expires_at = expiryInput ? fromDatetimeLocal(expiryInput) : null;
       const max_uses = maxUsesInput ? parsePositiveInt(maxUsesInput) : null;
       const l = await api.conferences.setJoinLink({ slug, enabled: link.enabled, expires_at, max_uses });
       setLink(l);
-      setInfo("Limits updated.");
-    } catch (e) { setError(errorCode(e)); }
+      toast.success("Limits updated.");
+    } catch (e) { toast.error(errorCode(e)); }
     finally { setBusy(false); }
   }
 
   async function rotate() {
     if (!confirm("Rotate the join link? The current URL stops working immediately.")) return;
-    setBusy(true); setError(null); setInfo(null);
+    setBusy(true);
     try {
       const l = await api.conferences.rotateJoinLink({ slug });
       setLink(l);
-      setInfo("Token rotated. The previous URL no longer works.");
-    } catch (e) { setError(errorCode(e)); }
+      toast.success("Token rotated. The previous URL no longer works.");
+    } catch (e) { toast.error(errorCode(e)); }
     finally { setBusy(false); }
   }
 
@@ -539,9 +670,6 @@ function JoinLinkSection({ slug }: { slug: string }) {
       title="Join link"
       description="A shared URL anyone can use to sign up for this conference. Each participant supplies their own email and password. Off by default."
     >
-      {error && <Banner variant="critical">{error}</Banner>}
-      {info && <Banner variant="success">{info}</Banner>}
-
       {!link ? (
         <Text muted>Loading…</Text>
       ) : !link.enabled ? (

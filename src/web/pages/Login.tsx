@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import {
-  PageLayout, Stack, Card, TextInput, Button, Form, Banner, Link, Text,
+  PageLayout, Stack, Card, TextInput, Button, Form, Link, Text,
 } from "../design-system";
+import { useToast } from "../design-system/hooks";
 import { api, errorCode, errorFields } from "../api";
 import { useForm } from "../useForm";
 import { LoginSchema, SignupSchema, safeParse } from "../../shared/schemas";
@@ -309,8 +310,8 @@ function Features() {
 }
 
 export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
+  const toast = useToast();
   const [mode, setMode] = useState<"login" | "signup">("login");
-  const [topError, setTopError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // null = still loading; true/false = known. Defaults to permissive (true)
   // on fetch failure so a transient outage doesn't lock out new owners.
@@ -344,7 +345,6 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setTopError(null);
 
     // Read the token straight from the widget at submit time. Avoids any
     // race between Cloudflare's callback firing and React state catching up.
@@ -352,7 +352,7 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
       ? (turnstileRef.current?.getResponse() ?? "")
       : "";
     if (turnstileSiteKey !== null && turnstileToken === "") {
-      setTopError("Please complete the verification challenge before continuing.");
+      toast.error("Please complete the verification challenge before continuing.");
       return;
     }
 
@@ -379,7 +379,7 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
     } catch (e) {
       const fields = errorFields(e);
       if (fields) form.setErrors(fields);
-      else setTopError(humanError(errorCode(e)));
+      else toast.error(humanError(errorCode(e)));
       // Turnstile tokens are single-use; reset so the widget mints a fresh one
       // for the next attempt.
       turnstileRef.current?.reset();
@@ -402,7 +402,6 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
           </span>
           <div className="unconf-signin">
             <Card title={mode === "login" ? "Sign in" : "Create account"}>
-              {topError && <Banner variant="critical">{topError}</Banner>}
               <Form onSubmit={submit}>
                 <TextInput
                   label="Email" type="email" required
@@ -428,7 +427,6 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
                   <TurnstileWidget
                     ref={turnstileRef}
                     siteKey={turnstileSiteKey}
-                    onVerify={(t) => { if (t) setTopError(null); }}
                   />
                 )}
                 <Stack direction="row" gap="condensed" align="center">
@@ -443,7 +441,6 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
                         onClick={(e) => {
                           e.preventDefault();
                           setMode(mode === "login" ? "signup" : "login");
-                          setTopError(null);
                           form.setErrors({});
                         }}
                       >

@@ -172,6 +172,7 @@ export function ConferencePage({
               setFetchedConf({ ...conf, participant_submissions_enabled: v })
             }
             onDeleted={onBack}
+            onTransferred={onBack}
           />
         )}
       </div>

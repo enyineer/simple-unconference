@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import {
-  Banner, Button, Form, Heading, Sheet, Spinner, Stack, TextInput, Textarea,
+  Button, Form, Heading, Sheet, Spinner, Stack, TextInput, Textarea,
 } from "../../design-system";
+import { useToast } from "../../design-system/hooks";
 import { api, errorCode } from "../../api";
 import { quotaErrorMessage } from "../../quotaErrors";
 import type { Room } from "../types";
@@ -18,7 +19,7 @@ export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
   const [description, setDescription] = useState("");
   const [tags, setTags] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   async function refresh() {
     setRooms(await api.rooms.list({ slug }));
@@ -33,7 +34,6 @@ export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
 
   async function addRoom(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
     try {
       await api.rooms.create({
         slug, name,
@@ -44,7 +44,7 @@ export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
       setName(""); setCapacity("20"); setDescription(""); setTags("");
       setAdding(false);
       await refresh();
-    } catch (e) { setError(quotaErrorMessage(e) ?? errorCode(e)); }
+    } catch (e) { toast.error(quotaErrorMessage(e) ?? errorCode(e)); }
   }
 
   async function remove(id: number) {
@@ -65,7 +65,6 @@ export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
       </Stack>
 
       <Sheet open={adding} onClose={() => setAdding(false)} title="Add room">
-        {error && <Banner variant="critical">{error}</Banner>}
         <Tip>Capacity bounds the unconference auto-assignment.</Tip>
         <Form onSubmit={addRoom}>
           <TextInput label="Name" required value={name} onChange={(e) => setName(e.target.value)} />
@@ -181,11 +180,10 @@ function RoomEditForm({
   const [description, setDescription] = useState(room.description ?? "");
   const [tags, setTags] = useState(room.tags.join(", "));
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
     setBusy(true);
     try {
       await api.rooms.update({
@@ -197,13 +195,12 @@ function RoomEditForm({
       });
       await onSaved();
     } catch (e) {
-      setError(errorCode(e));
+      toast.error(errorCode(e));
     } finally { setBusy(false); }
   }
 
   return (
     <Stack gap="condensed">
-      {error && <Banner variant="critical">{error}</Banner>}
       <Form onSubmit={save}>
         <TextInput label="Name" required value={name} onChange={(e) => setName(e.target.value)} />
         <TextInput label="Capacity" type="number" required value={capacity} onChange={(e) => setCapacity(e.target.value)} />

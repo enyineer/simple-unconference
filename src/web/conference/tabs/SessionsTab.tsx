@@ -286,11 +286,13 @@ export function SessionsTab({
         </Banner>
       )}
 
-      {/* Per-user quota hint. Hidden when the cap is disabled (limit=null)
-          or when the viewer can't submit anyway (participant + submissions
-          closed). Counts ALL the viewer's submissions, including rejected
-          / finished, since those consume cap slots. */}
-      {maxSessionsPerUser !== null && (isMod || participantSubmissionsEnabled) && (
+      {/* Per-user quota hint. Hidden for mods/owners (the cap doesn't
+          apply to them server-side, so showing a count would be
+          misleading), when the cap is disabled (limit=null), or when the
+          viewer can't submit anyway (participant + submissions closed).
+          Counts ALL the viewer's submissions, including rejected /
+          finished, since those consume cap slots. */}
+      {!isMod && maxSessionsPerUser !== null && participantSubmissionsEnabled && (
         <MySessionQuotaHint current={mySessionCount} limit={maxSessionsPerUser} />
       )}
 

@@ -20,6 +20,11 @@ import type {
 import { plugins, loadPlugin } from "./core/registry";
 import { DesignSystemCtx, useDesignSystem } from "./context";
 
+export { ToastProvider } from "./core/toast";
+// useToast lives in ./hooks (a hook-only file) so this barrel — which only
+// exports React components — doesn't trip the
+// react-refresh/only-export-components rule.
+
 interface ProviderProps {
   pluginId: string;
   /** "auto" | "light" | "dark". Defaults to "auto" (follow OS). */

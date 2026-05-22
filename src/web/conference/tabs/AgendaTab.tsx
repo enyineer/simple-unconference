@@ -6,7 +6,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Badge,
-  Banner,
   Button,
   Card,
   DateTime,
@@ -20,6 +19,7 @@ import {
   TextInput,
   Textarea,
 } from "../../design-system";
+import { useToast } from "../../design-system/hooks";
 import { api, errorCode } from "../../api";
 import type {
   AgendaData,
@@ -60,13 +60,6 @@ const SLOT_KIND_TIP: Record<SlotKind, string> = {
     "to ignore prior mixers. The default is owner-configurable in Settings.",
 };
 
-// Maps the hint banner text to its severity variant. Conflicts are a hard
-// block on running the assignment; everything else is informational.
-function bannerVariantFor(msg: string): "success" | "critical" | "warning" {
-  if (msg.startsWith("Assignment complete")) return "success";
-  if (msg.startsWith("Pre-assignment conflict")) return "critical";
-  return "warning";
-}
 
 function slotSheetTitle(s: Slot): string {
   if (s.type === "unconference") return "Unconference slot";
@@ -88,7 +81,6 @@ export function AgendaTab({
   const [data, setData] = useState<AgendaData | null>(null);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [subs, setSubs] = useState<Submission[]>([]);
-  const [hint, setHint] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [selectedSlotId, setSelectedSlotId] = useState<number | null>(null);
 
@@ -243,7 +235,6 @@ export function AgendaTab({
         />
       </Sheet>
 
-      {hint && <Banner variant={bannerVariantFor(hint)}>{hint}</Banner>}
 
       {data.slots.length === 0 ? (
         <Card>
@@ -299,7 +290,6 @@ export function AgendaTab({
             timeZone={timeZone}
             inSheet
             onChange={refresh}
-            onAssignmentResult={(msg) => setHint(msg)}
           />
         )}
       </Sheet>
@@ -335,11 +325,10 @@ function NewSlotForm({
     "inherit",
   );
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
     setBusy(true);
     try {
       await api.agenda.createSlot({
@@ -357,7 +346,7 @@ function NewSlotForm({
       });
       await onCreated();
     } catch (e) {
-      setError(errorCode(e));
+      toast.error(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -365,7 +354,6 @@ function NewSlotForm({
 
   return (
     <Stack gap="condensed">
-      {error && <Banner variant="critical">{error}</Banner>}
       <Form onSubmit={submit}>
         <Select
           label="Type"
@@ -458,7 +446,6 @@ interface SlotBlockProps {
   isMod: boolean;
   timeZone: string;
   onChange: () => Promise<void>;
-  onAssignmentResult: (msg: string) => void;
   onClose?: () => void;
   /** When rendered inside a Sheet, skip the outer Card chrome (the sheet
    * already provides the header + container). */
@@ -496,13 +483,13 @@ function SlotBlock({
   isMod,
   timeZone,
   onChange,
-  onAssignmentResult,
   onClose,
   inSheet,
 }: SlotBlockProps) {
   const [configuring, setConfiguring] = useState(false);
   const [editing, setEditing] = useState(false);
   const [conflicts, setConflicts] = useState<PreConflict[] | null>(null);
+  const toast = useToast();
   const isUnconf = slot.type === "unconference";
   const isMixer = slot.type === "mixer";
   const isAssignable = isUnconf || isMixer;
@@ -555,8 +542,10 @@ function SlotBlock({
           : {}),
       });
       if (r.kind === "conflict") {
+        // Hard block on running the assignment — mod has to resolve the
+        // conflict in the resolver panel that just mounted below.
         setConflicts(r.conflicts);
-        onAssignmentResult(
+        toast.error(
           "Pre-assignment conflict — assignment was not run. Resolve the conflict to continue.",
         );
         return;
@@ -564,7 +553,7 @@ function SlotBlock({
       // Success — clear any stale conflict panel from a previous attempt.
       setConflicts(null);
       const noun = isMixer ? "attendee" : "participant";
-      const hint = isMixer
+      const unmatched = isMixer
         ? "they couldn't fit in a room (capacity)."
         : "they need to pick another session.";
       // Build the overlap-exclusions footer when present. Mods see this so
@@ -589,14 +578,16 @@ function SlotBlock({
         exParts.length === 0
           ? ""
           : ` Excluded due to overlapping slots: ${exParts.join(", ")}.`;
-      const baseMsg =
-        r.unplaced_users.length === 0
-          ? "Assignment complete — everyone placed."
-          : `${r.unplaced_users.length} ${noun}(s) could not be placed — ${hint}`;
-      onAssignmentResult(baseMsg + overlapNote);
+      if (r.unplaced_users.length === 0) {
+        toast.success("Assignment complete — everyone placed." + overlapNote);
+      } else {
+        toast.warning(
+          `${r.unplaced_users.length} ${noun}(s) could not be placed — ${unmatched}${overlapNote}`,
+        );
+      }
       await onChange();
     } catch (e) {
-      onAssignmentResult(errorCode(e));
+      toast.error(errorCode(e));
     }
   }
 
@@ -1584,13 +1575,12 @@ function SlotEditForm({
   const [startsAt, setStartsAt] = useState<number>(slot.starts_at);
   const [endsAt, setEndsAt] = useState<number>(slot.ends_at);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
     if (endsAt <= startsAt) {
-      setError("End time must be after start time.");
+      toast.error("End time must be after start time.");
       return;
     }
     setBusy(true);
@@ -1605,7 +1595,7 @@ function SlotEditForm({
       });
       await onSaved();
     } catch (e) {
-      setError(errorCode(e));
+      toast.error(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -1613,7 +1603,6 @@ function SlotEditForm({
 
   return (
     <Card title="Edit slot">
-      {error && <Banner variant="critical">{error}</Banner>}
       <Tip>
         Drag a slot in the calendar for quick moves; this form is for precise
         edits.
@@ -1913,7 +1902,7 @@ function ResolveConflictsPanel({
     return init;
   });
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   function setAction(subId: number, action: ResolveAction) {
     setActions((prev) => ({ ...prev, [subId]: action }));
@@ -1978,7 +1967,6 @@ function ResolveConflictsPanel({
   })();
 
   async function apply() {
-    setError(null);
     setBusy(true);
     try {
       // Persist move / clear actions first so the next run sees the new pins.
@@ -2002,7 +1990,7 @@ function ResolveConflictsPanel({
       const excludes = allSubIds.filter((id) => actions[id]?.kind === "skip");
       await onRerun(excludes);
     } catch (e) {
-      setError(errorCode(e));
+      toast.error(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -2234,12 +2222,6 @@ function ResolveConflictsPanel({
           one-shot skips, and re-run the assignment in one click.
         </div>
       </div>
-
-      {error && (
-        <div style={{ marginBottom: 12 }}>
-          <Banner variant="critical">{error}</Banner>
-        </div>
-      )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         {conflicts.map((c, idx) => {

@@ -3333,17 +3333,34 @@ describe("public-instance defenses: quotas + lockout", () => {
     }
   });
 
-  test("submissions.create caps at MAX_SESSIONS_PER_USER_PER_CONFERENCE per submitter", async () => {
+  test("submissions.create caps participants at MAX_SESSIONS_PER_USER_PER_CONFERENCE", async () => {
     const owner = new Client(ctx.app);
-    await signupAndLogin(owner, "quota-sessions@example.com");
+    await signupAndLogin(owner, "quota-sessions-owner@example.com");
     const conf = await owner.rpc.conferences.create({ name: "Cap Session Conf" });
-    // Owner can submit on their own behalf up to the limit, then is blocked.
+    const { client: participant } = await inviteAndClaim(
+      ctx.app, owner, conf.slug, "quota-sessions-participant@example.com",
+    );
     for (let i = 0; i < LIMITS.maxSessionsPerUserPerConference; i++) {
-      await owner.rpc.submissions.create({ slug: conf.slug, title: `S${i + 1}` });
+      await participant.rpc.submissions.create({ slug: conf.slug, title: `S${i + 1}` });
     }
     await expect(
-      owner.rpc.submissions.create({ slug: conf.slug, title: "Over" }),
+      participant.rpc.submissions.create({ slug: conf.slug, title: "Over" }),
     ).rejects.toMatchObject({ message: "quota_exceeded" });
+  });
+
+  test("submissions.create lets mods/owners bypass MAX_SESSIONS_PER_USER_PER_CONFERENCE", async () => {
+    // Mods need to seed the agenda before opening submissions — keynotes,
+    // sponsor talks, prepared workshops. The participant-spam cap shouldn't
+    // bite them, even past the participant limit.
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "quota-sessions-mod@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Mod Seed Conf" });
+    const overTheCap = LIMITS.maxSessionsPerUserPerConference + 2;
+    for (let i = 0; i < overTheCap; i++) {
+      await owner.rpc.submissions.create({ slug: conf.slug, title: `Seed ${i + 1}` });
+    }
+    const list = await owner.rpc.submissions.list({ slug: conf.slug });
+    expect(list.length).toBe(overTheCap);
   });
 
   test("login lockout fires after LOGIN_FAIL_LIMIT wrong passwords for one email", async () => {

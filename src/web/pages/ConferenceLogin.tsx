@@ -7,8 +7,9 @@
 
 import { useState } from "react";
 import {
-  Banner, Button, Card, Form, Heading, Link, PageLayout, Stack, Text, TextInput,
+  Button, Card, Form, Heading, Link, PageLayout, Stack, Text, TextInput,
 } from "../design-system";
+import { useToast } from "../design-system/hooks";
 import { api, errorCode, errorFields } from "../api";
 import { useForm } from "../useForm";
 import { ConfLoginSchema, safeParse } from "../../shared/schemas";
@@ -20,13 +21,12 @@ export function ConferenceLoginPage({
   onLoggedIn: () => void;
   onCancel: () => void;
 }) {
-  const [topError, setTopError] = useState<string | null>(null);
+  const toast = useToast();
   const [busy, setBusy] = useState(false);
   const form = useForm(ConfLoginSchema, { email: "", password: "" });
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setTopError(null);
     const r = safeParse(ConfLoginSchema, form.values);
     if (!r.ok) { form.setErrors(r.errors); return; }
     setBusy(true);
@@ -36,7 +36,7 @@ export function ConferenceLoginPage({
     } catch (err) {
       const fields = errorFields(err);
       if (fields) form.setErrors(fields);
-      else setTopError(humanError(errorCode(err)));
+      else toast.error(humanError(errorCode(err)));
     } finally {
       setBusy(false);
     }
@@ -48,7 +48,6 @@ export function ConferenceLoginPage({
         <Heading level={1}>Sign in to this conference</Heading>
 
         <Card title="Sign in">
-          {topError && <Banner variant="critical">{topError}</Banner>}
           <Text muted>
             Use the email + password you set when you joined this conference.
             Other conferences use separate accounts.

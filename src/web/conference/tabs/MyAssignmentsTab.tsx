@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
+import { useToast } from "../../design-system/hooks";
 import {
-  Banner, Button, Heading, Spinner, Stack,
+  Button, Heading, Spinner, Stack,
 } from "../../design-system";
 import { api, errorCode } from "../../api";
 import { formatInTz } from "../../../shared/tz";
@@ -406,15 +407,15 @@ function ScheduleCard({
 
 function CalendarSubscribe({ slug }: { slug: string }) {
   const [path, setPath] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const toast = useToast();
 
   useEffect(() => {
     api.conferences.getCalendar({ slug })
       .then((r) => setPath(r.path))
-      .catch((e: unknown) => setError(errorCode(e)));
-  }, [slug]);
+      .catch((e: unknown) => toast.error(errorCode(e)));
+  }, [slug, toast]);
 
   const url = path ? `${window.location.origin}${path}` : "";
   // webcal:// scheme makes most native calendar apps offer one-click subscribe
@@ -443,12 +444,12 @@ function CalendarSubscribe({ slug }: { slug: string }) {
 
   async function reset() {
     if (!confirm("Generate a new link? Any calendar app currently subscribed will stop syncing until you give it the new URL.")) return;
-    setBusy(true); setError(null);
+    setBusy(true);
     try {
       const r = await api.conferences.resetCalendar({ slug });
       setPath(r.path);
     } catch (e) {
-      setError(errorCode(e));
+      toast.error(errorCode(e));
     } finally { setBusy(false); }
   }
 
@@ -488,12 +489,6 @@ function CalendarSubscribe({ slug }: { slug: string }) {
           <div style={{ fontSize: 13, color: muted, marginTop: 2 }}>
             Subscribe in Apple Calendar, Google Calendar, Outlook, Thunderbird, or any iCal app.
           </div>
-
-          {error && (
-            <div style={{ marginTop: 12 }}>
-              <Banner variant="critical">{error}</Banner>
-            </div>
-          )}
 
           {!path ? (
             <div style={{ marginTop: 12 }}><Spinner label="Loading…" /></div>

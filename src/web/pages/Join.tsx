@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Banner, Button, Card, Form, Heading, Link, PageLayout, Spinner, Stack, Text, TextInput,
 } from "../design-system";
+import { useToast } from "../design-system/hooks";
 import { api, errorCode, errorFields } from "../api";
 import { useForm } from "../useForm";
 import { InviteClaimSchema, SignupViaLinkSchema, safeParse } from "../../shared/schemas";
@@ -42,7 +43,7 @@ export function JoinPage({
   const [mode, setMode] = useState<Mode>(() =>
     token ? { kind: "loading" } : { kind: "error", reason: "missing_token" },
   );
-  const [topError, setTopError] = useState<string | null>(null);
+  const toast = useToast();
   const [busy, setBusy] = useState(false);
   // Only required for the join_link flow (open-link signup). Invite claims
   // are gated by the invite token itself, so we leave them un-Turnstile'd
@@ -95,7 +96,6 @@ export function JoinPage({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setTopError(null);
     if (!token) return;
 
     // Read straight from the widget at submit time — avoids any race between
@@ -106,7 +106,7 @@ export function JoinPage({
 
     if (mode.kind === "invite") {
       if (turnstileSiteKey !== null && turnstileToken === "") {
-        setTopError("Please complete the verification challenge before continuing.");
+        toast.error("Please complete the verification challenge before continuing.");
         return;
       }
       const r = safeParse(InviteClaimSchema, {
@@ -123,7 +123,7 @@ export function JoinPage({
       } catch (err) {
         const fields = errorFields(err);
         if (fields) form.setErrors(fields);
-        else setTopError(quotaErrorMessage(err) ?? humanError(errorCode(err)));
+        else toast.error(quotaErrorMessage(err) ?? humanError(errorCode(err)));
         turnstileRef.current?.reset();
       } finally { setBusy(false); }
       return;
@@ -131,7 +131,7 @@ export function JoinPage({
 
     if (mode.kind === "join_link") {
       if (turnstileSiteKey !== null && turnstileToken === "") {
-        setTopError("Please complete the verification challenge before continuing.");
+        toast.error("Please complete the verification challenge before continuing.");
         return;
       }
       const r = safeParse(SignupViaLinkSchema, {
@@ -146,7 +146,7 @@ export function JoinPage({
       } catch (err) {
         const fields = errorFields(err);
         if (fields) form.setErrors(fields);
-        else setTopError(quotaErrorMessage(err) ?? humanError(errorCode(err)));
+        else toast.error(quotaErrorMessage(err) ?? humanError(errorCode(err)));
         // Turnstile tokens are single-use; reset so the widget mints a fresh
         // one for the retry.
         turnstileRef.current?.reset();
@@ -187,7 +187,6 @@ export function JoinPage({
         <Heading level={1}>{title}</Heading>
 
         <Card title={isInvite ? "Claim your invite" : "Create your account"}>
-          {topError && <Banner variant="critical">{topError}</Banner>}
           {isInvite && (
             <Text muted>
               You were invited as <strong>{mode.email}</strong>. Pick a password to claim it.
@@ -226,7 +225,6 @@ export function JoinPage({
               <TurnstileWidget
                 ref={turnstileRef}
                 siteKey={turnstileSiteKey}
-                onVerify={(t) => { if (t) setTopError(null); }}
               />
             )}
             <Stack direction="row" gap="condensed" align="center">

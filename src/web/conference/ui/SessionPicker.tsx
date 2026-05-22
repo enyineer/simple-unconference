@@ -4,7 +4,8 @@
 // can be unlocked.
 
 import { useState } from "react";
-import { Banner, Button, Sheet, Stack, Text } from "../../design-system";
+import { Button, Sheet, Stack, Text } from "../../design-system";
+import { useToast } from "../../design-system/hooks";
 import { api, ApiError } from "../../api";
 import type { Room, Submission } from "../types";
 import { Tip } from "./Tip";
@@ -34,8 +35,8 @@ export function SessionPicker({
   /** Called after a successful PUT/DELETE so the parent can refresh. */
   onChanged: () => Promise<void>;
 }) {
-  const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const toast = useToast();
 
   const subById = new Map(subs.map((s) => [s.id, s]));
   const roomById = new Map(rooms.map((r) => [r.id, r]));
@@ -53,15 +54,14 @@ export function SessionPicker({
         onClose();
       } catch (e) {
         if (e instanceof ApiError && e.message === "session_full") {
-          setError("That session just filled up. Pick another.");
+          toast.error("That session just filled up. Pick another.");
         } else {
-          setError(e instanceof ApiError ? e.message : "error");
+          toast.error(e instanceof ApiError ? e.message : "error");
         }
       } finally {
         setBusyId(null);
       }
     };
-    setError(null);
     const sub = subById.get(submissionId);
     requirementsConfirm.request({
       title: sub?.title ?? "Session",
@@ -71,13 +71,12 @@ export function SessionPicker({
   }
 
   async function unlock() {
-    setError(null);
     try {
       await api.agenda.unpickAssignment({ slug, slot_id: slotId });
       await onChanged();
       onClose();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "error");
+      toast.error(e instanceof ApiError ? e.message : "error");
     }
   }
 
@@ -98,7 +97,6 @@ export function SessionPicker({
         Your pick is locked in — moderators re-running assignment won&apos;t move you out.
         Sessions that are already full are dimmed.
       </Tip>
-      {error && <Banner variant="critical">{error}</Banner>}
       <Stack gap="condensed">
         {items.length === 0 ? (
           <Text muted>No sessions are placed in this slot yet.</Text>

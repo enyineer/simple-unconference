@@ -1211,17 +1211,24 @@ const submissionsRouter = {
         submitterId = identity.id;
       }
     }
-    // Per-user-per-conference cap. Counts submissions already attributed
-    // to the eventual submitterId (including mod-on-behalf-of cases) so
-    // dumping submissions through a moderator hits the same ceiling.
-    const submitterSubmissionCount = await context.prisma.submission.count({
-      where: { conferenceId: context.conferenceId, submitterId },
-    });
-    assertQuota(
-      "sessions_per_user_per_conference",
-      LIMITS.maxSessionsPerUserPerConference,
-      submitterSubmissionCount,
-    );
+    // Per-user-per-conference cap — only enforced for participants. Mods
+    // and owners need to be able to seed the agenda before opening
+    // submissions (keynotes, sponsor talks, prepared workshops, etc.) and
+    // the cap exists to prevent participant spam, not to ration trusted
+    // organizers. This includes the mod-on-behalf-of path: if a mod
+    // explicitly attributes a session to a participant via `submitter_id`,
+    // they've made the trust decision and shouldn't be blocked by the
+    // attributee's cap.
+    if (!isMod) {
+      const submitterSubmissionCount = await context.prisma.submission.count({
+        where: { conferenceId: context.conferenceId, submitterId },
+      });
+      assertQuota(
+        "sessions_per_user_per_conference",
+        LIMITS.maxSessionsPerUserPerConference,
+        submitterSubmissionCount,
+      );
+    }
     // Per-account write rate — uses the actor's global user id when they
     // have one (owners), or falls back to a negative-id keyed sentinel for
     // identity-only actors so participants still get a per-identity budget.

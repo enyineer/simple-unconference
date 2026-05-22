@@ -10,6 +10,7 @@ import {
   Badge, Banner, Button, DateTime, Form, Heading, Select, Sheet, Spinner,
   Stack, Text, TextInput, Textarea,
 } from "../../design-system";
+import { useToast } from "../../design-system/hooks";
 import { api, errorCode } from "../../api";
 import type { Role, Room, Participant } from "../types";
 import { EmptyState } from "../ui/EmptyState";
@@ -66,8 +67,7 @@ export function ExpertsTab({
   const [rooms, setRooms] = useState<Room[]>([]);
   const [pools, setPools] = useState<ExpertPool[] | null>(null);
   const [people, setPeople] = useState<Participant[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(null);
+  const toast = useToast();
 
   const [poolsSheetOpen, setPoolsSheetOpen] = useState(false);
   const [promoteSheetOpen, setPromoteSheetOpen] = useState(false);
@@ -75,7 +75,6 @@ export function ExpertsTab({
   const [editExpertId, setEditExpertId] = useState<number | null>(null);
 
   async function refresh() {
-    setError(null);
     try {
       const [ex, rs] = await Promise.all([
         api.experts.list({ slug }),
@@ -92,41 +91,39 @@ export function ExpertsTab({
         setPeople(ps);
       }
     } catch (e) {
-      setError(errorCode(e));
+      toast.error(errorCode(e));
     }
   }
   useEffect(() => { refresh(); /* eslint-disable-line */ }, [slug, isMod]);
 
   async function book(expertId: number, slot: ExpertSlot) {
-    setError(null); setInfo(null);
     try {
       await api.experts.book({ slug, expert_id: expertId, starts_at: slot.starts_at });
-      setInfo("Booked. See you there!");
+      toast.success("Booked. See you there!");
       await refresh();
-    } catch (e) { setError(humanError(errorCode(e))); }
+    } catch (e) { toast.error(humanError(errorCode(e))); }
   }
 
   async function cancel(bookingId: number) {
     if (!confirm("Cancel this booking?")) return;
-    setError(null); setInfo(null);
     try {
       await api.experts.cancelBooking({ slug, booking_id: bookingId });
-      setInfo("Booking cancelled.");
+      toast.success("Booking cancelled.");
       await refresh();
-    } catch (e) { setError(humanError(errorCode(e))); }
+    } catch (e) { toast.error(humanError(errorCode(e))); }
   }
 
   async function demote(id: number) {
     if (!confirm("Remove expert status? All their timeframes and bookings will be deleted.")) return;
     try { await api.experts.demote({ slug, id }); }
-    catch (e) { setError(humanError(errorCode(e))); }
+    catch (e) { toast.error(humanError(errorCode(e))); }
     await refresh();
   }
 
   async function deleteTimeframe(expertId: number, id: number) {
     if (!confirm("Delete this timeframe? Existing bookings inside it will also be cancelled.")) return;
     try { await api.experts.deleteTimeframe({ slug, expert_id: expertId, id }); }
-    catch (e) { setError(humanError(errorCode(e))); }
+    catch (e) { toast.error(humanError(errorCode(e))); }
     await refresh();
   }
 
@@ -168,14 +165,14 @@ export function ExpertsTab({
       </Tip>
 
       {isMod && !canPromote && (
+        // Persistent precondition — *not* a transient action result, so it
+        // stays as an inline Banner. Tells the mod which prerequisite they
+        // need to satisfy before "+ Promote expert" can be used.
         <Banner variant="warning">
           You need at least one room (Rooms tab) or one room pool before you can
           promote an expert.
         </Banner>
       )}
-
-      {error && <Banner variant="critical">{error}</Banner>}
-      {info && <Banner variant="success">{info}</Banner>}
 
       {!experts ? (
         <Spinner label="Loading…" />
@@ -499,7 +496,7 @@ function PromoteExpertSheet({
   const [mode, setMode] = useState<"pool" | "rooms">("pool");
   const [poolId, setPoolId] = useState<string>("");
   const [roomIds, setRoomIds] = useState<Set<number>>(new Set());
-  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   const candidates = useMemo(
     () => people.filter((p) => !existingExpertIdentityIds.has(p.user_id)),
@@ -514,14 +511,13 @@ function PromoteExpertSheet({
     setWasOpen(open);
     if (!open) {
       setIdentityId(""); setBio(""); setMode("pool");
-      setPoolId(""); setRoomIds(new Set()); setError(null);
+      setPoolId(""); setRoomIds(new Set());
     }
   }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
-    if (!identityId) { setError("Pick a member."); return; }
+    if (!identityId) { toast.error("Pick a member."); return; }
     try {
       await api.experts.promote({
         slug,
@@ -531,12 +527,11 @@ function PromoteExpertSheet({
         room_ids: mode === "rooms" ? [...roomIds] : undefined,
       });
       onDone();
-    } catch (err) { setError(humanError(errorCode(err))); }
+    } catch (err) { toast.error(humanError(errorCode(err))); }
   }
 
   return (
     <Sheet open={open} onClose={onClose} title="Promote to expert">
-      {error && <Banner variant="critical">{error}</Banner>}
       <Form onSubmit={submit}>
         <SearchableSelect
           label="Member"
@@ -614,11 +609,10 @@ function EditExpertSheet({
   const [mode, setMode] = useState<"pool" | "rooms">(expert.pool_id !== null ? "pool" : "rooms");
   const [poolId, setPoolId] = useState<string>(expert.pool_id !== null ? String(expert.pool_id) : "");
   const [roomIds, setRoomIds] = useState<Set<number>>(new Set(expert.room_ids));
-  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
     try {
       await api.experts.update({
         slug,
@@ -628,13 +622,12 @@ function EditExpertSheet({
         room_ids: mode === "rooms" ? [...roomIds] : [],
       });
       onDone();
-    } catch (err) { setError(humanError(errorCode(err))); }
+    } catch (err) { toast.error(humanError(errorCode(err))); }
   }
 
   const display = expert.name || expert.email || `Expert #${expert.id}`;
   return (
     <Sheet open={open} onClose={onClose} title={`Edit ${display}`}>
-      {error && <Banner variant="critical">{error}</Banner>}
       <Form onSubmit={submit}>
         <Textarea
           label="Bio"
@@ -699,15 +692,14 @@ function TimeframeSheet({
     return Math.ceil(Date.now() / 3_600_000) * 3_600_000 + 60 * 60_000;
   });
   const [duration, setDuration] = useState<string>("15");
-  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
     const mins = Number(duration);
-    if (!Number.isFinite(mins) || mins < 5) { setError("Slot length must be at least 5 minutes."); return; }
-    if (endsAt <= startsAt) { setError("End must be after start."); return; }
-    if ((endsAt - startsAt) < mins * 60_000) { setError("Timeframe is shorter than one slot."); return; }
+    if (!Number.isFinite(mins) || mins < 5) { toast.error("Slot length must be at least 5 minutes."); return; }
+    if (endsAt <= startsAt) { toast.error("End must be after start."); return; }
+    if ((endsAt - startsAt) < mins * 60_000) { toast.error("Timeframe is shorter than one slot."); return; }
     try {
       await api.experts.createTimeframe({
         slug,
@@ -717,13 +709,12 @@ function TimeframeSheet({
         slot_duration_minutes: mins,
       });
       onDone();
-    } catch (err) { setError(humanError(errorCode(err))); }
+    } catch (err) { toast.error(humanError(errorCode(err))); }
   }
 
   const display = expert.name || expert.email || `Expert #${expert.id}`;
   return (
     <Sheet open={open} onClose={onClose} title={`Timeframe for ${display}`}>
-      {error && <Banner variant="critical">{error}</Banner>}
       <Tip>
         Slots are generated automatically — a 60-minute window with 15-minute
         slots produces 4 bookable slots.
@@ -775,29 +766,27 @@ function PoolsSheet({
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [roomIds, setRoomIds] = useState<Set<number>>(new Set());
-  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
-    if (!name.trim()) { setError("Pool name is required."); return; }
+    if (!name.trim()) { toast.error("Pool name is required."); return; }
     try {
       await api.experts.createPool({ slug, name: name.trim(), room_ids: [...roomIds] });
       setName(""); setRoomIds(new Set()); setCreating(false);
       onDone();
-    } catch (err) { setError(humanError(errorCode(err))); }
+    } catch (err) { toast.error(humanError(errorCode(err))); }
   }
 
   async function remove(id: number) {
     if (!confirm("Delete this pool? Experts using it will be left without rooms.")) return;
     try { await api.experts.deletePool({ slug, id }); }
-    catch (err) { setError(humanError(errorCode(err))); }
+    catch (err) { toast.error(humanError(errorCode(err))); }
     onDone();
   }
 
   return (
     <Sheet open={open} onClose={onClose} title="Expert room pools">
-      {error && <Banner variant="critical">{error}</Banner>}
       <Tip>
         A pool is a named set of rooms reserved for expert chats. Assign an
         expert to a pool and bookings will draw the first available room from
@@ -856,15 +845,14 @@ function PoolRow({
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(pool.name);
   const [roomIds, setRoomIds] = useState<Set<number>>(new Set(pool.room_ids));
-  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   async function save() {
-    setError(null);
     try {
       await api.experts.updatePool({ slug, id: pool.id, name: name.trim() || pool.name, room_ids: [...roomIds] });
       setEditing(false);
       onChanged();
-    } catch (e) { setError(humanError(errorCode(e))); }
+    } catch (e) { toast.error(humanError(errorCode(e))); }
   }
 
   return (
@@ -873,7 +861,6 @@ function PoolRow({
       borderRadius: 8,
       border: "1px solid var(--borderColor-muted, var(--uncon-border-muted, #e5e7eb))",
     }}>
-      {error && <Banner variant="critical">{error}</Banner>}
       {!editing ? (
         <Stack direction="row" justify="between" align="center" wrap>
           <div>

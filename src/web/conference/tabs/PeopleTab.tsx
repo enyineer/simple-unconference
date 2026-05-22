@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Badge, Banner, Button, Form, Heading, Sheet, Spinner, Stack, TextInput, Textarea, Text,
+  Badge, Button, Form, Heading, Sheet, Spinner, Stack, TextInput, Textarea, Text,
 } from "../../design-system";
+import { useToast } from "../../design-system/hooks";
 import { api, errorCode } from "../../api";
 import { quotaErrorMessage } from "../../quotaErrors";
 import type { Participant, Role } from "../types";
@@ -37,8 +38,7 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
   const [inviteSheetOpen, setInviteSheetOpen] = useState(false);
   const [singleEmail, setSingleEmail] = useState("");
   const [bulkCsv, setBulkCsv] = useState("");
-  const [inviteError, setInviteError] = useState<string | null>(null);
-  const [inviteInfo, setInviteInfo] = useState<string | null>(null);
+  const toast = useToast();
 
   const fetchAll = useCallback(() => Promise.all([
     api.conferences.listParticipants({ slug }),
@@ -63,38 +63,32 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
   function resetInviteSheet() {
     setSingleEmail("");
     setBulkCsv("");
-    setInviteError(null);
-    setInviteInfo(null);
   }
 
   async function sendSingleInvite(e: React.FormEvent) {
     e.preventDefault();
-    setInviteError(null);
-    setInviteInfo(null);
     if (!singleEmail.trim()) return;
     try {
       const inv = await api.conferences.createInvite({ slug, email: singleEmail.trim() });
-      setInviteInfo(`Invite link ready for ${inv.email}. Copy it from "Pending invites" below.`);
+      toast.success(`Invite link ready for ${inv.email}. Copy it from "Pending invites" below.`);
       setSingleEmail("");
       await refresh();
     } catch (e) {
-      setInviteError(quotaErrorMessage(e) ?? humanInviteError(errorCode(e)));
+      toast.error(quotaErrorMessage(e) ?? humanInviteError(errorCode(e)));
     }
   }
 
   async function sendBulkInvites() {
-    setInviteError(null);
-    setInviteInfo(null);
     if (!bulkCsv.trim()) return;
     try {
       const result = await api.conferences.importInvites({ slug, csv: bulkCsv });
       const msgs: string[] = [`Added ${result.added}.`];
       if (result.skipped > 0) msgs.push(`Skipped ${result.skipped}.`);
-      setInviteInfo(msgs.join(" "));
+      toast.success(msgs.join(" "));
       setBulkCsv("");
       await refresh();
     } catch (e) {
-      setInviteError(quotaErrorMessage(e) ?? humanInviteError(errorCode(e)));
+      toast.error(quotaErrorMessage(e) ?? humanInviteError(errorCode(e)));
     }
   }
 
@@ -109,7 +103,7 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
   async function revokeInvite(id: number) {
     if (!confirm("Revoke this invite? The link will stop working immediately.")) return;
     try { await api.conferences.revokeInvite({ slug, id }); }
-    catch (e) { alert(errorCode(e)); }
+    catch (e) { toast.error(errorCode(e)); }
     await refresh();
   }
 
@@ -122,7 +116,7 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
   async function remove(userId: number) {
     if (!confirm("Remove this participant?")) return;
     try { await api.conferences.removeParticipant({ slug, user_id: userId }); }
-    catch (e) { alert(errorCode(e)); }
+    catch (e) { toast.error(errorCode(e)); }
     await refresh();
   }
 
@@ -141,8 +135,6 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
       </Stack>
 
       <Sheet open={inviteSheetOpen} onClose={() => setInviteSheetOpen(false)} title="Invite people">
-        {inviteError && <Banner variant="critical">{inviteError}</Banner>}
-        {inviteInfo && <Banner variant="success">{inviteInfo}</Banner>}
         <Tip>
           We send an invite token, not a password. The recipient sets their own password
           when they click the link.

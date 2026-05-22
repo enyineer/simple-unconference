@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  PageLayout, Heading, Stack, Button, TextInput, Form, Banner, Sheet, Spinner, Text,
+  PageLayout, Heading, Stack, Button, TextInput, Form, Sheet, Spinner, Text,
 } from "../design-system";
+import { useToast } from "../design-system/hooks";
 import type { ColorMode } from "../design-system/core/contract";
 import { AccountMenu } from "../components/AccountMenu";
 import { api, errorCode } from "../api";
@@ -255,10 +256,10 @@ function NewConferenceForm({
   onCancel: () => void;
   onCreated: (slug: string) => Promise<void>;
 }) {
+  const toast = useToast();
   const [name, setName] = useState("");
   const [timezone, setTimezone] = useState<string>(() => detectLocalTimeZone());
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const tzOptions = useMemo(
     () => listTimeZones().map((tz) => ({ value: tz, label: tz })),
@@ -267,13 +268,12 @@ function NewConferenceForm({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
     setBusy(true);
     try {
       const conf = await api.conferences.create({ name, timezone });
       await onCreated(conf.slug);
     } catch (e) {
-      setError(quotaErrorMessage(e) ?? errorCode(e));
+      toast.error(quotaErrorMessage(e) ?? errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -281,7 +281,6 @@ function NewConferenceForm({
 
   return (
     <Stack gap="condensed">
-      {error && <Banner variant="critical">{error}</Banner>}
       <Form onSubmit={submit}>
         <TextInput
           label="Name"

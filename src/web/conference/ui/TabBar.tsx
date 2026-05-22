@@ -17,6 +17,13 @@ export function TabBar<T extends string>({
         gap: 4,
         borderBottom: "1px solid var(--borderColor-default, var(--uncon-border, #d0d7de))",
         overflowX: "auto",
+        // Per CSS spec, setting one overflow axis to a non-`visible` value
+        // implicitly computes the other axis as `auto`. The tab buttons use
+        // `marginBottom: -1` to overlap the container's border, so their
+        // boxes extend 1px past the container's content edge — enough for
+        // the implicit `overflow-y: auto` to surface a spurious vertical
+        // scrollbar. Pinning Y to `hidden` suppresses it.
+        overflowY: "hidden",
       }}
     >
       {options.map((opt) => {

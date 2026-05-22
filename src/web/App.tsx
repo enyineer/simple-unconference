@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, lazy, Suspense } from "react";
-import { DesignSystemProvider } from "./design-system";
+import { DesignSystemProvider, ToastProvider } from "./design-system";
 import { DEFAULT_PLUGIN_ID } from "./design-system/core/registry";
 import type { ColorMode } from "./design-system/core/contract";
 import { api, ApiError } from "./api";
@@ -376,10 +376,12 @@ export function App() {
       colorMode={activeColorMode}
       fallback={<MinimalLoading />}
     >
-      <ErrorBoundary resetKey={path}>
-        <Suspense fallback={<MinimalLoading />}>{renderPage()}</Suspense>
-      </ErrorBoundary>
-      <Footer />
+      <ToastProvider>
+        <ErrorBoundary resetKey={path}>
+          <Suspense fallback={<MinimalLoading />}>{renderPage()}</Suspense>
+        </ErrorBoundary>
+        <Footer />
+      </ToastProvider>
     </DesignSystemProvider>
   );
 }
