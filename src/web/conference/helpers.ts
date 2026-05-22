@@ -38,3 +38,17 @@ export function parseLabels(raw: string): string[] {
 export function fmtTimeShort(ms: number, timeZone: string): string {
   return formatInTz(ms, timeZone, { hour: "2-digit", minute: "2-digit" });
 }
+
+/** Format an epoch instant as a short day label, e.g. "Sat 23 May". */
+export function fmtDayShort(ms: number, timeZone: string): string {
+  return formatInTz(ms, timeZone, {
+    weekday: "short", day: "numeric", month: "short",
+  });
+}
+
+/** Stable YYYY-MM-DD key for an instant in the given timezone. */
+export function dayKeyInTz(ms: number, timeZone: string): string {
+  return formatInTz(ms, timeZone, {
+    year: "numeric", month: "2-digit", day: "2-digit",
+  });
+}

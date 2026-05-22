@@ -5,7 +5,7 @@ import {
 } from "../../design-system";
 import { api, errorCode } from "../../api";
 import { clipToMinute, formatInTz } from "../../../shared/tz";
-import { fmtTimeShort } from "../helpers";
+import { dayKeyInTz, fmtDayShort, fmtTimeShort } from "../helpers";
 import type { AgendaData, MyAssignments, Room, Slot, Submission } from "../types";
 import { EmptyState } from "../ui/EmptyState";
 import { Pill } from "../ui/Pill";
@@ -410,23 +410,34 @@ function ScheduleCard({
             </button>
           )}
         </div>
-        {alternates.length > 0 && (
+        {alternates.length > 0 && (() => {
           // Path C: same Submission scheduled in multiple offerings (e.g.
           // sibling slots of a series). One star → many rows; this caption
           // tells the user they're the same content so they can decide
           // which one to actually attend.
-          <div style={{ fontSize: 12, color: muted }}>
-            Same session{alternates.length > 1 ? "s" : ""} also at{" "}
-            {alternates
-              .sort((a, b) => a.starts_at - b.starts_at)
-              .map((alt, i) => (
+          //
+          // When any alternate sits on a different conference-local day than
+          // this row, prefix every alternate with the short day so the user
+          // can tell "20:07" tomorrow from "20:07" today.
+          const sortedAlts = [...alternates].sort((a, b) => a.starts_at - b.starts_at);
+          const thisDay = dayKeyInTz(startsAt, timeZone);
+          const multiDay = sortedAlts.some(
+            (alt) => dayKeyInTz(alt.starts_at, timeZone) !== thisDay,
+          );
+          return (
+            <div style={{ fontSize: 12, color: muted }}>
+              Same session{alternates.length > 1 ? "s" : ""} also at{" "}
+              {sortedAlts.map((alt, i) => (
                 <span key={i} style={{ fontVariantNumeric: "tabular-nums" }}>
                   {i > 0 ? ", " : ""}
-                  {fmtTimeShort(alt.starts_at, timeZone)}
+                  {multiDay
+                    ? `${fmtDayShort(alt.starts_at, timeZone)} ${fmtTimeShort(alt.starts_at, timeZone)}`
+                    : fmtTimeShort(alt.starts_at, timeZone)}
                 </span>
               ))}
-          </div>
-        )}
+            </div>
+          );
+        })()}
       </div>
 
       {room && (
