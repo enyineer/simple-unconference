@@ -25,6 +25,25 @@ something the next session would need to know.
   The expert's own `email` is also masked from non-mods (parity with
   `submitter_email`). When adding any new endpoint that surfaces an expert
   booking, mirror this rule.
+- **Profile privacy.** Unpublished profiles (`profilePublished=false`) are
+  invisible to non-mods. `profiles.get` returns `NOT_FOUND` (never
+  `FORBIDDEN` — that would leak existence) and `profiles.list` filters them
+  out. `ProfileEntry` rows with `isPublic=false` are stripped for non-mods.
+  The canonical `ConferenceIdentity.email` is never returned in profile
+  responses for non-mods — a public contact email lives in a `ProfileEntry`
+  row with `kind="Email"`, `isPublic=true`.
+- **Avatars** at `/api/avatars/:slug/:identityId[/:hash]` return an initials
+  SVG (not 404) whenever the underlying profile is not visible to the
+  viewer — don't leak existence by status code. Hashed URLs get
+  `immutable, max-age=31536000` only when the profile is published *and* the
+  hash matches; mismatched hashes return `no-store`; unpublished + own-
+  identity gets `private` caching only.
+- **`submitter_profile_published` on `SubmissionOut`** (and `profile_published`
+  on `ExpertOut`) exist so `ProfileLink` can render names as plain text
+  when the target has no published profile — non-mods never get a click
+  that lands on "Profile not found." Mods always link (server lets them
+  see unpublished profiles). Anywhere a name is rendered with
+  `ProfileLink`, pass `linkable={isMod || target.profile_published}`.
 
 ## UI conventions
 

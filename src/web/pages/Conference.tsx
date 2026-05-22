@@ -15,6 +15,7 @@ import { TabBar } from "../conference/ui/TabBar";
 import { AccountMenu } from "../components/AccountMenu";
 import { NotificationBell } from "../components/NotificationBell";
 import { AgendaTab } from "../conference/tabs/AgendaTab";
+import { DirectoryTab } from "../conference/tabs/DirectoryTab";
 import { ExpertsTab } from "../conference/tabs/ExpertsTab";
 import { MyAssignmentsTab } from "../conference/tabs/MyAssignmentsTab";
 import { PeopleTab } from "../conference/tabs/PeopleTab";
@@ -23,7 +24,7 @@ import { SessionsTab } from "../conference/tabs/SessionsTab";
 import { SettingsTab } from "../conference/tabs/SettingsTab";
 import type { ConfMe } from "../App";
 
-type Tab = "people" | "rooms" | "sessions" | "agenda" | "experts" | "me" | "settings";
+type Tab = "people" | "rooms" | "sessions" | "agenda" | "experts" | "directory" | "me" | "settings";
 
 interface ConferencePageProps {
   slug: string;
@@ -40,11 +41,14 @@ interface ConferencePageProps {
   /** Called after a successful per-conference sign-out so App.tsx can
    *  bounce to the per-conference login page. */
   onLoggedOut: () => void;
+  /** Ask the App to refetch `conferences.me`. The Me tab uses this after a
+   *  profile save/dismiss so the first-login nudge state stays accurate. */
+  onConfMeRefresh: () => void;
 }
 
 export function ConferencePage({
   slug, confMe, onBack, onDesignSystemChange,
-  colorMode, onColorModeChange, onLoggedOut,
+  colorMode, onColorModeChange, onLoggedOut, onConfMeRefresh,
 }: ConferencePageProps) {
   const [fetchedConf, setFetchedConf] = useState<ConferenceDetail | null>(null);
   const [fetchedError, setFetchedError] = useState<string | null>(null);
@@ -106,8 +110,10 @@ export function ConferencePage({
   const isOwner = conf.my_role === "owner";
 
   // People + Rooms management are mod-only — they expose member emails and
-  // the room roster, which we don't surface to attendees.
-  const tabs: Tab[] = ["sessions", "agenda", "experts", "me"];
+  // the room roster, which we don't surface to attendees. Directory is the
+  // members-visible counterpart to People: profiles, no admin actions, no
+  // emails. Order keeps user-facing tabs first, admin extras after.
+  const tabs: Tab[] = ["sessions", "agenda", "experts", "directory", "me"];
   if (isMod) tabs.push("people", "rooms");
   if (isOwner) tabs.push("settings");
 
@@ -146,7 +152,19 @@ export function ConferencePage({
         )}
         {tab === "agenda"   && <AgendaTab slug={slug} isMod={isMod} timeZone={conf.timezone} mixerAvoidRepeatsDefault={conf.mixer_avoid_repeats_default} />}
         {tab === "experts"  && <ExpertsTab slug={slug} role={conf.my_role} timeZone={conf.timezone} />}
-        {tab === "me"       && <MyAssignmentsTab slug={slug} timeZone={conf.timezone} />}
+        {tab === "directory" && (
+          <DirectoryTab
+            slug={slug}
+            confMe={confMe}
+            onConfMeRefresh={onConfMeRefresh}
+          />
+        )}
+        {tab === "me"       && (
+          <MyAssignmentsTab
+            slug={slug}
+            timeZone={conf.timezone}
+          />
+        )}
         {tab === "settings" && isOwner && (
           <SettingsTab
             slug={slug}
@@ -495,7 +513,8 @@ function InfoPopover({ slug, timezone }: { slug: string; timezone: string }) {
 function tabLabel(t: Tab): string {
   return ({
     people: "People", rooms: "Rooms", sessions: "Sessions",
-    agenda: "Agenda", experts: "Experts", me: "My schedule", settings: "Settings",
+    agenda: "Agenda", experts: "Experts", directory: "Directory",
+    me: "My schedule", settings: "Settings",
   } as Record<Tab, string>)[t];
 }
 

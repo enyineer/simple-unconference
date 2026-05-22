@@ -95,6 +95,11 @@ enum IdentityRole {
   moderator
 }
 
+enum ProfileEntryCategory {
+  link
+  contact
+}
+
 // Per-conference identity. `email` is unique within a conference only — the
 // same address may exist in multiple conferences as completely independent
 // accounts (different passwords, names, calendar feeds, color-mode prefs).
@@ -117,6 +122,17 @@ model ConferenceIdentity {
   ownerUserId   Int?         @map("owner_user_id")
   createdAt     DateTime     @default(now()) @map("created_at")
   claimedAt     DateTime?    @map("claimed_at")
+  profilePublished           Boolean   @default(false) @map("profile_published")
+  bio                        String?
+  pronouns                   String?
+  title                      String?
+  company                    String?
+  avatarPath                 String?   @map("avatar_path")
+  // Content hash (first 16 hex chars of sha256 of the resized webp) so we can
+  // build immutable, CDN-cacheable URLs like /api/avatars/<slug>/<id>/<hash>.
+  // Cleared along with avatarPath on deleteAvatar.
+  avatarHash                 String?   @map("avatar_hash")
+  profileCompletionDismissed Boolean   @default(false) @map("profile_completion_dismissed")
 
   conference Conference @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
   ownerUser  User?      @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
@@ -129,6 +145,8 @@ model ConferenceIdentity {
   expertProfile   Expert?
   expertBookings  ExpertBooking[]    @relation("ExpertBookingBooker")
   notifications   Notification[]
+  profileEntries  ProfileEntry[]
+  profileTags     ProfileTag[]
 
   @@unique([conferenceId, email])
   @@index([conferenceId])
@@ -745,4 +763,42 @@ model Notification {
   @@index([identityId, readAt])
   @@index([identityId, createdAt])
   @@map("notifications")
+}
+
+// ===========================================================================
+// USER PROFILES
+//
+// Per-conference profile data attached to a ConferenceIdentity. Visibility is
+// gated by `ConferenceIdentity.profilePublished` (the whole profile) plus
+// per-entry `isPublic` for individual link/contact rows. Mods always see
+// everything; participants see only published profiles and only the entries
+// flagged public.
+// ===========================================================================
+model ProfileEntry {
+  id         Int                  @id @default(autoincrement())
+  identityId Int                  @map("identity_id")
+  kind       String
+  value      String
+  href       String?
+  category   ProfileEntryCategory
+  isPublic   Boolean              @default(false) @map("is_public")
+  position   Int                  @default(0)
+  createdAt  DateTime             @default(now()) @map("created_at")
+
+  identity ConferenceIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  @@index([identityId])
+  @@map("profile_entries")
+}
+
+model ProfileTag {
+  identityId Int      @map("identity_id")
+  tag        String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  identity ConferenceIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  @@id([identityId, tag])
+  @@index([identityId])
+  @@map("profile_tags")
 }

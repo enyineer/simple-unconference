@@ -6,7 +6,8 @@ import { useToast } from "../../design-system/hooks";
 import { api, errorCode } from "../../api";
 import { quotaErrorMessage } from "../../quotaErrors";
 import type { Room } from "../types";
-import { parseLabels } from "../helpers";
+import { TagInput } from "../../design-system/core/tag-input";
+import { lowercaseTrim } from "../../design-system/core/normalize";
 import { EmptyState } from "../ui/EmptyState";
 import { Pill } from "../ui/Pill";
 import { Tip } from "../ui/Tip";
@@ -17,7 +18,7 @@ export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
   const [name, setName] = useState("");
   const [capacity, setCapacity] = useState("20");
   const [description, setDescription] = useState("");
-  const [tags, setTags] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
   const [editingId, setEditingId] = useState<number | null>(null);
   const toast = useToast();
 
@@ -39,9 +40,9 @@ export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
         slug, name,
         capacity: Number(capacity),
         description: description.trim() || null,
-        tags: parseLabels(tags),
+        tags,
       });
-      setName(""); setCapacity("20"); setDescription(""); setTags("");
+      setName(""); setCapacity("20"); setDescription(""); setTags([]);
       setAdding(false);
       await refresh();
       toast.success(`Room "${created.name}" added.`);
@@ -82,11 +83,12 @@ export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
-          <TextInput
-            label="Tags (comma-separated)"
+          <TagInput
+            label="Tags"
             placeholder="e.g. projector, ground floor"
             value={tags}
-            onChange={(e) => setTags(e.target.value)}
+            onChange={setTags}
+            normalize={lowercaseTrim}
           />
           <Stack direction="row" gap="condensed">
             <Button type="submit" variant="primary">Add room</Button>
@@ -185,7 +187,7 @@ function RoomEditForm({
   const [name, setName] = useState(room.name);
   const [capacity, setCapacity] = useState(String(room.capacity));
   const [description, setDescription] = useState(room.description ?? "");
-  const [tags, setTags] = useState(room.tags.join(", "));
+  const [tags, setTags] = useState<string[]>(room.tags);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
 
@@ -198,7 +200,7 @@ function RoomEditForm({
         name,
         capacity: Number(capacity),
         description: description.trim() === "" ? null : description,
-        tags: parseLabels(tags),
+        tags,
       });
       await onSaved();
       toast.success(`Room "${name}" updated.`);
@@ -218,10 +220,11 @@ function RoomEditForm({
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
-        <TextInput
-          label="Tags (comma-separated)"
+        <TagInput
+          label="Tags"
           value={tags}
-          onChange={(e) => setTags(e.target.value)}
+          onChange={setTags}
+          normalize={lowercaseTrim}
         />
         <Stack direction="row" gap="condensed">
           <Button type="submit" variant="primary" disabled={busy}>Save</Button>

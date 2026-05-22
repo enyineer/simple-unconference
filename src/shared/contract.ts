@@ -26,6 +26,11 @@ import {
   InviteImportSchema,
   JoinLinkSetSchema,
   LoginSchema,
+  ProfileDeleteAvatarSchema,
+  ProfileGetSchema,
+  ProfileListQuerySchema,
+  ProfileUpdateAnySchema,
+  ProfileUpdateMineSchema,
   PromoteExpertSchema,
   SignupSchema,
   SignupViaLinkSchema,
@@ -153,6 +158,13 @@ interface ConfMeOut {
   name: string | null;
   role: "owner" | "moderator" | "participant";
   color_mode: ColorMode;
+  // Profile state carried alongside the standard identity payload so the
+  // first-login completion nudge can render without a second round-trip.
+  // `profile_published` mirrors `ConferenceIdentity.profilePublished` and
+  // `profile_completion_dismissed` mirrors the matching column; the nudge
+  // banner shows when both are false.
+  profile_published: boolean;
+  profile_completion_dismissed: boolean;
 }
 
 interface RoomOut {
@@ -167,6 +179,11 @@ export interface SubmissionOut {
   submitter_id: number;
   submitter_name: string | null;
   submitter_email: string | null;
+  // Whether the submitter has opted into a public profile page. Drives the
+  // ProfileLink rendering: non-mods can only click the submitter's name when
+  // there's actually a profile to land on. Mods/owners can navigate to any
+  // identity's profile regardless (the profiles.get endpoint allows it).
+  submitter_profile_published: boolean;
   title: string;
   description: string;
   status: SubmissionStatus;
@@ -510,6 +527,9 @@ interface ExpertOut {
   identity_id: number;
   name: string | null;
   email: string | null;          // null for non-mods (and non-self)
+  // Whether the expert's profile is published. The ExpertsTab uses this plus
+  // the viewer's mod status to decide whether to wrap the name in ProfileLink.
+  profile_published: boolean;
   bio: string | null;
   pool_id: number | null;
   pool_name: string | null;
@@ -555,6 +575,64 @@ interface NotificationOut {
 interface NotificationListOut {
   items: NotificationOut[];
   unread_count: number;
+}
+
+// ----- profiles -----------------------------------------------------------
+
+// Single row in a user's profile (link or contact). For non-mod viewers the
+// server only returns rows with `is_public=true`; mods + the row's owner
+// see all rows. `position` is the explicit display order in the editor.
+export interface ProfileEntryOut {
+  id: number;
+  kind: string;
+  value: string;
+  href: string | null;
+  category: "link" | "contact";
+  is_public: boolean;
+  position: number;
+}
+
+// Full profile payload returned by `profiles.get` and the update mutations.
+// `email` is null for non-mod, non-self viewers — the canonical identity
+// email is never leaked through this surface. Public contact emails live in
+// a `ProfileEntry` row with `kind="Email"` and `is_public=true`.
+export interface ProfileOut {
+  identity_id: number;
+  conference_id: number;
+  name: string | null;
+  email: string | null;
+  role: "participant" | "moderator" | "owner";
+  profile_published: boolean;
+  bio: string | null;
+  pronouns: string | null;
+  title: string | null;
+  company: string | null;
+  // Content hash of the current avatar webp (first 16 hex of sha256), or null
+  // when no avatar is set. Clients compose the cacheable URL as
+  // `/api/avatars/<slug>/<identity_id>/<avatar_hash>` so a hash change busts
+  // the CDN cache. When null, fall back to `/api/avatars/<slug>/<id>` which
+  // serves the deterministic initials SVG.
+  avatar_hash: string | null;
+  entries: ProfileEntryOut[];
+  tags: string[];
+  is_expert: boolean;
+  is_me: boolean;
+  can_edit: boolean;
+  // Always false unless `is_me === true`. Drives the first-login nudge state.
+  profile_completion_dismissed: boolean;
+}
+
+// Compact row for the Directory tab. No email under any role. Non-mods only
+// see published identities; mods see everyone.
+export interface ProfileSummaryOut {
+  identity_id: number;
+  name: string | null;
+  title: string | null;
+  company: string | null;
+  pronouns: string | null;
+  avatar_hash: string | null;
+  tags: string[];
+  is_expert: boolean;
 }
 
 // ----- public config (anonymous) -----------------------------------------
@@ -810,6 +888,25 @@ export const contract = {
       .input(v.object({ slug: Slug, id: Id }))
       .output(type<Ok>()),
     markAllRead: oc.input(InConf).output(type<Ok>()),
+  },
+  profiles: {
+    // Fetch a single profile. Returns NOT_FOUND for non-mod viewers when the
+    // profile is unpublished and not their own — same status as a truly
+    // missing row, so existence isn't leaked.
+    get: oc.input(ProfileGetSchema).output(type<ProfileOut>()),
+    // Directory listing. Non-mod viewers see only `profilePublished=true`
+    // identities; mods see everyone.
+    list: oc.input(ProfileListQuerySchema).output(type<ProfileSummaryOut[]>()),
+    // Self-edit: every identity may update their own profile fields and
+    // entries/tags. Full-replacement semantics on entries/tags.
+    updateMine: oc.input(ProfileUpdateMineSchema).output(type<ProfileOut>()),
+    // Mod-edit-other: moderators/owners can edit any identity in their
+    // conference. Cross-conference targets resolve to NOT_FOUND.
+    updateAny: oc.input(ProfileUpdateAnySchema).output(type<ProfileOut>()),
+    // Removes the avatar reference for self (or, for mods, for any target
+    // identity in the conference). Phase 2 only nulls the DB column; the
+    // on-disk file is cleaned up in Phase 3 via the avatar pipeline.
+    deleteAvatar: oc.input(ProfileDeleteAvatarSchema).output(type<Ok>()),
   },
 };
 

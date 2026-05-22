@@ -294,6 +294,16 @@ Server and client share valibot schemas in [`src/shared/schemas.ts`](src/shared/
 | Cancel any expert booking | | ✓ | ✓ |
 | Promote / demote moderator, remove a moderator | | | ✓ |
 | Change conference settings (design system, timezone, …) | | | ✓ |
+| View own profile + published profiles in the directory | ✓ | ✓ | ✓ |
+| Edit own profile (bio, links, contacts, tags, avatar) | ✓ | ✓ | ✓ |
+| View unpublished profiles, see members' canonical emails | | ✓ | ✓ |
+| Edit any member's profile / upload avatar on their behalf | | ✓ | ✓ |
+
+Profile entries (links / contacts) have a per-row `is_public` flag: non-mods
+only see entries marked public; mods + the profile owner see all. The
+`/api/avatars/:slug/:identityId` endpoint mirrors `profiles.get` visibility
+and falls back to an initials SVG (never 404) so the existence of an
+unpublished profile can't be probed via status code.
 
 The table mirrors [`src/server/lib/permissions.ts`](src/server/lib/permissions.ts) — keep them in sync.
 

@@ -17,7 +17,10 @@ import { api, errorCode } from "../../api";
 import { quotaErrorMessage } from "../../quotaErrors";
 import { useToast } from "../../design-system/hooks";
 import type { Participant, Role, Room, Submission } from "../types";
-import { fmtTimeShort, parseLabels, submitterLabel } from "../helpers";
+import { fmtTimeShort, submitterLabel } from "../helpers";
+import { ProfileLink } from "../ProfileLink";
+import { TagInput } from "../../design-system/core/tag-input";
+import { lowercaseTrim } from "../../design-system/core/normalize";
 import { EmptyState } from "../ui/EmptyState";
 import { Pill } from "../ui/Pill";
 import { Tip } from "../ui/Tip";
@@ -407,6 +410,7 @@ export function SessionsTab({
           {filtered.map((s) => (
             <SessionCard
               key={s.id}
+              slug={slug}
               s={s}
               canEdit={canEdit(s)}
               canDelete={canEdit(s)}
@@ -755,6 +759,7 @@ function SessionFilterBar({
 }
 
 function SessionCard({
+  slug,
   s,
   canEdit,
   canDelete,
@@ -766,6 +771,7 @@ function SessionCard({
   onDelete,
   onStatus,
 }: {
+  slug: string;
   s: Submission;
   canEdit: boolean;
   canDelete: boolean;
@@ -833,7 +839,14 @@ function SessionCard({
         <Pill>★ {s.star_count}</Pill>
         {submitterLabel(s) && (
           <span style={{ color: muted, fontSize: 12 }}>
-            by <span style={{ fontWeight: 500 }}>{submitterLabel(s)}</span>
+            by{" "}
+            <ProfileLink
+              slug={slug}
+              identityId={s.submitter_id ?? null}
+              linkable={isMod || s.submitter_profile_published}
+            >
+              <span style={{ fontWeight: 500 }}>{submitterLabel(s)}</span>
+            </ProfileLink>
           </span>
         )}
       </div>
@@ -1054,9 +1067,9 @@ function SessionForm(props: SessionFormProps) {
 
   const [title, setTitle] = useState(existing?.title ?? "");
   const [description, setDescription] = useState(existing?.description ?? "");
-  const [tags, setTags] = useState(existing?.tags.join(", ") ?? "");
-  const [requirements, setRequirements] = useState(
-    existing?.requirements.join(", ") ?? "",
+  const [tags, setTags] = useState<string[]>(existing?.tags ?? []);
+  const [requirements, setRequirements] = useState<string[]>(
+    existing?.requirements ?? [],
   );
   // Editable for participants while the session is still "submitted", and
   // for mods regardless of status. The submission becoming "published"
@@ -1155,8 +1168,8 @@ function SessionForm(props: SessionFormProps) {
           slug,
           title,
           description,
-          tags: parseLabels(tags),
-          requirements: parseLabels(requirements),
+          tags,
+          requirements,
           room_requirements: roomRequirements,
           ...modFields,
         });
@@ -1166,8 +1179,8 @@ function SessionForm(props: SessionFormProps) {
           id: existing!.id,
           title,
           description,
-          tags: parseLabels(tags),
-          requirements: parseLabels(requirements),
+          tags,
+          requirements,
           // Only send room_requirements when the field is editable, so
           // the server never sees a stale value from a frozen edit screen.
           ...(requirementsLocked ? {} : { room_requirements: roomRequirements }),
@@ -1248,17 +1261,19 @@ function SessionForm(props: SessionFormProps) {
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
-        <TextInput
-          label="Tags (comma-separated)"
+        <TagInput
+          label="Tags"
           placeholder="e.g. workshop, discussion, lightning"
           value={tags}
-          onChange={(e) => setTags(e.target.value)}
+          onChange={setTags}
+          normalize={lowercaseTrim}
         />
-        <TextInput
-          label="Requirements (comma-separated)"
+        <TagInput
+          label="Requirements"
           placeholder="e.g. laptop, github account"
           value={requirements}
-          onChange={(e) => setRequirements(e.target.value)}
+          onChange={setRequirements}
+          normalize={lowercaseTrim}
         />
         <RoomTagPicker
           availableTags={availableRoomTags}

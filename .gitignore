@@ -39,6 +39,12 @@ data/*.sqlite-journal
 data/*.sqlite-shm
 data/*.sqlite-wal
 
+# user-uploaded avatars (resized webp files)
+data/avatars/
+
+# local-only planning artifacts
+plans/
+
 # local env
 .env
 .env.local

@@ -18,22 +18,6 @@ export function submitterLabel(s: {
   return null;
 }
 
-/**
- * Parse a comma-separated label list (tags, requirements, speakers etc.) into
- * trimmed, lowercased, deduped values. Empty entries are dropped.
- */
-export function parseLabels(raw: string): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const piece of raw.split(",")) {
-    const v = piece.trim().toLowerCase();
-    if (!v || seen.has(v)) continue;
-    seen.add(v);
-    out.push(v);
-  }
-  return out;
-}
-
 /** Format an epoch instant as "HH:MM" in the conference timezone. */
 export function fmtTimeShort(ms: number, timeZone: string): string {
   return formatInTz(ms, timeZone, { hour: "2-digit", minute: "2-digit" });

@@ -29,7 +29,10 @@ import type {
   Submission,
   Track,
 } from "../types";
-import { fmtTimeShort, parseLabels } from "../helpers";
+import { fmtTimeShort } from "../helpers";
+import { ProfileLink } from "../ProfileLink";
+import { TagInput } from "../../design-system/core/tag-input";
+import { lowercaseTrim } from "../../design-system/core/normalize";
 import { AssignmentRulesTrigger } from "../ui/AssignmentRulesModal";
 import { SessionPicker } from "../ui/SessionPicker";
 import { SearchableSelect } from "../ui/SearchableSelect";
@@ -880,6 +883,7 @@ function SlotBlock({
           rooms={rooms}
           placements={placements}
           onChange={onChange}
+          isMod={isMod}
         />
       )}
       {isMixer && (
@@ -1193,7 +1197,7 @@ function TrackEditor({
   const initialReqs = track?.requirements?.length
     ? track.requirements
     : submission?.requirements ?? [];
-  const [requirements, setRequirements] = useState(initialReqs.join(", "));
+  const [requirements, setRequirements] = useState<string[]>(initialReqs);
   const [mandatory, setMandatory] = useState(track?.mandatory ?? false);
   const [busy, setBusy] = useState(false);
   // Path C: track display title always comes from the linked submission.
@@ -1243,7 +1247,7 @@ function TrackEditor({
         room_id: room.id,
         submission_id: Number(submissionId),
         speakers: speakers.trim() || null,
-        requirements: parseLabels(requirements),
+        requirements,
         mandatory,
       });
       setEditing(false);
@@ -1267,7 +1271,7 @@ function TrackEditor({
     }
     setSubmissionId("");
     setSpeakers("");
-    setRequirements("");
+    setRequirements([]);
     await onChange();
   }
 
@@ -1297,11 +1301,12 @@ function TrackEditor({
               onChange={(e) => setSpeakers(e.target.value)}
               placeholder="Additional speaker names beyond the submitter"
             />
-            <TextInput
-              label="Requirements (comma-separated)"
+            <TagInput
+              label="Requirements"
               placeholder="e.g. laptop, github account"
               value={requirements}
-              onChange={(e) => setRequirements(e.target.value)}
+              onChange={setRequirements}
+              normalize={lowercaseTrim}
             />
             <label
               style={{
@@ -1475,7 +1480,7 @@ function TrackEditor({
                 const reqs = track?.requirements?.length
                   ? track.requirements
                   : submission?.requirements ?? [];
-                setRequirements(reqs.join(", "));
+                setRequirements(reqs);
                 setMandatory(track?.mandatory ?? false);
                 setEditing(true);
               }}
@@ -1542,6 +1547,7 @@ function UnconferenceBody({
   rooms,
   placements,
   onChange,
+  isMod,
 }: {
   slug: string;
   slot: Slot;
@@ -1556,6 +1562,7 @@ function UnconferenceBody({
     room_capacity: number;
   }[];
   onChange: () => Promise<void>;
+  isMod: boolean;
 }) {
   const [myAssignment, setMyAssignment] = useState<{
     submission_id: number | null;
@@ -1830,7 +1837,13 @@ function UnconferenceBody({
                       fontSize: 13,
                     }}
                   >
-                    {sub.submitter_name}
+                    <ProfileLink
+                      slug={slug}
+                      identityId={sub.submitter_id ?? null}
+                      linkable={isMod || sub.submitter_profile_published}
+                    >
+                      {sub.submitter_name}
+                    </ProfileLink>
                   </div>
                 )}
                 {sub &&

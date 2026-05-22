@@ -15,7 +15,10 @@ import { SessionPicker } from "../ui/SessionPicker";
 
 export function MyAssignmentsTab({
   slug, timeZone,
-}: { slug: string; timeZone: string }) {
+}: {
+  slug: string;
+  timeZone: string;
+}) {
   const [data, setData] = useState<MyAssignments | null>(null);
   const [agenda, setAgenda] = useState<AgendaData | null>(null);
   const [rooms, setRooms] = useState<Room[]>([]);

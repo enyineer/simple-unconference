@@ -4,6 +4,7 @@ import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getPrisma } from "./db";
 import { calendarRoutes } from "./routes/calendar";
+import { avatarRoutes } from "./routes/avatars";
 import { handleRpc } from "./rpc";
 import { metricsResponse } from "./lib/metrics";
 
@@ -24,6 +25,11 @@ export function buildApp(prisma = getPrisma()) {
   // text/calendar URL with no JSON envelope. Mounted BEFORE the oRPC
   // catch-all so it wins for `/api/calendar/<token>.ics`.
   app.route("/api/calendar", calendarRoutes(prisma));
+
+  // Avatar pipeline: binary upload/serve. Mounted before the oRPC catch-all
+  // because multipart uploads and image/webp responses don't fit the oRPC
+  // contract. See src/server/routes/avatars.ts for the privacy contract.
+  app.route("/api/avatars", avatarRoutes(prisma));
 
   // All other API traffic flows through oRPC (contract-driven; see
   // src/shared/contract.ts + src/server/rpc.ts).

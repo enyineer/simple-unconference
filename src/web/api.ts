@@ -37,6 +37,32 @@ export function errorCode(e: unknown): string {
   return "error";
 }
 
+// Multipart avatar upload. The avatar pipeline lives behind a plain Hono
+// route (binary body), so it can't go through the oRPC client. The server
+// hashes the resized webp and returns the new content hash so callers can
+// compose the cacheable URL (`/api/avatars/<slug>/<id>/<hash>`) without
+// re-fetching the profile to learn it.
+export async function uploadAvatar(
+  slug: string,
+  file: File,
+  identityId?: number,
+): Promise<{ hash: string }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  if (identityId != null) fd.append("identity_id", String(identityId));
+  const r = await fetch(`/api/avatars/${encodeURIComponent(slug)}/upload`, {
+    method: "POST",
+    body: fd,
+    credentials: "same-origin",
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({})) as { error?: string };
+    throw new Error(body.error ?? "upload_failed");
+  }
+  const body = (await r.json()) as { ok: boolean; hash: string };
+  return { hash: body.hash };
+}
+
 // Flatten Standard-Schema validation issues into a `{ path → message }` map
 // (the shape `useForm.applyServerErrors` already understands).
 type Issue = { path?: ReadonlyArray<{ key: PropertyKey } | PropertyKey>; message?: string };

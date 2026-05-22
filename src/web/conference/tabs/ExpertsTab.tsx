@@ -18,6 +18,7 @@ import { SearchableSelect } from "../ui/SearchableSelect";
 import { Tip } from "../ui/Tip";
 import { formatInTz } from "../../../shared/tz";
 import { useNow } from "../../useNow";
+import { ProfileLink } from "../ProfileLink";
 
 interface ExpertSlot {
   starts_at: number;
@@ -40,6 +41,7 @@ interface Expert {
   identity_id: number;
   name: string | null;
   email: string | null;
+  profile_published: boolean;
   bio: string | null;
   pool_id: number | null;
   pool_name: string | null;
@@ -185,6 +187,7 @@ export function ExpertsTab({
           {experts.map((e) => (
             <ExpertCard
               key={e.id}
+              slug={slug}
               expert={e}
               rooms={rooms}
               isMod={isMod}
@@ -255,9 +258,10 @@ export function ExpertsTab({
 // ---------------------------------------------------------------------------
 
 function ExpertCard({
-  expert: e, rooms, isMod, timeZone,
+  slug, expert: e, rooms, isMod, timeZone,
   onBook, onCancel, onDemote, onAddTimeframe, onDeleteTimeframe, onEdit,
 }: {
+  slug: string;
   expert: Expert;
   rooms: Room[];
   isMod: boolean;
@@ -298,7 +302,15 @@ function ExpertCard({
             {initial}
           </div>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 16, fontWeight: 600 }}>{display}</div>
+            <div style={{ fontSize: 16, fontWeight: 600 }}>
+              <ProfileLink
+                slug={slug}
+                identityId={e.identity_id}
+                linkable={isMod || e.profile_published}
+              >
+                {display}
+              </ProfileLink>
+            </div>
             {isMod && e.email && (
               <div style={{ fontSize: 12, color: muted }}>{e.email}</div>
             )}

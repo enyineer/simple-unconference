@@ -24,6 +24,9 @@ const ConferenceLoginPage = lazy(() =>
     default: m.ConferenceLoginPage,
   })),
 );
+const ProfilePage = lazy(() =>
+  import("./conference/ProfilePage").then((m) => ({ default: m.ProfilePage })),
+);
 
 // Owner identity (global User). Only used by the owner-facing ConferencesPage
 // and the global LoginPage. No `color_mode` here — that preference lives on
@@ -43,6 +46,10 @@ export interface ConfMe {
   name: string | null;
   role: "owner" | "moderator" | "participant";
   color_mode: ColorMode;
+  // Profile state carried alongside the standard identity payload so the
+  // first-login completion nudge can render without a second round-trip.
+  profile_published: boolean;
+  profile_completion_dismissed: boolean;
 }
 
 interface ConferenceSummary {
@@ -195,7 +202,11 @@ export function App() {
   const joinMatch = matchRoute("/c/:slug/join", path);
   const confLoginMatch = matchRoute("/c/:slug/login", path);
   const confMatch = matchRoute("/conferences/:slug", path);
-  const confSlug = confMatch?.slug;
+  const profileMatch = matchRoute("/conferences/:slug/p/:identityId", path);
+  // Either /conferences/:slug or its profile sub-route shares the same
+  // per-conference identity + design-system state, so pick the slug from
+  // whichever matched.
+  const confSlug = confMatch?.slug ?? profileMatch?.slug;
 
   // Two independent auth states. They can be active simultaneously — the
   // owner cookie + any number of per-conference identity cookies coexist.
@@ -331,6 +342,23 @@ export function App() {
       );
     }
 
+    // ----- per-conference profile page (requires identity) -----
+    if (profileMatch && profileMatch.slug && profileMatch.identityId) {
+      const profileSlug = profileMatch.slug;
+      const identityIdNum = Number(profileMatch.identityId);
+      if (!Number.isFinite(identityIdNum)) {
+        // Bad route segment — bounce back to the conference shell.
+        queueMicrotask(() => navigate(`/conferences/${profileSlug}`));
+        return <MinimalLoading />;
+      }
+      if (confMe === undefined) return <MinimalLoading />;
+      if (confMe === null) {
+        queueMicrotask(() => navigate(`/c/${profileSlug}/login`));
+        return <MinimalLoading />;
+      }
+      return <ProfilePage slug={profileSlug} identityId={identityIdNum} />;
+    }
+
     // ----- per-conference (requires identity) -----
     if (confMatch && confMatch.slug) {
       if (confMe === undefined) return <MinimalLoading />;
@@ -340,6 +368,7 @@ export function App() {
         queueMicrotask(() => navigate(`/c/${confMatch.slug}/login`));
         return <MinimalLoading />;
       }
+      const slugForRefresh = confMatch.slug;
       return (
         <ConferencePage
           slug={confMatch.slug}
@@ -351,6 +380,12 @@ export function App() {
           onLoggedOut={() => {
             setConfMe(null);
             navigate(`/c/${confMatch.slug}/login`);
+          }}
+          onConfMeRefresh={() => {
+            api.conferences
+              .me({ slug: slugForRefresh })
+              .then((m) => setConfMe(m))
+              .catch(() => { /* keep current view */ });
           }}
         />
       );
