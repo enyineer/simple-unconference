@@ -51,6 +51,10 @@ export const ThemeProvider = ({
   // content (e.g. our Sheet) lives outside it and would see undefined vars.
   // Mirror the same attributes onto <html> so the primitives CSS cascades
   // from the root and the portal can resolve `var(--bgColor-default)` etc.
+  //
+  // Also paint <html> with the theme background so the area exposed by
+  // `viewport-fit=cover` (under the Android URL bar / iOS home-indicator
+  // safe-area) renders the theme color rather than a default gray strip.
   useEffect(() => {
     if (typeof document === "undefined") return;
     const html = document.documentElement;
@@ -60,6 +64,8 @@ export const ThemeProvider = ({
     html.setAttribute("data-color-mode", mode);
     html.setAttribute("data-light-theme", "light");
     html.setAttribute("data-dark-theme", "dark");
+    html.style.background = "var(--bgColor-default)";
+    document.body.style.background = "var(--bgColor-default)";
     return () => {
       // Don't strip on unmount — another plugin (or re-mount) may take over.
       // If user switches plugins, the new ThemeProvider's effect will overwrite.
@@ -72,7 +78,7 @@ export const ThemeProvider = ({
         <div style={{
           background: "var(--bgColor-default)",
           color: "var(--fgColor-default)",
-          minHeight: "100vh",
+          minHeight: "100dvh",
         }}>
           {children}
         </div>
@@ -82,7 +88,11 @@ export const ThemeProvider = ({
 };
 
 export const PageLayout: DesignSystem["PageLayout"] = ({ children }) => (
-  <div style={{ maxWidth: 960, margin: "0 auto", padding: 24 }}>{children}</div>
+  <div style={{
+    maxWidth: 960,
+    margin: "0 auto",
+    padding: "24px max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left))",
+  }}>{children}</div>
 );
 
 export const Heading: DesignSystem["Heading"] = ({ children, level = 1 }) => {

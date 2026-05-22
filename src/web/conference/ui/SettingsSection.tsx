@@ -2,7 +2,43 @@
 // on wide viewports, stacked on narrow ones. Matches GitHub-style settings
 // pages — feels more like a configuration panel than a generic Card.
 
-import type { ReactNode } from "react";
+import { useInsertionEffect, type ReactNode } from "react";
+
+// Inject a stylesheet once that drives the responsive grid. Pure inline
+// styles can't express media queries, so the layout switches between two
+// grid templates via a class. Below 640px the section stacks: the
+// description sits above the controls (full width), instead of competing
+// for a 280px column on a narrow screen.
+const SETTINGS_STYLE_ID = "uncon-settings-section";
+const settingsCss = `
+.uncon-settings-section {
+  display: grid;
+  grid-template-columns: minmax(0, 280px) minmax(0, 1fr);
+  gap: 16px 32px;
+  padding: 20px;
+  border-radius: 8px;
+  border: 1px solid var(--borderColor-muted, var(--uncon-border-muted, #e5e7eb));
+  background: var(--bgColor-default, var(--uncon-bg, transparent));
+}
+@media (max-width: 640px) {
+  .uncon-settings-section {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    padding: 16px;
+  }
+}
+`;
+
+function useSettingsStyles() {
+  useInsertionEffect(() => {
+    if (typeof document === "undefined") return;
+    if (document.getElementById(SETTINGS_STYLE_ID)) return;
+    const el = document.createElement("style");
+    el.id = SETTINGS_STYLE_ID;
+    el.textContent = settingsCss;
+    document.head.appendChild(el);
+  }, []);
+}
 
 export function SettingsSection({
   title, description, children, saved,
@@ -15,19 +51,10 @@ export function SettingsSection({
    *  after ~1.5s) so adjacent sections don't all light up at once. */
   saved?: boolean;
 }) {
+  useSettingsStyles();
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "minmax(0, 280px) minmax(0, 1fr)",
-        gap: "16px 32px",
-        padding: 20,
-        borderRadius: 8,
-        border: "1px solid var(--borderColor-muted, var(--uncon-border-muted, #e5e7eb))",
-        background: "var(--bgColor-default, var(--uncon-bg, transparent))",
-      }}
-    >
+    <div className="uncon-settings-section">
       <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
         <div style={{
           fontSize: 16, fontWeight: 600,

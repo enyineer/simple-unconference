@@ -2,7 +2,7 @@
 // CSS variables. Honors `prefers-color-scheme: dark` automatically. Demonstrates
 // that the contract is implementable without bringing in @primer/react.
 
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import type { DesignSystem, ButtonProps, ColorMode } from "../core/contract";
 import { SheetShell } from "../core/sheet-shell";
 import { DateTimeShell } from "../core/datetime-shell";
@@ -97,12 +97,21 @@ export const ThemeProvider = ({
     document.documentElement.setAttribute("data-uncon-theme", "minimal");
     document.documentElement.setAttribute("data-uncon-color-mode", colorMode ?? "auto");
   }
+  // Paint <html> and <body> with the theme bg so the area exposed by
+  // `viewport-fit=cover` (under the Android URL bar / iOS home-indicator
+  // safe-area) renders the theme color rather than a default gray strip.
+  // Assignments must happen in an effect (react-hooks/immutability).
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.documentElement.style.background = "var(--uncon-bg)";
+    document.body.style.background = "var(--uncon-bg)";
+  }, [colorMode]);
   return (
     <div style={{
       fontFamily: FONT_STACK,
       color: "var(--uncon-fg)",
       background: "var(--uncon-bg)",
-      minHeight: "100vh",
+      minHeight: "100dvh",
     }}>
       {children}
     </div>
@@ -110,7 +119,11 @@ export const ThemeProvider = ({
 };
 
 export const PageLayout: DesignSystem["PageLayout"] = ({ children }) => (
-  <div style={{ maxWidth: 960, margin: "0 auto", padding: 24 }}>{children}</div>
+  <div style={{
+    maxWidth: 960,
+    margin: "0 auto",
+    padding: "24px max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left))",
+  }}>{children}</div>
 );
 
 export const Heading: DesignSystem["Heading"] = ({ children, level = 1 }) => {

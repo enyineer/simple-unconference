@@ -1,9 +1,11 @@
 // Shared Sheet implementation used by both plugins. The plugin gives us the
 // background/text/border tokens (as CSS vars or hex), and we render the
-// backdrop, focus container, escape handling, and a close button. Sheet panels
-// slide in from the right on wide viewports and full-screen on narrow.
+// backdrop, focus container, escape handling, and a close button. On wide
+// viewports the sheet slides in from the right as a full-height drawer; on
+// narrow viewports it sits at the bottom as a content-sized bottom sheet so
+// short forms don't leave a massive empty void below the buttons.
 
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useInsertionEffect, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 export interface SheetShellTokens {
@@ -21,7 +23,87 @@ interface SheetShellProps {
   children: ReactNode;
 }
 
+// Pure-inline styles can't express media queries. Inject a stylesheet once
+// that switches the panel between right-drawer (wide) and bottom-sheet
+// (narrow). On narrow it sizes to content (max 92dvh) so short forms don't
+// fill the screen with empty backdrop, and safe-area-inset-bottom is honored
+// so the panel sits above the gesture/URL bar without leaving a gray strip.
+const SHEET_STYLE_ID = "uncon-sheet-shell";
+const sheetCss = `
+.uncon-sheet-outer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  justify-content: flex-end;
+  align-items: stretch;
+}
+.uncon-sheet-panel {
+  width: min(560px, 100vw);
+  max-width: 100vw;
+  height: 100dvh;
+  overflow: hidden;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.18);
+  border-left: 1px solid var(--uncon-sheet-border, transparent);
+  display: flex;
+  flex-direction: column;
+}
+.uncon-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--uncon-sheet-border, transparent);
+  flex-shrink: 0;
+  padding-left: max(16px, env(safe-area-inset-left));
+  padding-right: max(16px, env(safe-area-inset-right));
+}
+.uncon-sheet-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  padding-left: max(20px, env(safe-area-inset-left));
+  padding-right: max(20px, env(safe-area-inset-right));
+  padding-bottom: max(40px, calc(env(safe-area-inset-bottom) + 24px));
+}
+@media (max-width: 640px) {
+  .uncon-sheet-outer {
+    align-items: flex-end;
+    justify-content: stretch;
+  }
+  .uncon-sheet-panel {
+    width: 100vw;
+    height: auto;
+    max-height: 92dvh;
+    border-left: none;
+    border-top-left-radius: 14px;
+    border-top-right-radius: 14px;
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.24);
+  }
+  .uncon-sheet-body {
+    flex: 0 1 auto;
+  }
+}
+`;
+
+function useSheetStyles() {
+  useInsertionEffect(() => {
+    if (typeof document === "undefined") return;
+    if (document.getElementById(SHEET_STYLE_ID)) return;
+    const el = document.createElement("style");
+    el.id = SHEET_STYLE_ID;
+    el.textContent = sheetCss;
+    document.head.appendChild(el);
+  }, []);
+}
+
 export function SheetShell({ open, onClose, title, tokens, children }: SheetShellProps) {
+  useSheetStyles();
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -37,48 +119,29 @@ export function SheetShell({ open, onClose, title, tokens, children }: SheetShel
 
   if (!open || typeof document === "undefined") return null;
 
+  // Border color is passed through a CSS custom property so the stylesheet
+  // above can reference it without sacrificing per-plugin theming.
+  const panelStyle = {
+    background: tokens.bg,
+    color: tokens.fg,
+    ["--uncon-sheet-border" as string]: tokens.border,
+  } as React.CSSProperties;
+
+  const headerStyle = { background: tokens.bg } as React.CSSProperties;
+
   const node = (
     <div
       onClick={onClose}
       aria-modal="true"
       role="dialog"
-      style={{
-        position: "fixed", inset: 0, zIndex: 1000,
-        background: "rgba(0, 0, 0, 0.45)",
-        display: "flex",
-        justifyContent: "flex-end",
-      }}
+      className="uncon-sheet-outer"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{
-          background: tokens.bg,
-          color: tokens.fg,
-          width: "min(560px, 100vw)",
-          maxWidth: "100vw",
-          height: "100dvh",
-          // The outer panel CLIPS overflow. Scrolling happens inside the
-          // body div below — this way the body's padding-bottom is part of
-          // the scrollable area and always lays out after the last child.
-          // (When the outer panel was the scroller, content longer than
-          // the viewport visually overflowed *below* the body box, past
-          // its padding-bottom, so the last child hugged the panel edge.)
-          overflow: "hidden",
-          boxShadow: "-8px 0 24px rgba(0, 0, 0, 0.18)",
-          borderLeft: `1px solid ${tokens.border}`,
-          display: "flex",
-          flexDirection: "column",
-        }}
+        className="uncon-sheet-panel"
+        style={panelStyle}
       >
-        <div style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "12px 16px",
-          borderBottom: `1px solid ${tokens.border}`,
-          background: tokens.bg,
-          flexShrink: 0,
-        }}>
+        <div className="uncon-sheet-header" style={headerStyle}>
           <strong style={{ fontSize: 16 }}>{title ?? ""}</strong>
           <button
             type="button"
@@ -94,20 +157,10 @@ export function SheetShell({ open, onClose, title, tokens, children }: SheetShel
         {/* Body is the scrollable region. Flex column with a default gap so
             consecutive top-level children (a Tip, a Banner, a Form, …) have
             consistent spacing without each call site needing to wrap them
-            in a Stack. Asymmetric padding — wider on the sides, generous
-            on the bottom — gives the last action / paragraph clear
-            breathing room above the sheet edge. Applied here so every
-            sheet, across both design-system plugins, gets the same feel. */}
-        <div style={{
-          flex: 1,
-          minHeight: 0,
-          overflowY: "auto",
-          paddingTop: 20,
-          paddingRight: 20,
-          paddingLeft: 20,
-          paddingBottom: 40,
-          display: "flex", flexDirection: "column", gap: 16,
-        }}>
+            in a Stack. The bottom padding includes safe-area-inset so the
+            last action / paragraph has breathing room above the device's
+            gesture bar or the browser's URL bar on iOS/Android. */}
+        <div className="uncon-sheet-body">
           {children}
         </div>
       </div>
