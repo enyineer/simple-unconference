@@ -9,6 +9,7 @@ import { fmtTimeShort } from "../helpers";
 import type { AgendaData, MyAssignments, Room, Slot, Submission } from "../types";
 import { EmptyState } from "../ui/EmptyState";
 import { Pill } from "../ui/Pill";
+import { CopyButton } from "../ui/CopyButton";
 import { RoomInfoSheet } from "../ui/RoomInfoSheet";
 import { SessionPicker } from "../ui/SessionPicker";
 
@@ -47,7 +48,7 @@ export function MyAssignmentsTab({
       .catch(() => {
         if (cancelled) return;
         setData({ assignments: [], unplaced_slots: [] });
-        setAgenda({ slots: [], tracks: [], placements: [], mixer_placements: [] });
+        setAgenda({ slots: [], slot_series: [], tracks: [], placements: [], mixer_placements: [] });
       });
     return () => { cancelled = true; };
   }, [fetchAll]);
@@ -71,6 +72,44 @@ export function MyAssignmentsTab({
     groups.set(dayKey, arr);
   }
 
+  // Path C cross-row signals: when a participant stars one Submission that's
+  // scheduled in multiple planned offerings (the typical sibling case), the
+  // derivation yields multiple rows with the same `submission_id`. We
+  // surface that connection inline ("Also at 14:00 Hall") so the user
+  // understands the rows are the same content, not separate sessions.
+  //
+  // And when two starred rows overlap in time, we flag the conflict.
+  const alternatesBySubId = new Map<number, typeof sorted>();
+  for (const a of sorted) {
+    if (a.submission_id === null) continue;
+    const arr = alternatesBySubId.get(a.submission_id) ?? [];
+    arr.push(a);
+    alternatesBySubId.set(a.submission_id, arr);
+  }
+  function rowKey(a: typeof sorted[number]): string {
+    return `${a.source}-${a.slot_id ?? `b${a.booking_id ?? 0}`}-${a.submission_id ?? "0"}`;
+  }
+  function alternatesFor(a: typeof sorted[number]): { starts_at: number; title: string | null }[] {
+    if (a.submission_id === null) return [];
+    return (alternatesBySubId.get(a.submission_id) ?? [])
+      .filter((other) => rowKey(other) !== rowKey(a))
+      .map((other) => ({ starts_at: other.starts_at, title: other.title }));
+  }
+  function conflictsFor(a: typeof sorted[number]): string[] {
+    const out: string[] = [];
+    for (const other of sorted) {
+      if (rowKey(other) === rowKey(a)) continue;
+      // Same-submission rows aren't conflicts — they're shown as alternates
+      // instead. Real conflicts are between different content at the same time.
+      if (a.submission_id !== null && a.submission_id === other.submission_id) continue;
+      // Standard overlap test: a starts before other ends AND other starts before a ends.
+      if (a.starts_at < other.ends_at && other.starts_at < a.ends_at) {
+        out.push(other.title ?? "Another session");
+      }
+    }
+    return out;
+  }
+
   return (
     <Stack gap="spacious">
       <Heading level={2}>Your schedule</Heading>
@@ -87,7 +126,7 @@ export function MyAssignmentsTab({
       )}
 
       {sorted.length === 0 ? (
-        <EmptyState message="Nothing on your schedule yet. Star a session on the Agenda to add it here." />
+        <EmptyState message="Nothing on your schedule yet. Star sessions on the Sessions tab or the Agenda to add them here — one star covers both the unconference algorithm and any planned-slot offering of that session." />
       ) : (
         <Stack gap="spacious">
           {[...groups.entries()].map(([day, items]) => (
@@ -104,15 +143,18 @@ export function MyAssignmentsTab({
                   const room = a.room_id ? roomById.get(a.room_id) : null;
                   return (
                     <ScheduleCard
-                      key={`${a.source}-${a.slot_id ?? `b${a.booking_id ?? 0}`}-${a.submission_id ?? "0"}`}
+                      key={rowKey(a)}
                       title={a.title ?? "(removed)"}
                       source={a.source}
                       manual={a.manual ?? false}
                       mandatory={a.mandatory ?? false}
+                      isSubmitter={a.is_submitter ?? false}
                       startsAt={a.starts_at}
                       endsAt={a.ends_at}
                       room={room}
                       timeZone={timeZone}
+                      alternates={alternatesFor(a)}
+                      conflicts={conflictsFor(a)}
                       onRoomClick={(r) => setOpenRoom(r)}
                       onChangeSession={
                         a.source === "unconference" && a.slot_id !== null
@@ -259,7 +301,8 @@ const SOURCE_LABEL: Record<ScheduleSource, string> = {
 };
 
 function ScheduleCard({
-  title, source, manual, mandatory, startsAt, endsAt, room, timeZone, onRoomClick, onChangeSession,
+  title, source, manual, mandatory, isSubmitter, startsAt, endsAt, room, timeZone,
+  alternates, conflicts, onRoomClick, onChangeSession,
 }: {
   title: string;
   source: ScheduleSource;
@@ -267,10 +310,20 @@ function ScheduleCard({
   manual: boolean;
   /** Static rows: moderator marked this session as required for everyone. */
   mandatory: boolean;
+  /** Static rows: true when the viewer is the linked submission's submitter
+   *  (so they're speaking, not attending). Drives a "You're speaking" badge
+   *  so the row reads correctly. */
+  isSubmitter: boolean;
   startsAt: number;
   endsAt: number;
   room: Room | null | undefined;
   timeZone: string;
+  /** Other times the same submission is scheduled. Path C surfaces these so
+   *  the user understands sibling/repeat offerings are one session, not many. */
+  alternates: { starts_at: number; title: string | null }[];
+  /** Titles of other starred rows whose time window overlaps this one.
+   *  Empty when there's no conflict. */
+  conflicts: string[];
   /** Opens the room info sheet. When omitted the chip is non-interactive. */
   onRoomClick?: (room: Room) => void;
   /** Opens the session-switch picker. Only set for unconference sources. */
@@ -330,6 +383,12 @@ function ScheduleCard({
           </Pill>
           {mandatory && <Pill variant="attention">required</Pill>}
           {manual && <Pill variant="primary">manual pick</Pill>}
+          {isSubmitter && <Pill variant="success">you&apos;re speaking</Pill>}
+          {conflicts.length > 0 && (
+            <Pill variant="attention">
+              conflicts with {conflicts[0]}{conflicts.length > 1 ? ` (+${conflicts.length - 1})` : ""}
+            </Pill>
+          )}
           {onChangeSession && (
             <button
               type="button"
@@ -345,6 +404,23 @@ function ScheduleCard({
             </button>
           )}
         </div>
+        {alternates.length > 0 && (
+          // Path C: same Submission scheduled in multiple offerings (e.g.
+          // sibling slots of a series). One star → many rows; this caption
+          // tells the user they're the same content so they can decide
+          // which one to actually attend.
+          <div style={{ fontSize: 12, color: muted }}>
+            Same session{alternates.length > 1 ? "s" : ""} also at{" "}
+            {alternates
+              .sort((a, b) => a.starts_at - b.starts_at)
+              .map((alt, i) => (
+                <span key={i} style={{ fontVariantNumeric: "tabular-nums" }}>
+                  {i > 0 ? ", " : ""}
+                  {fmtTimeShort(alt.starts_at, timeZone)}
+                </span>
+              ))}
+          </div>
+        )}
       </div>
 
       {room && (
@@ -408,7 +484,6 @@ function ScheduleCard({
 function CalendarSubscribe({ slug }: { slug: string }) {
   const [path, setPath] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [copied, setCopied] = useState(false);
   const toast = useToast();
 
   useEffect(() => {
@@ -432,15 +507,6 @@ function CalendarSubscribe({ slug }: { slug: string }) {
   const webcalUrl = path
     ? `webcal://${window.location.host}${path}`
     : "";
-
-  async function copy() {
-    if (!url) return;
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch { /* ignore — the input is selectable as a fallback */ }
-  }
 
   async function reset() {
     if (!confirm("Generate a new link? Any calendar app currently subscribed will stop syncing until you give it the new URL.")) return;
@@ -521,27 +587,13 @@ function CalendarSubscribe({ slug }: { slug: string }) {
                     outline: "none",
                   }}
                 />
-                <button
-                  type="button"
-                  onClick={copy}
+                <CopyButton
+                  variant="inset"
+                  value={url}
                   disabled={busy}
-                  style={{
-                    flex: "0 0 auto",
-                    padding: "0 12px",
-                    border: "none",
-                    borderLeft: "1px solid var(--borderColor-muted, var(--uncon-border-muted, #e5e7eb))",
-                    background: "var(--bgColor-default, var(--uncon-bg, #fff))",
-                    color: copied
-                      ? "var(--fgColor-success, #1a7f37)"
-                      : "var(--fgColor-default, var(--uncon-fg, inherit))",
-                    fontFamily: "inherit",
-                    fontSize: 12, fontWeight: 600,
-                    cursor: busy ? "default" : "pointer",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {copied ? "✓ Copied" : "Copy"}
-                </button>
+                  successMessage="Calendar subscription URL copied."
+                  fallbackPromptLabel="Copy this calendar subscription URL:"
+                />
               </div>
 
               <div style={{

@@ -133,6 +133,7 @@ export function ConferencePage({
           <SessionsTab
             slug={slug}
             role={conf.my_role}
+            timeZone={conf.timezone}
             submissionMaxPlacementsDefault={conf.submission_max_placements_default}
             participantSubmissionsEnabled={conf.participant_submissions_enabled}
             mySessionCount={conf.my_session_count}

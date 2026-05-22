@@ -379,11 +379,20 @@ async function main() {
       startsAt: dayInTz(D1, 9, 0), endsAt: dayInTz(D1, 9, 30),
     },
   });
+  // Path C: planned tracks always link to a Submission. Housekeeping items
+  // (opening, lunch, wrap, closing) live as published Submissions attributed
+  // to the conference owner so they have a submitter for credit.
+  const subOpening = await prisma.submission.create({
+    data: {
+      conferenceId: conf.id, submitterId: nicoIdentity.id,
+      title: "Opening: Welcome to TechSummit 2026",
+      status: "published", maxPlacements: null,
+    },
+  });
   const trkOpening = await prisma.trackAssignment.create({
     data: {
       slotId: sOpening.id, roomId: roomByName("Main Hall").id,
-      submissionId: null, title: "Opening: Welcome to TechSummit 2026",
-      speakers: "Nico Enking", mandatory: true,
+      submissionId: subOpening.id, mandatory: true,
     },
   });
   void trkOpening;
@@ -415,11 +424,24 @@ async function main() {
       submissionId: subByTitle("Designing better APIs").id,
     },
   });
-  // Static-star the TypeScript track for Nico + a few others (so his
-  // calendar shows it, and Sessions/Agenda show non-zero static stars).
+  // Path C: planned-schedule visibility is now derived from Submission stars
+  // (no separate per-track table). Star the TypeScript submission for Nico
+  // + a few others so the TypeScript workshop lands on their schedule via
+  // the trkTS planned track and the agenda overview shows non-zero stars.
+  void trkTS;
   for (const email of [OWNER_EMAIL, "carla@example.com", "daniel@example.com", "iris@example.com"]) {
-    await prisma.staticStar.create({
-      data: { userId: peopleByEmail.get(email)!.id, trackId: trkTS.id },
+    await prisma.star.upsert({
+      where: {
+        userId_submissionId: {
+          userId: peopleByEmail.get(email)!.id,
+          submissionId: subByTitle("Modern TypeScript in 2026").id,
+        },
+      },
+      create: {
+        userId: peopleByEmail.get(email)!.id,
+        submissionId: subByTitle("Modern TypeScript in 2026").id,
+      },
+      update: {},
     });
   }
 
@@ -535,10 +557,16 @@ async function main() {
       startsAt: dayInTz(D1, 12, 0), endsAt: dayInTz(D1, 13, 0),
     },
   });
+  const subLunch = await prisma.submission.create({
+    data: {
+      conferenceId: conf.id, submitterId: nicoIdentity.id,
+      title: "Lunch", status: "published", maxPlacements: null,
+    },
+  });
   await prisma.trackAssignment.create({
     data: {
       slotId: sLunch.id, roomId: roomByName("Cafeteria").id,
-      title: "Lunch", speakers: null,
+      submissionId: subLunch.id,
     },
   });
 
@@ -694,10 +722,16 @@ async function main() {
       startsAt: dayInTz(D1, 16, 0), endsAt: dayInTz(D1, 17, 0),
     },
   });
+  const subWrap = await prisma.submission.create({
+    data: {
+      conferenceId: conf.id, submitterId: nicoIdentity.id,
+      title: "Demos + open mic", status: "published", maxPlacements: null,
+    },
+  });
   await prisma.trackAssignment.create({
     data: {
       slotId: sWrap.id, roomId: roomByName("Main Hall").id,
-      title: "Demos + open mic", speakers: "Alice Adams, Bob Becker",
+      submissionId: subWrap.id, speakers: "Alice Adams, Bob Becker",
     },
   });
 
@@ -770,10 +804,16 @@ async function main() {
       startsAt: dayInTz(D2, 14, 0), endsAt: dayInTz(D2, 15, 0),
     },
   });
+  const subClose = await prisma.submission.create({
+    data: {
+      conferenceId: conf.id, submitterId: nicoIdentity.id,
+      title: "Closing keynote", status: "published", maxPlacements: null,
+    },
+  });
   await prisma.trackAssignment.create({
     data: {
       slotId: sClose.id, roomId: roomByName("Main Hall").id,
-      title: "Closing keynote", speakers: "Surprise guest",
+      submissionId: subClose.id, speakers: "Surprise guest",
       mandatory: true,
     },
   });

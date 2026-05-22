@@ -786,7 +786,11 @@ describe("rooms + agenda + unconference assignment", () => {
     expect(meBody.assignments[0]!.room_id).toBe(bigRoom.id);
   });
 
-  test("static-slot track stores speakers and links a submission OR a custom title", async () => {
+  test("static-slot track always links a Submission; title comes from the submission", async () => {
+    // Path C: custom-title tracks no longer exist. Every planned track is
+    // anchored to a Submission, which supplies the display title and the
+    // submitter credit. The track's own `speakers` field is an optional
+    // addendum (co-presenters, guest names) — not a replacement title.
     const owner = new Client(ctx.app);
     await signupAndLogin(owner, "trkowner@example.com");
     const conf = await owner.rpc.conferences.create({ name: "Tracks" });
@@ -808,16 +812,8 @@ describe("rooms + agenda + unconference assignment", () => {
     });
     let agenda = await owner.rpc.agenda.get({ slug: conf.slug });
     expect(agenda.tracks[0]!.submission_id).toBe(sub.id);
+    expect(agenda.tracks[0]!.title).toBe("Keynote: Bun and React");
     expect(agenda.tracks[0]!.speakers).toBe("Alice Anderson");
-
-    await owner.rpc.agenda.setTrack({
-      slug: conf.slug, slot_id: slot.id,
-      room_id: room.id, submission_id: null, title: "Welcome", speakers: "Carol",
-    });
-    agenda = await owner.rpc.agenda.get({ slug: conf.slug });
-    expect(agenda.tracks[0]!.submission_id).toBeNull();
-    expect(agenda.tracks[0]!.title).toBe("Welcome");
-    expect(agenda.tracks[0]!.speakers).toBe("Carol");
 
     await owner.rpc.agenda.clearTrack({
       slug: conf.slug, slot_id: slot.id, room_id: room.id,
@@ -869,11 +865,17 @@ describe("rooms + agenda + unconference assignment", () => {
     expect(res.placements[0]!.room_id).toBe(roomB.id);
   });
 
-  test("attendees can star a static track and it appears in /me/assignments", async () => {
+  test("Path C: starring the underlying Submission puts the planned track on the participant's schedule", async () => {
+    // Path C unified the star concept: a participant clicks "Star" on a
+    // Submission in the Sessions tab, and every linked planned-slot
+    // TrackAssignment derives onto their MyAssignments. There is no
+    // separate per-track star.
     const owner = new Client(ctx.app);
     await signupAndLogin(owner, "starowner@example.com");
-    const conf = await owner.rpc.conferences.create({ name: "Static Stars" });
+    const conf = await owner.rpc.conferences.create({ name: "Path C Stars" });
     const room = await owner.rpc.rooms.create({ slug: conf.slug, name: "Auditorium", capacity: 100 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Welcome" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
 
     const slot = await owner.rpc.agenda.createSlot({
       slug: conf.slug,
@@ -882,46 +884,47 @@ describe("rooms + agenda + unconference assignment", () => {
     });
     await owner.rpc.agenda.setTrack({
       slug: conf.slug, slot_id: slot.id,
-      room_id: room.id, title: "Welcome", speakers: "Alice",
+      room_id: room.id, submission_id: sub.id, speakers: "Alice",
     });
-
     const agendaRes = await owner.rpc.agenda.get({ slug: conf.slug });
     const trackId = agendaRes.tracks[0]!.id;
 
     const { client: part } =
       await inviteAndClaim(ctx.app, owner, conf.slug, "starpart@example.com");
 
-    await part.rpc.agenda.starTrack({ slug: conf.slug, slot_id: slot.id, track_id: trackId });
+    // Before starring: no schedule entry derived for this participant.
+    const meBefore = await part.rpc.agenda.myAssignments({ slug: conf.slug });
+    expect(meBefore.assignments.find((a) => a.slot_id === slot.id)).toBeUndefined();
 
+    // Star the SUBMISSION (the only star verb in Path C).
+    await part.rpc.submissions.star({ slug: conf.slug, id: sub.id });
+
+    // Track shows `starred_by_me: true` derived from the submission star.
     const partAgenda = await part.rpc.agenda.get({ slug: conf.slug });
     const trk = partAgenda.tracks.find((t) => t.id === trackId);
     expect(trk!.starred_by_me).toBe(true);
     expect(trk!.star_count).toBe(1);
 
+    // Schedule now derives the planned-slot row.
     const me = await part.rpc.agenda.myAssignments({ slug: conf.slug });
     expect(me.assignments.length).toBe(1);
     expect(me.assignments[0]!.source).toBe("static");
     expect(me.assignments[0]!.room_id).toBe(room.id);
     expect(me.assignments[0]!.title).toBe("Welcome");
 
-    await part.rpc.agenda.unstarTrack({ slug: conf.slug, slot_id: slot.id, track_id: trackId });
+    // Unstarring the submission removes the derived row.
+    await part.rpc.submissions.unstar({ slug: conf.slug, id: sub.id });
     const me2 = await part.rpc.agenda.myAssignments({ slug: conf.slug });
     expect(me2.assignments.length).toBe(0);
-
-    const unconfSlot = await owner.rpc.agenda.createSlot({
-      slug: conf.slug,
-      type: "unconference", starts_at: Date.now(), ends_at: Date.now() + 60 * 60 * 1000,
-    });
-    await expect(part.rpc.agenda.starTrack({
-      slug: conf.slug, slot_id: unconfSlot.id, track_id: trackId,
-    })).rejects.toBeInstanceOf(ORPCError);
   });
 
-  test("mandatory static tracks show up in every participant's schedule and can't be unstarred", async () => {
+  test("mandatory static tracks show up in every participant's schedule regardless of stars", async () => {
     const owner = new Client(ctx.app);
     await signupAndLogin(owner, "mandowner@example.com");
     const conf = await owner.rpc.conferences.create({ name: "Mandatory" });
     const room = await owner.rpc.rooms.create({ slug: conf.slug, name: "Main Hall", capacity: 500 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Opening Keynote" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
 
     const start = Date.now();
     const slot = await owner.rpc.agenda.createSlot({
@@ -930,7 +933,7 @@ describe("rooms + agenda + unconference assignment", () => {
     });
     await owner.rpc.agenda.setTrack({
       slug: conf.slug, slot_id: slot.id,
-      room_id: room.id, title: "Opening Keynote", speakers: "Alice",
+      room_id: room.id, submission_id: sub.id, speakers: "Alice",
       mandatory: true,
     });
 
@@ -952,32 +955,22 @@ describe("rooms + agenda + unconference assignment", () => {
       expect(keynoteRow!.mandatory).toBe(true);
     }
 
-    // Unstar is rejected outright (FORBIDDEN) — can't opt out of mandatory.
-    await expect(p1.rpc.agenda.unstarTrack({
-      slug: conf.slug, slot_id: slot.id, track_id: track.id,
-    })).rejects.toBeInstanceOf(ORPCError);
-
-    // Schedule still includes it after the rejected unstar attempt.
-    const after = await p1.rpc.agenda.myAssignments({ slug: conf.slug });
-    expect(after.assignments.some((a) => a.source === "static" && a.slot_id === slot.id)).toBe(true);
-
-    // Star is a silent no-op (mandatory tracks don't need explicit star rows).
-    await p1.rpc.agenda.starTrack({ slug: conf.slug, slot_id: slot.id, track_id: track.id });
-    const afterStar = await p1.rpc.agenda.myAssignments({ slug: conf.slug });
-    // Still exactly one row for the keynote (no duplication).
-    expect(afterStar.assignments.filter((a) => a.source === "static" && a.slot_id === slot.id))
-      .toHaveLength(1);
-
     // Mod can clear the mandatory flag — track stays, but is no longer
-    // force-attended; an opted-in participant still has it via their star.
+    // force-attended. Participants who haven't starred the submission lose
+    // visibility; one who stars it gets it back via the derivation rule.
     await owner.rpc.agenda.setTrack({
       slug: conf.slug, slot_id: slot.id,
-      room_id: room.id, title: "Opening Keynote", speakers: "Alice",
+      room_id: room.id, submission_id: sub.id, speakers: "Alice",
       mandatory: false,
     });
     const after2 = await p2.rpc.agenda.myAssignments({ slug: conf.slug });
     expect(after2.assignments.some((a) => a.source === "static" && a.slot_id === slot.id))
       .toBe(false);
+
+    await p1.rpc.submissions.star({ slug: conf.slug, id: sub.id });
+    const after1 = await p1.rpc.agenda.myAssignments({ slug: conf.slug });
+    expect(after1.assignments.some((a) => a.source === "static" && a.slot_id === slot.id))
+      .toBe(true);
   });
 
   test("slot can be moved + resized via PATCH starts_at/ends_at", async () => {
@@ -2554,15 +2547,17 @@ describe("per-conference calendar feed", () => {
       starts_at: Date.UTC(2026, 5, 1, 9, 0, 0),
       ends_at:   Date.UTC(2026, 5, 1, 9, 30, 0),
     });
+    const welcomeSub = await owner.rpc.submissions.create({
+      slug: conf.slug, title: "Welcome",
+    });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: welcomeSub.id });
     await owner.rpc.agenda.setTrack({
       slug: conf.slug, slot_id: staticSlot.id,
-      room_id: room.id, title: "Welcome", speakers: "Alice",
+      room_id: room.id, submission_id: welcomeSub.id, speakers: "Alice",
     });
-    const agenda = await owner.rpc.agenda.get({ slug: conf.slug });
-    const trackId = agenda.tracks.find((t) => t.slot_id === staticSlot.id)!.id;
-    await owner.rpc.agenda.starTrack({
-      slug: conf.slug, slot_id: staticSlot.id, track_id: trackId,
-    });
+    // Path C: derive the planned-track entry onto the owner's feed by
+    // starring the underlying submission (no separate track-star action).
+    await owner.rpc.submissions.star({ slug: conf.slug, id: welcomeSub.id });
 
     const { token } = await owner.rpc.conferences.getCalendar({ slug: conf.slug });
     const anon = new Client(ctx.app);
@@ -2913,10 +2908,15 @@ describe("session max placements (finished sessions)", () => {
     if (r2.kind !== "unconference") throw new Error("expected unconference");
     expect(r2.placements.length).toBe(0);
 
-    // The participant submissions list filters finished sessions out for
-    // non-mods, but mods still see them with placement_count + is_finished.
+    // Path C: `is_finished` is informational only. Participants still see
+    // every published submission, including fully-scheduled ones, so they
+    // can star and have linked planned tracks land on their schedule.
     const partList = await p1.rpc.submissions.list({ slug: conf.slug });
-    expect(partList.map((s) => s.id)).toEqual([]);
+    expect(partList.map((s) => s.id).sort()).toEqual([subA.id, subB.id].sort());
+    for (const row of partList) {
+      expect(row.is_finished).toBe(true);
+      expect(row.placement_count).toBe(1);
+    }
 
     const modList = await owner.rpc.submissions.list({ slug: conf.slug });
     expect(modList.map((s) => s.id).sort()).toEqual([subA.id, subB.id].sort());
@@ -3008,11 +3008,13 @@ describe("session max placements (finished sessions)", () => {
     if (r.kind !== "unconference") throw new Error("expected unconf");
     expect(r.placements.length).toBe(0);
 
-    // Participant doesn't see it.
+    // Path C: participants still see manually-finished sessions (informational
+    // badge only); they're just excluded from the algorithm pool.
     const partList = await p1.rpc.submissions.list({ slug: conf.slug });
-    expect(partList).toEqual([]);
+    expect(partList.length).toBe(1);
+    expect(partList[0]!.is_finished).toBe(true);
+    expect(partList[0]!.manually_finished).toBe(true);
 
-    // Mod sees it with manually_finished + is_finished + placement_count=0.
     const modList = await owner.rpc.submissions.list({ slug: conf.slug });
     expect(modList.length).toBe(1);
     expect(modList[0]!.is_finished).toBe(true);
@@ -3045,9 +3047,11 @@ describe("session max placements (finished sessions)", () => {
     expect(modList[0]!.placement_count).toBe(1);
     expect(modList[0]!.is_finished).toBe(true);
 
-    // Participant doesn't see it on the Sessions overview.
+    // Path C: participant still sees the fully-scheduled session and can
+    // star it; the star then derives the planned track onto their schedule.
     const partList = await p1.rpc.submissions.list({ slug: conf.slug });
-    expect(partList).toEqual([]);
+    expect(partList.length).toBe(1);
+    expect(partList[0]!.is_finished).toBe(true);
 
     await p1.rpc.submissions.star({ slug: conf.slug, id: sub.id }).catch(() => {});
     const slotUnconf = await owner.rpc.agenda.createSlot({
@@ -3466,5 +3470,1024 @@ describe("public-instance defenses: turnstile gating", () => {
         password: "secret123",
       }),
     ).rejects.toMatchObject({ message: "captcha_required" });
+  });
+});
+
+describe("slot series (linked offerings)", () => {
+  let ctx: TestApp;
+  beforeAll(() => { ctx = setupTestApp(); });
+  afterAll(async () => { await ctx.cleanup(); });
+
+  test("duplicateSlot on a standalone slot creates a series with both as members", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-dup1@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series Dup" });
+    await owner.rpc.rooms.create({ slug: conf.slug, name: "Hall", capacity: 50 });
+
+    const t0 = Date.now();
+    const source = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", title: "Block",
+      starts_at: t0, ends_at: t0 + 60 * 60 * 1000,
+    });
+
+    const dup = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: source.id,
+      new_starts_at: t0 + 4 * 60 * 60 * 1000,
+      new_ends_at: t0 + 5 * 60 * 60 * 1000,
+    });
+    expect(dup.slot_id).not.toBe(source.id);
+    expect(dup.series_id).toBeGreaterThan(0);
+
+    const agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    const sourceOut = agenda.slots.find((s) => s.id === source.id)!;
+    const dupOut = agenda.slots.find((s) => s.id === dup.slot_id)!;
+    expect(sourceOut.series_id).toBe(dup.series_id);
+    expect(dupOut.series_id).toBe(dup.series_id);
+    expect(sourceOut.series_total_offerings).toBe(2);
+    expect(dupOut.series_total_offerings).toBe(2);
+    // Ordered by starts_at, so the source comes first.
+    expect(sourceOut.series_offering_index).toBe(1);
+    expect(dupOut.series_offering_index).toBe(2);
+
+    expect(agenda.slot_series).toHaveLength(1);
+    expect(agenda.slot_series[0]!.slot_ids).toEqual([source.id, dup.slot_id]);
+    expect(agenda.slot_series[0]!.avoid_repeats_across_siblings).toBe(true);
+
+    // The new sibling inherits the source's config + the source's
+    // (now-series-managed) title.
+    expect(dupOut.title).toBe("Block");
+    expect(dupOut.unconf_use_all_rooms).toBe(true);
+  });
+
+  test("duplicateSlot on a planned slot with multiple tracks copies every track", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-dup-multi@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series Dup Multi" });
+    const r1 = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 50 });
+    const r2 = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 10 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Talk A" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    // Two tracks in the source, both linked to Submissions (Path C: custom
+    // titles no longer exist).
+    const subA = sub;
+    const subB = await owner.rpc.submissions.create({ slug: conf.slug, title: "Welcome" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: subB.id });
+    await owner.rpc.agenda.setTrack({
+      slug: conf.slug, slot_id: a.id,
+      room_id: r1.id, submission_id: subA.id, speakers: "Alice",
+    });
+    await owner.rpc.agenda.setTrack({
+      slug: conf.slug, slot_id: a.id,
+      room_id: r2.id, submission_id: subB.id, speakers: "Bob",
+    });
+
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+
+    const agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    const siblingTracks = agenda.tracks
+      .filter((t) => t.slot_id === b.slot_id)
+      .sort((x, y) => x.room_id - y.room_id);
+    expect(siblingTracks).toHaveLength(2);
+    const tR1 = siblingTracks.find((t) => t.room_id === r1.id)!;
+    const tR2 = siblingTracks.find((t) => t.room_id === r2.id)!;
+    expect(tR1.submission_id).toBe(subA.id);
+    expect(tR1.title).toBe("Talk A");
+    expect(tR1.speakers).toBe("Alice");
+    expect(tR2.submission_id).toBe(subB.id);
+    expect(tR2.title).toBe("Welcome");
+    expect(tR2.speakers).toBe("Bob");
+  });
+
+  test("duplicateSlot: starring source's submission carries the sibling onto the participant's schedule too", async () => {
+    // Path C replacement for the obsolete "doesn't copy StaticStars" test.
+    // Per-track stars no longer exist; the participant's "Star" is on the
+    // Submission, and the derivation rule picks up every linked track
+    // (including the new sibling's). So a star on the source's submission
+    // gives the participant BOTH the source and the duplicated offering on
+    // their schedule — which is exactly what they signed up for.
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-dup-stars@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series Dup Stars" });
+    const room = await owner.rpc.rooms.create({ slug: conf.slug, name: "Hall", capacity: 50 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Topic" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+    const { client: part } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "p@example.com");
+    await part.rpc.submissions.star({ slug: conf.slug, id: sub.id });
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    await owner.rpc.agenda.setTrack({
+      slug: conf.slug, slot_id: a.id,
+      room_id: room.id, submission_id: sub.id, speakers: "Owner",
+    });
+
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+
+    // The duplicated sibling carries a fresh TrackAssignment that also
+    // links to the same Submission. Both tracks derive onto the
+    // participant's MyAssignments via their single Star.
+    const me = await part.rpc.agenda.myAssignments({ slug: conf.slug });
+    const onSource = me.assignments.find((x) => x.slot_id === a.id);
+    const onSibling = me.assignments.find((x) => x.slot_id === b.slot_id);
+    expect(onSource).toBeTruthy();
+    expect(onSibling).toBeTruthy();
+    // Both rows reflect the submission's title.
+    expect(onSource!.title).toBe("Topic");
+    expect(onSibling!.title).toBe("Topic");
+
+    // Track-level `starred_by_me` derives from the Submission star, so it's
+    // true on both sibling tracks — the participant is opted into both via
+    // a single click.
+    const sibAgenda = await part.rpc.agenda.get({ slug: conf.slug });
+    for (const t of sibAgenda.tracks) expect(t.starred_by_me).toBe(true);
+  });
+
+  test("duplicateSlot on an unconference slot: sibling runs assignment against the series pool", async () => {
+    // Source slot has a narrowed room+submission pool. After duplication
+    // the series owns that pool; running assignment on the new sibling
+    // honors the series scope (via the resolver) without us having had to
+    // copy SlotRoom/SlotSubmission onto the sibling.
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-dup-unconf@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series Dup Unconf" });
+    const rIn = await owner.rpc.rooms.create({ slug: conf.slug, name: "In", capacity: 50 });
+    const rOut = await owner.rpc.rooms.create({ slug: conf.slug, name: "Out", capacity: 50 });
+    const subIn = await owner.rpc.submissions.create({ slug: conf.slug, title: "InSub" });
+    const subOut = await owner.rpc.submissions.create({ slug: conf.slug, title: "OutSub" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: subIn.id });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: subOut.id });
+    // Lift caps so the same submission can be placed across both siblings.
+    await owner.rpc.submissions.update({ slug: conf.slug, id: subIn.id, max_placements: 10 });
+
+    const { client: part } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "p@example.com");
+    // Star both; only InSub is in the scope. OutSub should never get placed.
+    await part.rpc.submissions.star({ slug: conf.slug, id: subIn.id });
+    await part.rpc.submissions.star({ slug: conf.slug, id: subOut.id });
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    // Narrow the source's pool BEFORE duplicating so the series snapshots
+    // these values at create time.
+    await owner.rpc.agenda.updateSlot({
+      slug: conf.slug, id: a.id,
+      unconf_use_all_rooms: false,
+      unconf_use_all_submissions: false,
+      unconf_room_ids: [rIn.id],
+      unconf_submission_ids: [subIn.id],
+    });
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+    // The series should expose the narrowed pool, and so should every
+    // sibling via the resolver.
+    let agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    expect(agenda.slot_series).toHaveLength(1);
+    expect(agenda.slot_series[0]!.unconf_room_ids).toEqual([rIn.id]);
+    expect(agenda.slot_series[0]!.unconf_submission_ids).toEqual([subIn.id]);
+    const sibSlot = agenda.slots.find((s) => s.id === b.slot_id)!;
+    expect(sibSlot.unconf_room_ids).toEqual([rIn.id]);
+    expect(sibSlot.unconf_submission_ids).toEqual([subIn.id]);
+
+    // Turn off cross-sibling avoidance so the participant CAN be placed in
+    // InSub on the new sibling as well.
+    await owner.rpc.agenda.updateSeries({
+      slug: conf.slug, id: b.series_id,
+      avoid_repeats_across_siblings: false,
+    });
+
+    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: a.id });
+    const rb = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: b.slot_id });
+    if (rb.kind !== "unconference") throw new Error("expected unconference result");
+    // OutSub must not appear in any placement on the sibling — it's out of scope.
+    expect(rb.placements.find((p) => p.submission_id === subOut.id)).toBeUndefined();
+    // rOut is out of room scope; no placement may land in it either.
+    expect(rb.placements.find((p) => p.room_id === rOut.id)).toBeUndefined();
+    // InSub IS placed in the sibling.
+    expect(rb.placements.find((p) => p.submission_id === subIn.id)?.room_id).toBe(rIn.id);
+
+    agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    // Defensive: sibling's own SlotRoom/SlotSubmission rows are not what
+    // gates assignment. We didn't write them; the assignment still scoped
+    // correctly through the series.
+    const sibViaApi = agenda.slots.find((s) => s.id === b.slot_id)!;
+    expect(sibViaApi.unconf_room_ids).toEqual([rIn.id]);
+  });
+
+  test("duplicateSlot on a mixer slot: sibling assigns within the series room scope", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-dup-mixer@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series Dup Mixer" });
+    const rIn = await owner.rpc.rooms.create({ slug: conf.slug, name: "In", capacity: 50 });
+    const rOut = await owner.rpc.rooms.create({ slug: conf.slug, name: "Out", capacity: 50 });
+
+    const { identity_id: partId } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "pmix@example.com");
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "mixer",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    await owner.rpc.agenda.updateSlot({
+      slug: conf.slug, id: a.id,
+      unconf_use_all_rooms: false,
+      unconf_room_ids: [rIn.id],
+    });
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+
+    const agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    expect(agenda.slot_series).toHaveLength(1);
+    expect(agenda.slot_series[0]!.unconf_room_ids).toEqual([rIn.id]);
+
+    const rb = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: b.slot_id });
+    if (rb.kind !== "mixer") throw new Error("expected mixer result");
+    // Every room assignment in the sibling stays inside the narrowed
+    // scope — rOut is never used.
+    for (const ra of rb.room_assignments) {
+      expect(ra.room_id).toBe(rIn.id);
+    }
+    expect(rb.room_assignments.find((ra) => ra.room_id === rOut.id)).toBeUndefined();
+    expect(rb.room_assignments.find((ra) => ra.user_id === partId)).toBeDefined();
+  });
+
+  test("duplicateSlot on a planned slot copies TrackAssignment rows (and their requirements)", async () => {
+    // Regression: duplicating a planned slot used to leave the new sibling
+    // empty because the copy only touched per-instance slot fields, not
+    // the slot's TrackAssignment children.
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-dup-tracks@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series Dup Tracks" });
+    const room = await owner.rpc.rooms.create({ slug: conf.slug, name: "Hall", capacity: 50 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Keynote" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", title: "Block",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    await owner.rpc.agenda.setTrack({
+      slug: conf.slug, slot_id: a.id,
+      room_id: room.id, submission_id: sub.id,
+      speakers: "Alice", mandatory: true,
+      requirements: ["laptop"],
+    });
+
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+
+    const agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    const siblingTracks = agenda.tracks.filter((t) => t.slot_id === b.slot_id);
+    expect(siblingTracks).toHaveLength(1);
+    const t = siblingTracks[0]!;
+    expect(t.room_id).toBe(room.id);
+    expect(t.submission_id).toBe(sub.id);
+    expect(t.speakers).toBe("Alice");
+    expect(t.mandatory).toBe(true);
+    expect(t.requirements).toEqual(["laptop"]);
+    // Stars are intentionally NOT copied — they're per-user expressions
+    // of interest, attached to the specific track row.
+    expect(t.starred_by_me).toBe(false);
+  });
+
+  test("duplicateSlot on a series member adds another sibling to the same series", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-dup2@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series Dup 2" });
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+    const c = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: b.slot_id,
+      new_starts_at: t0 + 14400_000, new_ends_at: t0 + 18000_000,
+    });
+    expect(c.series_id).toBe(b.series_id);
+
+    const agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    expect(agenda.slot_series).toHaveLength(1);
+    expect(agenda.slot_series[0]!.slot_ids).toHaveLength(3);
+  });
+
+  test("updateSlot refuses series-owned fields on a series member", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-update-slot@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series UpdateSlot" });
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+
+    // Time edits on a series member are still allowed — they're per-instance.
+    await owner.rpc.agenda.updateSlot({
+      slug: conf.slug, id: b.slot_id,
+      starts_at: t0 + 14400_000, ends_at: t0 + 18000_000,
+    });
+
+    // Series-owned fields are rejected with field_is_series_owned.
+    await expect(owner.rpc.agenda.updateSlot({
+      slug: conf.slug, id: b.slot_id,
+      unconf_use_all_rooms: false,
+    })).rejects.toMatchObject({ message: "field_is_series_owned" });
+  });
+
+  test("updateSeries propagates config to every member slot", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-prop@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series Prop" });
+    const r1 = await owner.rpc.rooms.create({ slug: conf.slug, name: "R1", capacity: 10 });
+    const r2 = await owner.rpc.rooms.create({ slug: conf.slug, name: "R2", capacity: 10 });
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+
+    const res = await owner.rpc.agenda.updateSeries({
+      slug: conf.slug, id: b.series_id,
+      unconf_use_all_rooms: false,
+      unconf_room_ids: [r1.id, r2.id],
+      avoid_repeats_across_siblings: false,
+    });
+    expect(res.kind).toBe("ok");
+
+    const agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    const seriesOut = agenda.slot_series[0]!;
+    expect(seriesOut.unconf_use_all_rooms).toBe(false);
+    expect(seriesOut.unconf_room_ids.sort()).toEqual([r1.id, r2.id].sort());
+    expect(seriesOut.avoid_repeats_across_siblings).toBe(false);
+    // The resolver routes every member slot's effective config through the
+    // series, so agenda.get reflects the series's pool for each sibling.
+    for (const slot of agenda.slots) {
+      expect(slot.unconf_use_all_rooms).toBe(false);
+      expect(slot.unconf_room_ids.sort()).toEqual([r1.id, r2.id].sort());
+    }
+  });
+
+  test("updateSeries does NOT touch member slot columns; detach snapshots them", async () => {
+    // This is the drift-safety property of the resolver design: the
+    // series's config never gets copied onto member slots' own columns or
+    // SlotRoom/SlotSubmission rows. Reads go through the series via
+    // `effectiveSlotConfig`. The only time we ever write to a member slot's
+    // own config is on detach, where we deliberately snapshot.
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-no-drift@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series NoDrift" });
+    const r1 = await owner.rpc.rooms.create({ slug: conf.slug, name: "R1", capacity: 10 });
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+    await owner.rpc.agenda.updateSeries({
+      slug: conf.slug, id: b.series_id,
+      unconf_use_all_rooms: false,
+      unconf_room_ids: [r1.id],
+    });
+
+    // The new sibling never had its own config columns written. The source
+    // slot retains its pre-series values (defaults: useAll=true, no
+    // SlotRoom rows). updateSeries left both untouched.
+    const aRaw = await ctx.prisma.agendaSlot.findUniqueOrThrow({
+      where: { id: a.id },
+      include: { selectedRooms: { select: { roomId: true } } },
+    });
+    const bRaw = await ctx.prisma.agendaSlot.findUniqueOrThrow({
+      where: { id: b.slot_id },
+      include: { selectedRooms: { select: { roomId: true } } },
+    });
+    expect(aRaw.unconfUseAllRooms).toBe(true);
+    expect(aRaw.selectedRooms).toEqual([]);
+    expect(bRaw.unconfUseAllRooms).toBe(true);
+    expect(bRaw.selectedRooms).toEqual([]);
+
+    // But agenda.get reports the resolved values (via the series) for both.
+    const agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    for (const slot of agenda.slots) {
+      expect(slot.unconf_use_all_rooms).toBe(false);
+      expect(slot.unconf_room_ids).toEqual([r1.id]);
+    }
+
+    // Detach `b` and verify its own columns now hold the snapshot.
+    await owner.rpc.agenda.detachSeries({ slug: conf.slug, slot_id: b.slot_id });
+    const bAfter = await ctx.prisma.agendaSlot.findUniqueOrThrow({
+      where: { id: b.slot_id },
+      include: { selectedRooms: { select: { roomId: true } } },
+    });
+    expect(bAfter.seriesId).toBeNull();
+    expect(bAfter.unconfUseAllRooms).toBe(false);
+    expect(bAfter.selectedRooms.map((r) => r.roomId)).toEqual([r1.id]);
+  });
+
+  test("updateSeries returns needs_confirmation when narrowing the pool would orphan tracks; confirm cascades", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-confirm@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series Confirm" });
+    const r1 = await owner.rpc.rooms.create({ slug: conf.slug, name: "R1", capacity: 10 });
+    const r2 = await owner.rpc.rooms.create({ slug: conf.slug, name: "R2", capacity: 10 });
+
+    const t0 = Date.now();
+    // Use a normal-type series so we can hang a TrackAssignment on a member
+    // (TrackAssignment lives on normal slots).
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+
+    // Place a track in r2 on the second sibling. After we narrow the series'
+    // room pool to {r1}, that track becomes orphaned. Path C: every planned
+    // track must link to a Submission, so we create one for the welcome.
+    const welcomeSub = await owner.rpc.submissions.create({
+      slug: conf.slug, title: "Welcome",
+    });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: welcomeSub.id });
+    await owner.rpc.agenda.setTrack({
+      slug: conf.slug, slot_id: b.slot_id,
+      room_id: r2.id, submission_id: welcomeSub.id, speakers: "Alice",
+    });
+
+    // Without confirm, the call short-circuits and reports what would die.
+    const dryRun = await owner.rpc.agenda.updateSeries({
+      slug: conf.slug, id: b.series_id,
+      unconf_use_all_rooms: false,
+      unconf_room_ids: [r1.id],
+    });
+    if (dryRun.kind !== "needs_confirmation") throw new Error("expected needs_confirmation");
+    expect(dryRun.removed_track_assignments).toBe(1);
+    expect(dryRun.removed_room_ids).toEqual([r2.id]);
+
+    // Track is still there — dry-run is non-destructive.
+    let agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    expect(agenda.tracks.length).toBe(1);
+
+    // Re-submit with confirm: true; cascade removes the orphan and applies
+    // the patch.
+    const applied = await owner.rpc.agenda.updateSeries({
+      slug: conf.slug, id: b.series_id,
+      unconf_use_all_rooms: false,
+      unconf_room_ids: [r1.id],
+      confirm: true,
+    });
+    expect(applied.kind).toBe("ok");
+
+    agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    expect(agenda.tracks.length).toBe(0);
+    expect(agenda.slot_series[0]!.unconf_room_ids).toEqual([r1.id]);
+  });
+
+  test("detachSeries promotes a member back to a standalone slot with snapshotted config", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-detach@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series Detach" });
+    const r1 = await owner.rpc.rooms.create({ slug: conf.slug, name: "R1", capacity: 10 });
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+    await owner.rpc.agenda.updateSeries({
+      slug: conf.slug, id: b.series_id,
+      unconf_use_all_rooms: false,
+      unconf_room_ids: [r1.id],
+    });
+
+    await owner.rpc.agenda.detachSeries({ slug: conf.slug, slot_id: b.slot_id });
+
+    const agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    const detached = agenda.slots.find((s) => s.id === b.slot_id)!;
+    expect(detached.series_id).toBeNull();
+    // Snapshot: the detached slot retains the series's narrowed room pool.
+    expect(detached.unconf_use_all_rooms).toBe(false);
+    expect(detached.unconf_room_ids).toEqual([r1.id]);
+    // Auto-detach: with only one member left (the source `a`), the series
+    // gets dissolved and `a` snapshotted into a standalone slot too. See
+    // the dedicated "auto-detaches the other one too" test below for the
+    // dissolution semantics.
+    expect(agenda.slot_series).toHaveLength(0);
+    const survivor = agenda.slots.find((s) => s.id === a.id)!;
+    expect(survivor.series_id).toBeNull();
+    expect(survivor.unconf_room_ids).toEqual([r1.id]);
+  });
+
+  test("deleteSeries series_only keeps slots; with_slots drops them", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-delete@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series Delete" });
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+    await owner.rpc.agenda.deleteSeries({ slug: conf.slug, id: b.series_id, mode: "series_only" });
+
+    let agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    expect(agenda.slot_series).toHaveLength(0);
+    expect(agenda.slots.map((s) => s.id).sort()).toEqual([a.id, b.slot_id].sort());
+    for (const s of agenda.slots) expect(s.series_id).toBeNull();
+
+    // Now build a new series and delete with_slots.
+    const c = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 14400_000, new_ends_at: t0 + 18000_000,
+    });
+    await owner.rpc.agenda.deleteSeries({ slug: conf.slug, id: c.series_id, mode: "with_slots" });
+
+    agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    expect(agenda.slot_series).toHaveLength(0);
+    // Both the original `a` (linked to the new series) and the duplicate
+    // are gone; only the previously-detached `b` survives.
+    expect(agenda.slots.map((s) => s.id)).toEqual([b.slot_id]);
+  });
+
+  test("avoid_repeats_across_siblings=true: starred user is placed in only one sibling", async () => {
+    // Default series setup (avoid_repeats_across_siblings defaults to true).
+    // A participant stars one session that's eligible in both siblings; the
+    // algorithm places them in sibling A, then sibling B sees the prior
+    // assignment and skips the user.
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-sibling-on@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series Avoid On" });
+    await owner.rpc.rooms.create({ slug: conf.slug, name: "Hall", capacity: 50 });
+
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Workshop" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+
+    const { client: part, identity_id: partId } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "p-on@example.com");
+    await part.rpc.submissions.star({ slug: conf.slug, id: sub.id });
+
+    // Submissions have a default per-conference placement cap of 1 (see
+    // Conference.submissionMaxPlacementsDefault). For this test we want the
+    // same submission to be eligible in both siblings, so lift the cap.
+    await owner.rpc.submissions.update({
+      slug: conf.slug, id: sub.id, max_placements: 10,
+    });
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+
+    const ra = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: a.id });
+    if (ra.kind !== "unconference") throw new Error("expected unconference result");
+    expect(ra.user_assignments.find((u) => u.user_id === partId)?.submission_id).toBe(sub.id);
+
+    const rb = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: b.slot_id });
+    if (rb.kind !== "unconference") throw new Error("expected unconference result");
+    // The participant doesn't get the same session in sibling B — they have
+    // no other stars and end up unplaced.
+    expect(rb.user_assignments.find((u) => u.user_id === partId)).toBeUndefined();
+    expect(rb.unplaced_users).toContain(partId);
+  });
+
+  test("avoid_repeats_across_siblings=false: sibling is exempt even when unconf_avoid_repeats is on", async () => {
+    // unconf_avoid_repeats=true (default) means the conference-wide
+    // avoidance is on. But the series-level toggle explicitly exempts
+    // siblings, so a participant CAN attend the same session in both.
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-sibling-off@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series Avoid Off" });
+    await owner.rpc.rooms.create({ slug: conf.slug, name: "Hall", capacity: 50 });
+
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Open Disc" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+
+    const { client: part, identity_id: partId } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "p-off@example.com");
+    await part.rpc.submissions.star({ slug: conf.slug, id: sub.id });
+    await owner.rpc.submissions.update({
+      slug: conf.slug, id: sub.id, max_placements: 10,
+    });
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+    // Flip the sibling-exempt flag.
+    await owner.rpc.agenda.updateSeries({
+      slug: conf.slug, id: b.series_id,
+      avoid_repeats_across_siblings: false,
+    });
+
+    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: a.id });
+    const rb = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: b.slot_id });
+    if (rb.kind !== "unconference") throw new Error("expected unconference result");
+    // With siblings exempt, the participant lands on the same session again.
+    expect(rb.user_assignments.find((u) => u.user_id === partId)?.submission_id).toBe(sub.id);
+  });
+
+  test("siblings honor avoidRepeatsAcrossSiblings independently from unconfAvoidRepeats on non-siblings", async () => {
+    // Two siblings + one standalone slot, all sharing the same eligible
+    // session. The series has avoid_repeats_across_siblings=true,
+    // unconf_avoid_repeats=false. Expected: a participant placed in
+    // sibling A is NOT re-placed in sibling B, but IS re-placed in the
+    // standalone (since conference-wide avoidance is off).
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-mixed@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series Mixed" });
+    await owner.rpc.rooms.create({ slug: conf.slug, name: "Hall", capacity: 50 });
+
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Topic" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+
+    const { client: part, identity_id: partId } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "p-mixed@example.com");
+    await part.rpc.submissions.star({ slug: conf.slug, id: sub.id });
+    await owner.rpc.submissions.update({
+      slug: conf.slug, id: sub.id, max_placements: 10,
+    });
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+    // Series: keep cross-sibling on, but turn off the per-slot
+    // conference-wide avoidance (this propagates to both siblings via the
+    // resolver).
+    await owner.rpc.agenda.updateSeries({
+      slug: conf.slug, id: b.series_id,
+      avoid_repeats_across_siblings: true,
+      unconf_avoid_repeats: false,
+    });
+    // A standalone slot, also unconference, separate time window.
+    const standalone = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t0 + 14400_000, ends_at: t0 + 18000_000,
+    });
+
+    const ra = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: a.id });
+    if (ra.kind !== "unconference") throw new Error("expected unconference result");
+    expect(ra.user_assignments.find((u) => u.user_id === partId)?.submission_id).toBe(sub.id);
+
+    const rb = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: b.slot_id });
+    if (rb.kind !== "unconference") throw new Error("expected unconference result");
+    // Sibling avoidance applies regardless of the unconf flag.
+    expect(rb.user_assignments.find((u) => u.user_id === partId)).toBeUndefined();
+
+    const rs = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: standalone.id });
+    if (rs.kind !== "unconference") throw new Error("expected unconference result");
+    // Conference-wide avoidance is off on the standalone (own unconf flag
+    // defaults to true, but the participant's earlier non-sibling
+    // assignments would be excluded only if we'd set it false too — this
+    // standalone keeps its default of true). With true, the standalone WILL
+    // see siblings A and B as prior assignments and skip the user.
+    //
+    // To prove the inverse (standalone allows the repeat), turn its
+    // unconf_avoid_repeats off as well.
+    await owner.rpc.agenda.updateSlot({
+      slug: conf.slug, id: standalone.id,
+      unconf_avoid_repeats: false,
+    });
+    const rs2 = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: standalone.id });
+    if (rs2.kind !== "unconference") throw new Error("expected unconference result");
+    expect(rs2.user_assignments.find((u) => u.user_id === partId)?.submission_id).toBe(sub.id);
+  });
+
+  test("deleting a sibling that leaves the series with one member auto-detaches the survivor", async () => {
+    // A "series of one" carries no signal — the offering badge would read
+    // "1 of 1" and the series form would manage a config used by exactly
+    // one slot. Auto-detach keeps that pointless state from existing.
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-auto-delete@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series AutoDelete" });
+    const r1 = await owner.rpc.rooms.create({ slug: conf.slug, name: "R1", capacity: 10 });
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+    // Narrow the series's room pool so the auto-detach has something
+    // non-trivial to snapshot onto the survivor.
+    await owner.rpc.agenda.updateSeries({
+      slug: conf.slug, id: b.series_id,
+      unconf_use_all_rooms: false,
+      unconf_room_ids: [r1.id],
+    });
+
+    await owner.rpc.agenda.deleteSlot({ slug: conf.slug, id: b.slot_id });
+
+    const agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    expect(agenda.slot_series).toHaveLength(0);
+    const survivor = agenda.slots.find((s) => s.id === a.id)!;
+    expect(survivor.series_id).toBeNull();
+    // The series's narrowed pool was snapshotted onto the survivor's own
+    // columns / SlotRoom rows before the series was deleted.
+    expect(survivor.unconf_use_all_rooms).toBe(false);
+    expect(survivor.unconf_room_ids).toEqual([r1.id]);
+  });
+
+  test("detaching a sibling from a 2-member series auto-detaches the other one too", async () => {
+    // detachSeries on member A snapshots its config and clears its FK; the
+    // series is now left with 1 member (B). Auto-detach kicks in and
+    // dissolves the series, snapshotting onto B as well. Both end up as
+    // standalone slots with the series's last config.
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-auto-detach@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series AutoDetach" });
+    const r1 = await owner.rpc.rooms.create({ slug: conf.slug, name: "R1", capacity: 10 });
+
+    const t0 = Date.now();
+    const a = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    const b = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: a.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+    await owner.rpc.agenda.updateSeries({
+      slug: conf.slug, id: b.series_id,
+      unconf_use_all_rooms: false,
+      unconf_room_ids: [r1.id],
+    });
+
+    await owner.rpc.agenda.detachSeries({ slug: conf.slug, slot_id: b.slot_id });
+
+    const agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    expect(agenda.slot_series).toHaveLength(0);
+    for (const slot of agenda.slots) {
+      expect(slot.series_id).toBeNull();
+      expect(slot.unconf_use_all_rooms).toBe(false);
+      expect(slot.unconf_room_ids).toEqual([r1.id]);
+    }
+  });
+
+  test("standalone slot behaviour is unchanged: series_id null, no series listed", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "series-baseline@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Series Baseline" });
+
+    const t0 = Date.now();
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t0, ends_at: t0 + 3600_000,
+    });
+
+    const agenda = await owner.rpc.agenda.get({ slug: conf.slug });
+    expect(agenda.slot_series).toHaveLength(0);
+    const out = agenda.slots.find((s) => s.id === slot.id)!;
+    expect(out.series_id).toBeNull();
+    expect(out.series_offering_index).toBeNull();
+    expect(out.series_total_offerings).toBeNull();
+
+    // updateSlot still accepts all fields on standalone slots.
+    await owner.rpc.agenda.updateSlot({
+      slug: conf.slug, id: slot.id,
+      unconf_use_all_rooms: false,
+    });
+  });
+});
+
+describe("Path C: unified star + planned-schedule derivation", () => {
+  let ctx: TestApp;
+  beforeAll(() => { ctx = setupTestApp(); });
+  afterAll(async () => { await ctx.cleanup(); });
+
+  test("setTrack refuses submission_id of a sub in a different conference", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "pathc-x1@example.com");
+    const confA = await owner.rpc.conferences.create({ name: "A" });
+    const confB = await owner.rpc.conferences.create({ name: "B" });
+    const roomA = await owner.rpc.rooms.create({ slug: confA.slug, name: "RA", capacity: 10 });
+    const subB = await owner.rpc.submissions.create({ slug: confB.slug, title: "B's session" });
+    await owner.rpc.submissions.publish({ slug: confB.slug, id: subB.id });
+
+    const slotA = await owner.rpc.agenda.createSlot({
+      slug: confA.slug, type: "normal",
+      starts_at: Date.now(), ends_at: Date.now() + 3600_000,
+    });
+    await expect(owner.rpc.agenda.setTrack({
+      slug: confA.slug, slot_id: slotA.id,
+      room_id: roomA.id, submission_id: subB.id,
+    })).rejects.toMatchObject({ message: "submission_not_in_conference" });
+  });
+
+  test("submissions.list returns scheduled_in[] entries for every linked planned track", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "pathc-sched@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Sched" });
+    const r1 = await owner.rpc.rooms.create({ slug: conf.slug, name: "R1", capacity: 10 });
+    const r2 = await owner.rpc.rooms.create({ slug: conf.slug, name: "R2", capacity: 10 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Talk" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+    await owner.rpc.submissions.update({ slug: conf.slug, id: sub.id, max_placements: 10 });
+
+    const t0 = Date.now();
+    const sA = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    const sB = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: t0 + 7200_000, ends_at: t0 + 10800_000,
+    });
+    await owner.rpc.agenda.setTrack({
+      slug: conf.slug, slot_id: sA.id, room_id: r1.id, submission_id: sub.id,
+    });
+    await owner.rpc.agenda.setTrack({
+      slug: conf.slug, slot_id: sB.id, room_id: r2.id, submission_id: sub.id,
+    });
+
+    const list = await owner.rpc.submissions.list({ slug: conf.slug });
+    const row = list.find((s) => s.id === sub.id)!;
+    expect(row.scheduled_in).toHaveLength(2);
+    // Ordered by starts_at, so sA's entry comes first.
+    expect(row.scheduled_in[0]!.slot_id).toBe(sA.id);
+    expect(row.scheduled_in[0]!.room_name).toBe("R1");
+    expect(row.scheduled_in[1]!.slot_id).toBe(sB.id);
+    expect(row.scheduled_in[1]!.room_name).toBe("R2");
+  });
+
+  test("starring a submission derives every linked planned track onto MyAssignments", async () => {
+    // The headline Path C behaviour: one star on a Submission, the user
+    // sees every scheduled occurrence on their schedule. No per-track
+    // action needed.
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "pathc-derive@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Derive" });
+    const room = await owner.rpc.rooms.create({ slug: conf.slug, name: "Hall", capacity: 10 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Repeat me" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+    await owner.rpc.submissions.update({ slug: conf.slug, id: sub.id, max_placements: 10 });
+
+    const t0 = Date.now();
+    const sA = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    await owner.rpc.agenda.setTrack({
+      slug: conf.slug, slot_id: sA.id, room_id: room.id, submission_id: sub.id,
+    });
+    // Duplicate the planned slot — sibling carries another TrackAssignment
+    // to the same Submission.
+    const dup = await owner.rpc.agenda.duplicateSlot({
+      slug: conf.slug, id: sA.id,
+      new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
+    });
+
+    const { client: part } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "p@example.com");
+    const empty = await part.rpc.agenda.myAssignments({ slug: conf.slug });
+    expect(empty.assignments).toHaveLength(0);
+
+    await part.rpc.submissions.star({ slug: conf.slug, id: sub.id });
+
+    const me = await part.rpc.agenda.myAssignments({ slug: conf.slug });
+    expect(me.assignments).toHaveLength(2);
+    // Both rows reflect the same submission and title.
+    for (const row of me.assignments) {
+      expect(row.source).toBe("static");
+      expect(row.submission_id).toBe(sub.id);
+      expect(row.title).toBe("Repeat me");
+    }
+    expect(me.assignments.map((a) => a.slot_id).sort()).toEqual([sA.id, dup.slot_id].sort());
+  });
+
+  test("submitter sees their own scheduled tracks without needing to star", async () => {
+    // Submitter-self leg of the derivation: the speaker doesn't have to
+    // star their own talk to see it on their schedule.
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "pathc-submitter@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "SubmitterSelf" });
+    const room = await owner.rpc.rooms.create({ slug: conf.slug, name: "Hall", capacity: 10 });
+
+    const { client: speaker } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "speaker@example.com");
+    const sub = await speaker.rpc.submissions.create({ slug: conf.slug, title: "My talk" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+
+    const t0 = Date.now();
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    await owner.rpc.agenda.setTrack({
+      slug: conf.slug, slot_id: slot.id, room_id: room.id, submission_id: sub.id,
+    });
+
+    // Speaker hasn't starred their own submission, but it's on their
+    // schedule because they're the submitter.
+    const me = await speaker.rpc.agenda.myAssignments({ slug: conf.slug });
+    const row = me.assignments.find((a) => a.slot_id === slot.id);
+    expect(row).toBeTruthy();
+    expect(row!.title).toBe("My talk");
+    expect(row!.is_submitter).toBe(true);
+
+    // A different participant who hasn't starred sees nothing.
+    const { client: bystander } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "by@example.com");
+    const byMe = await bystander.rpc.agenda.myAssignments({ slug: conf.slug });
+    expect(byMe.assignments.find((a) => a.slot_id === slot.id)).toBeUndefined();
+  });
+
+  test("fully-scheduled submissions remain visible to participants and can still be starred", async () => {
+    // The bug the user originally hit: starring on a "finished" session was
+    // misleading. Path C makes is_finished informational; participants can
+    // still star, and the star derives onto their schedule.
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "pathc-finished@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "FinishedVisible" });
+    const room = await owner.rpc.rooms.create({ slug: conf.slug, name: "Hall", capacity: 10 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Keynote" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+    // Default cap = 1. Scheduling the planned track exhausts the cap.
+    const t0 = Date.now();
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: t0, ends_at: t0 + 3600_000,
+    });
+    await owner.rpc.agenda.setTrack({
+      slug: conf.slug, slot_id: slot.id, room_id: room.id, submission_id: sub.id,
+    });
+
+    const { client: part } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "fp@example.com");
+    const list = await part.rpc.submissions.list({ slug: conf.slug });
+    const row = list.find((s) => s.id === sub.id);
+    expect(row).toBeTruthy();
+    expect(row!.is_finished).toBe(true);
+    expect(row!.scheduled_in).toHaveLength(1);
+
+    // The star is still allowed, and the derived planned-track row appears.
+    await part.rpc.submissions.star({ slug: conf.slug, id: sub.id });
+    const me = await part.rpc.agenda.myAssignments({ slug: conf.slug });
+    expect(me.assignments.find((a) => a.slot_id === slot.id)?.title).toBe("Keynote");
   });
 });

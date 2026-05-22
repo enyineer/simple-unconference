@@ -153,7 +153,22 @@ A true "Deploy to …" button needs a provider-specific config file (`render.yam
 
 Anyone can submit a session idea. Moderators publish, reject, or delete; participants star the ones they want to attend. Tags + per-session requirements (e.g. *laptop*, *github account*) are surfaced wherever the talk shows up.
 
-A per-conference cap (`submission_max_placements_default`) limits how many times a published session can be placed before it drops out of the unconference pool; mods can override per-submission or mark one *manually finished*.
+A per-conference cap (`submission_max_placements_default`) limits how many times a published session can be placed before it drops out of the unconference algorithm pool. Capped sessions get a *Fully scheduled* badge (or *Marked complete* when the mod flips the manual override) — informational only: participants can still see and star them, and the star still derives any linked planned-slot offerings onto their schedule.
+
+#### What “star” means {#stars}
+
+A single concept, two effects. Starring a published session on the Sessions tab or via the star toggle in the Agenda calendar both write the same record:
+
+- **Unconference signal.** Star counts rank Submissions when a moderator runs an unconference slot — the most-starred sessions get rooms, and you get auto-assigned to one of yours.
+- **Planned-slot schedule derivation.** Every planned-slot `TrackAssignment` that links to a session you starred lands on your *My schedule* (and your iCal feed) automatically. No second action.
+
+Three derivation rules together produce your schedule for planned slots:
+
+1. **Mandatory tracks** (mod-flagged keynote / opening / closing) — on everyone's schedule regardless of stars.
+2. **Starred submissions** — every linked planned track derives onto your schedule.
+3. **Submitter-self** — if you're the submission's submitter, you see your scheduled speaking gigs without needing to star yourself.
+
+When the same Submission is scheduled in multiple offerings (sibling slots of a series, or independent placements), one star yields multiple schedule rows; *My schedule* groups them with a *Same session also at HH:MM* caption so you can decide which to attend. Overlapping starred entries get a *conflicts with X* pill.
 
 **Per-session assignment controls (mod-only):**
 
@@ -169,9 +184,11 @@ A per-conference cap (`submission_max_placements_default`) limits how many times
 
 The agenda mixes three slot types on a single timeline:
 
-- **normal** — moderators pick which talk runs in which room. Tracks can be `mandatory` (forced onto everyone's schedule) and carry their own requirements.
+- **normal** — moderators pick which published Submission runs in which room. Every planned-slot track is anchored to a Submission (the Submission supplies the title and the submitter credit; mods who want an invited speaker without a participant account first create a Submission for them). Tracks can be `mandatory` (forced onto everyone's schedule) and carry their own requirements.
 - **unconference** — a [pure, deterministic algorithm](src/server/assignment.ts) places the most-starred sessions into appropriately-sized rooms, then assigns each starring user. The route layer ([`runAssignmentForSlot`](src/server/rpc.ts)) adds pin / tag / overlap pre-processing before the pure algorithm runs (see [Assignment algorithm](#assignment-algorithm) below). `avoidRepeats` keeps people out of sessions they've already attended; per-slot `selectedRooms` / `selectedSubmissions` scope the assignment to a subset.
 - **mixer** — capacity-aware even split of every participant across selected rooms. *Exclusive* mode prefers rooms with the fewest previously-paired people; *fresh* mode ignores history.
+
+Moderators can also **duplicate any slot as a linked offering**, which forms a `SlotSeries`: shared room pool / submission pool / config across the offerings, edited once via the series form. Sibling offerings can rotate participants (`avoidRepeatsAcrossSiblings`, default on) so the same starred person doesn't land on the same Submission twice across siblings, or explicitly allow re-attendance for open-discussion-style repeats.
 
 A **"How assignment works"** modal (the `?` icon next to the slot's actions and in the Agenda header) renders a plain-language explanation of every rule the algorithm applies — including the mod-only conflict-resolution flow when sessions can't be placed.
 
@@ -181,7 +198,13 @@ A **"How assignment works"** modal (the `?` icon next to the slot's actions and 
 
 ### My schedule
 
-Each participant gets a personal schedule that unions their starred static tracks, mandatory tracks, unconference + mixer placements, and expert bookings. When an unconference runs but someone couldn't be placed (all their stars filled up), they see a *Pick a session* banner with the available rooms. Manual picks are preserved across re-runs. A per-identity iCal feed is one click away.
+Each participant gets a personal schedule that unions, for this conference:
+
+- their unconference + mixer placements (algorithm output);
+- every planned-slot track derived from the [unified Star concept](#stars) — mandatory, starred-submission, or you're-the-submitter;
+- their expert bookings (as booker or as expert).
+
+When an unconference runs but someone couldn't be placed (all their stars filled up), they see a *Pick a session* banner with the available rooms. Manual picks are preserved across re-runs. Same-submission rows (sibling offerings / repeats) are grouped with a *Same session also at HH:MM* caption; time-overlapping starred rows surface a *conflicts with X* pill. A per-identity iCal feed exposes the same union to external calendar apps.
 
 | Schedule | Pick a session | Room detail |
 | --- | --- | --- |
@@ -230,7 +253,7 @@ The unconference / mixer assignment runs in two layers:
 
 Steps the route layer runs, in order:
 
-1. **Eligibility filter.** Drop sessions that are *finished* (placement cap reached or manually flagged) or in the call's `exclude_submission_ids` set.
+1. **Eligibility filter.** Drop sessions tagged *Fully scheduled* (placement cap reached) or *Marked complete* (manual `manually_finished` flag), and any in the call's `exclude_submission_ids` set. These sessions stay visible to participants and remain starrable — the filter only gates the algorithm pool.
 2. **Overlap exclusions** (silent, reported informationally — never blocking):
    - *Same room:* a room used by an overlapping slot is removed from the candidate pool.
    - *Same submitter:* a submitter already hosting a session in an overlapping slot is excluded for any **different** session.
@@ -257,7 +280,7 @@ Server and client share valibot schemas in [`src/shared/schemas.ts`](src/shared/
 | Action | participant | moderator | owner |
 | --- | :-: | :-: | :-: |
 | View conference, sessions, agenda | ✓ | ✓ | ✓ |
-| Submit session, star session | ✓ | ✓ | ✓ |
+| Submit session, star a session (unified — drives unconference ranking AND planned-track schedule visibility; see [Stars](#stars)) | ✓ | ✓ | ✓ |
 | View experts, book / cancel own booking | ✓ | ✓ | ✓ |
 | Invite / remove participants | | ✓ | ✓ |
 | Add / edit / delete rooms | | ✓ | ✓ |

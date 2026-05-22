@@ -62,7 +62,7 @@ async function buildIdentityEvents(
   identityId: number,
   conferenceId: number,
 ): Promise<ICalEvent[]> {
-  const [userAssigns, staticStars, mandatoryTracks, expertBookerBookings, ownExpert] = await Promise.all([
+  const [userAssigns, derivedTracks, expertBookerBookings, ownExpert] = await Promise.all([
     prisma.userAssignment.findMany({
       where: { userId: identityId },
       include: {
@@ -77,28 +77,19 @@ async function buildIdentityEvents(
         room: { select: { id: true, name: true, description: true } },
       },
     }),
-    prisma.staticStar.findMany({
-      where: { userId: identityId },
-      include: {
-        track: {
-          include: {
-            slot: {
-              select: {
-                id: true, title: true,
-                startsAt: true, endsAt: true,
-                conference: { select: { name: true } },
-              },
-            },
-            submission: { select: { title: true, description: true } },
-            room: { select: { name: true, description: true } },
-          },
-        },
-      },
-    }),
-    // Mandatory static tracks in this conference — included in every
-    // identity's feed regardless of StaticStar state.
+    // Path C derivation: a planned TrackAssignment lands on this identity's
+    // feed when it's mandatory OR the identity has starred the linked
+    // submission OR the identity IS the linked submission's submitter
+    // (so submitters' speaking gigs auto-export to their calendar).
     prisma.trackAssignment.findMany({
-      where: { mandatory: true, slot: { conferenceId } },
+      where: {
+        slot: { conferenceId },
+        OR: [
+          { mandatory: true },
+          { submission: { stars: { some: { userId: identityId } } } },
+          { submission: { submitterId: identityId } },
+        ],
+      },
       include: {
         slot: {
           select: {
@@ -199,15 +190,9 @@ async function buildIdentityEvents(
     }
   }
 
-  // Union user-starred tracks with mandatory tracks (mandatory is the same
-  // shape post-include), deduped by track id.
-  const staticTracks = new Map<number, typeof staticStars[number]["track"]>();
-  for (const s of staticStars) staticTracks.set(s.track.id, s.track);
-  for (const t of mandatoryTracks) if (!staticTracks.has(t.id)) staticTracks.set(t.id, t);
-
-  for (const t of staticTracks.values()) {
+  for (const t of derivedTracks) {
     const slot = t.slot;
-    const title = t.submission?.title ?? t.title ?? slot.title ?? "Session";
+    const title = t.submission.title ?? slot.title ?? "Session";
     const roomName = t.room?.name;
     const confName = slot.conference.name;
     events.push({

@@ -6,6 +6,7 @@ import { useToast } from "../../design-system/hooks";
 import { api, errorCode } from "../../api";
 import { quotaErrorMessage } from "../../quotaErrors";
 import type { Participant, Role } from "../types";
+import { CopyButton } from "../ui/CopyButton";
 import { EmptyState } from "../ui/EmptyState";
 import { Tip } from "../ui/Tip";
 import { useNow } from "../../useNow";
@@ -92,31 +93,32 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
     }
   }
 
-  async function copyInviteLink(invite: PendingInvite) {
-    const url = absoluteUrl(invite.url);
-    try { await navigator.clipboard.writeText(url); }
-    catch { /* clipboard blocked — fall back to selection prompt */
-      window.prompt("Copy this invite link:", url);
-    }
-  }
-
   async function revokeInvite(id: number) {
     if (!confirm("Revoke this invite? The link will stop working immediately.")) return;
-    try { await api.conferences.revokeInvite({ slug, id }); }
-    catch (e) { toast.error(errorCode(e)); }
+    try {
+      await api.conferences.revokeInvite({ slug, id });
+      toast.success("Invite revoked.");
+    } catch (e) { toast.error(errorCode(e)); }
     await refresh();
   }
 
   async function setRoleAction(userId: number, action: "promote" | "demote") {
-    if (action === "promote") await api.conferences.addModerator({ slug, user_id: userId });
-    else await api.conferences.removeModerator({ slug, user_id: userId });
+    try {
+      if (action === "promote") await api.conferences.addModerator({ slug, user_id: userId });
+      else await api.conferences.removeModerator({ slug, user_id: userId });
+      toast.success(action === "promote" ? "Promoted to moderator." : "Demoted to participant.");
+    } catch (e) {
+      toast.error(errorCode(e));
+    }
     await refresh();
   }
 
   async function remove(userId: number) {
     if (!confirm("Remove this participant?")) return;
-    try { await api.conferences.removeParticipant({ slug, user_id: userId }); }
-    catch (e) { toast.error(errorCode(e)); }
+    try {
+      await api.conferences.removeParticipant({ slug, user_id: userId });
+      toast.success("Participant removed.");
+    } catch (e) { toast.error(errorCode(e)); }
     await refresh();
   }
 
@@ -208,7 +210,7 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
                   <InviteRow
                     key={inv.id}
                     invite={inv}
-                    onCopy={() => copyInviteLink(inv)}
+                    inviteUrl={absoluteUrl(inv.url)}
                     onRevoke={() => revokeInvite(inv.id)}
                   />
                 ))}
@@ -221,10 +223,10 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
 }
 
 function InviteRow({
-  invite, onCopy, onRevoke,
+  invite, inviteUrl, onRevoke,
 }: {
   invite: PendingInvite;
-  onCopy: () => void | Promise<void>;
+  inviteUrl: string;
   onRevoke: () => void | Promise<void>;
 }) {
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
@@ -251,7 +253,13 @@ function InviteRow({
         </div>
       </div>
       <div style={{ display: "flex", gap: 6 }}>
-        <Button size="small" onClick={onCopy} disabled={expired}>Copy link</Button>
+        <CopyButton
+          label="Copy link"
+          value={inviteUrl}
+          disabled={expired}
+          successMessage={`Invite link for ${invite.email} copied.`}
+          fallbackPromptLabel="Copy this invite link:"
+        />
         <Button size="small" variant="danger" onClick={onRevoke}>Revoke</Button>
       </div>
     </div>

@@ -7,6 +7,7 @@ import type { ChangeEvent, FocusEvent } from "react";
 import { plugins as designPlugins } from "../../design-system/core/registry";
 import { listTimeZones } from "../../../shared/tz";
 import { api, errorCode } from "../../api";
+import { CopyButton } from "../ui/CopyButton";
 import { SettingsSection } from "../ui/SettingsSection";
 import { SearchableSelect } from "../ui/SearchableSelect";
 
@@ -327,11 +328,13 @@ export function SettingsTab({
         saved={savedKey === "session_reuse"}
         description={
           "How many times a published session can be placed in this conference. "
-          + "Counts both static tracks and unconference placements. The default "
-          + "is \"assign once\" — once a session has run, it drops out of the "
-          + "unconference assignment pool and stops showing on the participant "
-          + "Sessions overview. Mods can override per session, or use the manual "
-          + "\"mark finished\" toggle."
+          + "Counts both planned-slot tracks and unconference placements. The "
+          + "default is \"assign once\" — once a session hits its cap it's "
+          + "tagged \"Fully scheduled\" and excluded from future unconference "
+          + "ranking. Participants still see the session and can still star it "
+          + "(starring derives any linked planned tracks onto their schedule); "
+          + "the cap only gates the algorithm. Mods can override per session, "
+          + "or use the manual \"mark as finished\" toggle on a submission."
         }
       >
         <Select
@@ -658,13 +661,6 @@ function JoinLinkSection({ slug }: { slug: string }) {
     finally { setBusy(false); }
   }
 
-  async function copyLink() {
-    if (!link?.url) return;
-    const full = absoluteUrl(link.url);
-    try { await navigator.clipboard.writeText(full); }
-    catch { window.prompt("Copy this join link:", full); }
-  }
-
   return (
     <SettingsSection
       title="Join link"
@@ -694,7 +690,11 @@ function JoinLinkSection({ slug }: { slug: string }) {
           <FieldGroup label="Join URL">
             <Stack direction="row" gap="condensed" align="center">
               <ReadonlyUrlInput value={absoluteUrl(link.url ?? "")} />
-              <Button onClick={copyLink}>Copy</Button>
+              <CopyButton
+                value={absoluteUrl(link.url ?? "")}
+                successMessage="Join link copied to clipboard."
+                fallbackPromptLabel="Copy this join link:"
+              />
             </Stack>
           </FieldGroup>
 

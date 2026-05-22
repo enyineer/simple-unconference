@@ -80,6 +80,7 @@ model Conference {
   rooms        Room[]
   submissions  Submission[]
   agendaSlots  AgendaSlot[]
+  slotSeries   SlotSeries[]
   expertPools  ExpertRoomPool[]
   experts      Expert[]
 
@@ -123,7 +124,6 @@ model ConferenceIdentity {
   sessions        Session[]
   submissions     Submission[]
   stars           Star[]
-  staticStars     StaticStar[]
   userAssignments UserAssignment[]
   claimedInvites  ConferenceInvite[] @relation("ClaimedInvite")
   expertProfile   Expert?
@@ -187,6 +187,7 @@ model Room {
   trackAssignments      TrackAssignment[]
   unconferencePlacements UnconferencePlacement[]
   slotMemberships       SlotRoom[]
+  seriesMemberships     SeriesRoom[]
   tags                  RoomTag[]
   userAssignments       UserAssignment[]
   expertPoolMemberships ExpertRoomPoolRoom[]
@@ -265,6 +266,7 @@ model Submission {
   requirements        SubmissionRequirement[]
   roomRequirements    SubmissionRoomRequirement[]
   slotMemberships     SlotSubmission[]
+  seriesMemberships   SeriesSubmission[]
 
   @@index([conferenceId])
   @@index([conferenceId, status])
@@ -355,6 +357,14 @@ model AgendaSlot {
   // is unconference-only. When useAll* is true, assignment uses every room /
   // every published submission in the conference; when false, only the
   // explicitly selected ones in the join tables below.
+  //
+  // **Series-owned config:** when `seriesId` is non-null, the type, the
+  // unconf*/mixer* config fields, and the `SlotRoom` / `SlotSubmission`
+  // join rows on THIS slot are ignored — `SlotSeries` is the source of
+  // truth. Reads must go through `effectiveSlotConfig()` in
+  // [src/server/lib/slot-config.ts]. On detach, the resolved series config
+  // is snapshotted back onto these fields so the slot becomes a standalone
+  // slot with no behaviour change.
   unconfUseAllRooms       Boolean @default(true) @map("unconf_use_all_rooms")
   unconfUseAllSubmissions Boolean @default(true) @map("unconf_use_all_submissions")
   // When true (default), an unconference assignment won't put a user in the
@@ -368,7 +378,22 @@ model AgendaSlot {
   // that ignores prior mixers entirely.
   mixerAvoidRepeats       Boolean? @map("mixer_avoid_repeats")
 
+  // Optional FK linking this slot to a SlotSeries. When set, the slot is a
+  // "linked offering" of the series — `type` and the unconf*/mixer* config
+  // come from the series, not from this row. Null = standalone slot (the
+  // historical, default shape).
+  //
+  // **Placement-cap semantics:** when a Submission is placed in multiple
+  // sibling offerings (whether via TrackAssignment or the unconference
+  // algorithm), each placement counts independently against the submission's
+  // effective max-placements cap. A session that runs in three siblings of
+  // the same series burns three placement slots. This is intentional —
+  // placements measure actual room-time used, not unique content. Mod UI
+  // must surface this clearly.
+  seriesId Int? @map("series_id")
+
   conference              Conference              @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
+  series                  SlotSeries?             @relation(fields: [seriesId], references: [id], onDelete: SetNull)
   trackAssignments        TrackAssignment[]
   unconferencePlacements  UnconferencePlacement[]
   userAssignments         UserAssignment[]
@@ -376,7 +401,74 @@ model AgendaSlot {
   selectedSubmissions     SlotSubmission[]
 
   @@index([conferenceId, startsAt])
+  @@index([seriesId])
   @@map("agenda_slots")
+}
+
+// A SlotSeries groups linked offerings — multiple AgendaSlot rows that share
+// configuration (type, room pool, submission pool, assignment flags) and
+// differ only in time. Created when a mod duplicates a slot. Edits to the
+// series propagate to every member; per-instance title/description and time
+// stay on the individual AgendaSlot.
+//
+// The cross-sibling avoid-repeats behaviour (don't place the same user in
+// the same submission across two siblings of the same series) is gated by
+// `avoidRepeatsAcrossSiblings`. This is *in addition to* the per-slot
+// `unconfAvoidRepeats` semantics, which the algorithm already enforces
+// against earlier-run slots in the same conference.
+model SlotSeries {
+  id           Int      @id @default(autoincrement())
+  conferenceId Int      @map("conference_id")
+  type         SlotType
+  title        String?
+  description  String?
+
+  unconfUseAllRooms       Boolean @default(true) @map("unconf_use_all_rooms")
+  unconfUseAllSubmissions Boolean @default(true) @map("unconf_use_all_submissions")
+  unconfAvoidRepeats      Boolean @default(true) @map("unconf_avoid_repeats")
+  mixerAvoidRepeats       Boolean? @map("mixer_avoid_repeats")
+
+  // When true (default), the assignment algorithm treats sibling offerings of
+  // this series as a single user-eligibility scope: a participant placed in
+  // submission X via sibling A is not eligible to be re-placed in submission X
+  // via sibling B. Mods opt out (false) for series where re-attendance is
+  // intentionally allowed (e.g. open discussion blocks that run multiple times).
+  avoidRepeatsAcrossSiblings Boolean @default(true) @map("avoid_repeats_across_siblings")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  conference          Conference         @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
+  slots               AgendaSlot[]
+  selectedRooms       SeriesRoom[]
+  selectedSubmissions SeriesSubmission[]
+
+  @@index([conferenceId])
+  @@map("slot_series")
+}
+
+// Series-level analogue of SlotRoom. Restricts which rooms participate in
+// every offering's assignment when `unconfUseAllRooms = false`.
+model SeriesRoom {
+  seriesId Int @map("series_id")
+  roomId   Int @map("room_id")
+
+  series SlotSeries @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+  room   Room       @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@id([seriesId, roomId])
+  @@map("series_rooms")
+}
+
+// Series-level analogue of SlotSubmission.
+model SeriesSubmission {
+  seriesId     Int @map("series_id")
+  submissionId Int @map("submission_id")
+
+  series     SlotSeries @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@id([seriesId, submissionId])
+  @@map("series_submissions")
 }
 
 // Restricts which rooms participate in an unconference slot's assignment.
@@ -414,29 +506,35 @@ model TrackAssignment {
   id           Int     @id @default(autoincrement())
   slotId       Int     @map("slot_id")
   roomId       Int     @map("room_id")
-  submissionId Int?    @map("submission_id")
-  title        String?
+  // Every planned-slot track is anchored to a Submission. The Submission
+  // supplies the title and the submitter (who is credited as the speaker
+  // on the schedule). Mods who want an external/invited speaker first
+  // create a Submission for them.
+  submissionId Int     @map("submission_id")
+  // Optional addendum text appended to the submitter's name when listing
+  // speakers. Use it for co-presenters or guest names that aren't first-class
+  // participants. Null/empty = just show the submission's submitter.
   speakers     String?
   // When true, this static track is force-attended: it shows up in every
-  // participant's myAssignments + iCal feed regardless of StaticStar state,
-  // and the star toggle is disabled on the client. Used for keynotes,
-  // opening/closing ceremonies, etc. Only valid on normal-type slots
-  // (server enforces this in setTrack).
+  // participant's myAssignments + iCal feed regardless of whether they've
+  // starred the underlying submission, and the schedule cannot be opted out
+  // of. Used for keynotes, opening/closing ceremonies, etc. Only valid on
+  // normal-type slots (server enforces this in setTrack).
   mandatory    Boolean @default(false)
 
   slot         AgendaSlot           @relation(fields: [slotId], references: [id], onDelete: Cascade)
   room         Room                 @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  submission   Submission?          @relation(fields: [submissionId], references: [id], onDelete: SetNull)
-  stars        StaticStar[]
+  submission   Submission           @relation(fields: [submissionId], references: [id], onDelete: Cascade)
   requirements TrackRequirement[]
 
   @@unique([slotId, roomId])
+  @@index([submissionId])
   @@map("track_assignments")
 }
 
 // Per-track requirements (e.g. "laptop", "github account"). Separate from
-// SubmissionRequirement so a mod can attach prerequisites to a static track
-// that has no linked submission (or to override the linked submission's set).
+// SubmissionRequirement so a mod can attach prerequisites at the schedule
+// level (e.g. specific to this particular offering of the session).
 model TrackRequirement {
   id      Int    @id @default(autoincrement())
   trackId Int    @map("track_id")
@@ -447,23 +545,6 @@ model TrackRequirement {
   @@unique([trackId, value])
   @@index([trackId])
   @@map("track_requirements")
-}
-
-// Attendees can "star" a static talk (a TrackAssignment) so it appears on
-// their personal schedule. Distinct from `Star` (which stars Submissions for
-// the unconference algorithm).
-model StaticStar {
-  // FK to ConferenceIdentity.id (was User.id pre-migration). Column kept as
-  // user_id; relation accessor is `identity`.
-  userId  Int @map("user_id")
-  trackId Int @map("track_id")
-
-  identity ConferenceIdentity @relation(fields: [userId], references: [id], onDelete: Cascade)
-  track    TrackAssignment    @relation(fields: [trackId], references: [id], onDelete: Cascade)
-
-  @@id([userId, trackId])
-  @@index([trackId])
-  @@map("static_stars")
 }
 
 // Output of the unconference assignment algorithm: which submission lives in which room.

@@ -15,8 +15,9 @@ import {
 } from "../../design-system";
 import { api, errorCode } from "../../api";
 import { quotaErrorMessage } from "../../quotaErrors";
+import { useToast } from "../../design-system/hooks";
 import type { Participant, Role, Room, Submission } from "../types";
-import { parseLabels, submitterLabel } from "../helpers";
+import { fmtTimeShort, parseLabels, submitterLabel } from "../helpers";
 import { EmptyState } from "../ui/EmptyState";
 import { Pill } from "../ui/Pill";
 import { Tip } from "../ui/Tip";
@@ -30,6 +31,7 @@ type SessionFilter = "all" | "submitted" | "published" | "rejected";
 export function SessionsTab({
   slug,
   role,
+  timeZone,
   submissionMaxPlacementsDefault,
   participantSubmissionsEnabled,
   mySessionCount,
@@ -38,6 +40,9 @@ export function SessionsTab({
 }: {
   slug: string;
   role: Role;
+  /** Conference timezone — used to format the inline "Scheduled at..." hint
+   *  surfaced on each card when the session is on the planned agenda. */
+  timeZone: string;
   /** Conference-wide default cap. Used by the mod edit form to label the
    * "inherit" option (e.g. "Use conference default (once)"). */
   submissionMaxPlacementsDefault: number | null;
@@ -101,9 +106,7 @@ export function SessionsTab({
   // but the toggle is always available — empty result is its own teaching moment.
   const [starredOnly, setStarredOnly] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-  // One-shot banner after a successful submit. Cleared next time the user
-  // opens the submit sheet (so it doesn't linger forever).
-  const [submitNotice, setSubmitNotice] = useState<string | null>(null);
+  const toast = useToast();
 
   // `submitter_id` on a Submission is a ConferenceIdentity.id, not a global
   // User.id, so we must read the per-conference "me" — `auth.me()` would
@@ -140,23 +143,32 @@ export function SessionsTab({
       await api.submissions.delete({ slug, id: s.id });
       await refresh();
       onSessionMutated();
+      toast.success(isMod ? `Deleted "${s.title}".` : `Withdrew "${s.title}".`);
     } catch (e) {
-      alert(errorCode(e));
+      toast.error(errorCode(e));
     }
   }
   const requirementsConfirm = useRequirementsConfirm();
   async function toggleStar(s: Submission) {
     if (s.starred_by_me) {
-      await api.submissions.unstar({ slug, id: s.id });
-      await refresh();
+      try {
+        await api.submissions.unstar({ slug, id: s.id });
+        await refresh();
+      } catch (e) {
+        toast.error(errorCode(e));
+      }
       return;
     }
     requirementsConfirm.request({
       title: s.title,
       requirements: s.requirements,
       onConfirm: async () => {
-        await api.submissions.star({ slug, id: s.id });
-        await refresh();
+        try {
+          await api.submissions.star({ slug, id: s.id });
+          await refresh();
+        } catch (e) {
+          toast.error(errorCode(e));
+        }
       },
     });
   }
@@ -164,11 +176,20 @@ export function SessionsTab({
     s: Submission,
     action: "publish" | "unpublish" | "reject",
   ) {
-    if (action === "publish") await api.submissions.publish({ slug, id: s.id });
-    else if (action === "unpublish")
-      await api.submissions.unpublish({ slug, id: s.id });
-    else await api.submissions.reject({ slug, id: s.id });
-    await refresh();
+    try {
+      if (action === "publish") await api.submissions.publish({ slug, id: s.id });
+      else if (action === "unpublish")
+        await api.submissions.unpublish({ slug, id: s.id });
+      else await api.submissions.reject({ slug, id: s.id });
+      await refresh();
+      toast.success(
+        action === "publish" ? `Published "${s.title}".` :
+        action === "unpublish" ? `Unpublished "${s.title}".` :
+        `Rejected "${s.title}".`,
+      );
+    } catch (e) {
+      toast.error(errorCode(e));
+    }
   }
 
   function canEdit(s: Submission): boolean {
@@ -270,7 +291,6 @@ export function SessionsTab({
           <Button
             variant="primary"
             onClick={() => {
-              setSubmitNotice(null);
               setAdding(true);
             }}
           >
@@ -296,8 +316,6 @@ export function SessionsTab({
         <MySessionQuotaHint current={mySessionCount} limit={maxSessionsPerUser} />
       )}
 
-      {submitNotice && <Banner variant="success">{submitNotice}</Banner>}
-
       <Sheet
         open={adding}
         onClose={() => setAdding(false)}
@@ -315,10 +333,10 @@ export function SessionsTab({
             onCancel={() => setAdding(false)}
             onSaved={async () => {
               setAdding(false);
-              setSubmitNotice(
+              toast.success(
                 isMod
                   ? "Session created."
-                  : "Submitted. A moderator will review it before others can see it. You can edit and delete it from this page until then.",
+                  : "Submitted. A moderator will review it before others can see it.",
               );
               await refresh();
               onSessionMutated();
@@ -393,6 +411,7 @@ export function SessionsTab({
               canEdit={canEdit(s)}
               canDelete={canEdit(s)}
               isMod={isMod}
+              timeZone={timeZone}
               roomName={
                 s.pre_assigned_room_id === null
                   ? null
@@ -740,6 +759,7 @@ function SessionCard({
   canEdit,
   canDelete,
   isMod,
+  timeZone,
   roomName,
   onStar,
   onEdit,
@@ -750,6 +770,7 @@ function SessionCard({
   canEdit: boolean;
   canDelete: boolean;
   isMod: boolean;
+  timeZone: string;
   /** Pre-assigned room name when set, used to render the pinned badge.
    * Null when the submission isn't pinned or the room isn't loaded. */
   roomName: string | null;
@@ -791,8 +812,11 @@ function SessionCard({
       >
         <Badge variant={statusVariant}>{s.status}</Badge>
         {s.is_finished && (
+          // Informational only under Path C: the badge tells everyone the
+          // session is excluded from future unconference placement, but
+          // doesn't gate stars or visibility.
           <Badge variant="default">
-            {s.manually_finished ? "finished (manual)" : "finished"}
+            {s.manually_finished ? "Marked complete" : "Fully scheduled"}
           </Badge>
         )}
         {roomName && (
@@ -813,6 +837,32 @@ function SessionCard({
           </span>
         )}
       </div>
+
+      {s.scheduled_in.length > 0 && (
+        // Path C cause-and-effect surface: "you star this session, it
+        // shows up on your schedule at these times." Listing every linked
+        // TrackAssignment with its time + room makes the connection
+        // explicit at the moment the user is deciding whether to star.
+        <div
+          style={{
+            gridColumn: "1 / -1",
+            gridRow: 4,
+            fontSize: 12,
+            color: muted,
+          }}
+        >
+          Scheduled at:{" "}
+          {s.scheduled_in.map((sch, i) => (
+            <span key={sch.slot_id}>
+              {i > 0 ? " · " : ""}
+              <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 500 }}>
+                {fmtTimeShort(sch.starts_at, timeZone)}
+              </span>{" "}
+              <span>{sch.room_name}</span>
+            </span>
+          ))}
+        </div>
+      )}
 
       <div
         style={{
@@ -846,7 +896,7 @@ function SessionCard({
         <div
           style={{
             gridColumn: "1 / -1",
-            gridRow: 4,
+            gridRow: 5,
             display: "flex",
             gap: 6,
             flexWrap: "wrap",
@@ -864,7 +914,7 @@ function SessionCard({
         <div
           style={{
             gridColumn: "1 / -1",
-            gridRow: 5,
+            gridRow: 6,
             fontSize: 12,
             color: muted,
             display: "flex",
@@ -897,7 +947,7 @@ function SessionCard({
       <div
         style={{
           gridColumn: "1 / -1",
-          gridRow: 6,
+          gridRow: 7,
           display: "flex",
           gap: 6,
           flexWrap: "wrap",
@@ -1176,7 +1226,13 @@ function SessionForm(props: SessionFormProps) {
   return (
     <Stack gap="condensed">
       {mode === "create" && !isMod && (
-        <Tip>A moderator publishes your session before others can star it.</Tip>
+        <Tip>
+          A moderator publishes your session before others can star it.
+          Once published, a star means &ldquo;I want this on my schedule&rdquo; —
+          it both signals interest to the unconference algorithm and adds
+          any planned-slot offering of this session to the starring
+          user&apos;s schedule automatically.
+        </Tip>
       )}
       {error && <Banner variant="critical">{error}</Banner>}
       <Form onSubmit={save}>

@@ -35,7 +35,7 @@ export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
   async function addRoom(e: React.FormEvent) {
     e.preventDefault();
     try {
-      await api.rooms.create({
+      const created = await api.rooms.create({
         slug, name,
         capacity: Number(capacity),
         description: description.trim() || null,
@@ -44,13 +44,20 @@ export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
       setName(""); setCapacity("20"); setDescription(""); setTags("");
       setAdding(false);
       await refresh();
+      toast.success(`Room "${created.name}" added.`);
     } catch (e) { toast.error(quotaErrorMessage(e) ?? errorCode(e)); }
   }
 
   async function remove(id: number) {
-    if (!confirm("Delete this room?")) return;
-    await api.rooms.delete({ slug, id });
-    await refresh();
+    const room = rooms?.find((r) => r.id === id);
+    if (!confirm(`Delete room "${room?.name ?? "?"}"?`)) return;
+    try {
+      await api.rooms.delete({ slug, id });
+      await refresh();
+      toast.success(`Deleted ${room?.name ? `"${room.name}"` : "room"}.`);
+    } catch (e) {
+      toast.error(errorCode(e));
+    }
   }
 
   const editingRoom = editingId ? rooms?.find((r) => r.id === editingId) ?? null : null;
@@ -194,6 +201,7 @@ function RoomEditForm({
         tags: parseLabels(tags),
       });
       await onSaved();
+      toast.success(`Room "${name}" updated.`);
     } catch (e) {
       toast.error(errorCode(e));
     } finally { setBusy(false); }

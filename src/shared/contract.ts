@@ -20,6 +20,7 @@ import {
   CreateRoomSchema,
   CreateSlotSchema,
   CreateSubmissionSchema,
+  DuplicateSlotSchema,
   InviteClaimSchema,
   InviteCreateSchema,
   InviteImportSchema,
@@ -37,6 +38,7 @@ import {
   UpdateExpertSchema,
   UpdateRoomSchema,
   UpdateSlotSchema,
+  UpdateSlotSeriesSchema,
   UpdateSubmissionSchema,
 } from "./schemas";
 
@@ -158,7 +160,7 @@ interface RoomOut {
 }
 
 type SubmissionStatus = "submitted" | "published" | "rejected";
-interface SubmissionOut {
+export interface SubmissionOut {
   id: number;
   conference_id: number;
   submitter_id: number;
@@ -194,18 +196,33 @@ interface SubmissionOut {
   // Number of times this submission has been placed (static tracks + unconf
   // placements). UI shows this as `placement_count / effective_cap`.
   placement_count: number;
-  // Resolved against the conference default. The session is excluded from
-  // future unconference assignment pools and hidden from the participant
-  // Sessions overview when finished.
+  // Resolved against the conference default. When true, the session is
+  // excluded from future unconference assignment pools. Surfaced to users
+  // as an informational badge ("Fully scheduled" / "Marked complete") —
+  // it does NOT hide the session or disable starring under Path C.
   is_finished: boolean;
+  /** Planned-slot TrackAssignments this submission is scheduled in.
+   *  The Sessions tab uses this for the "Scheduled at: 10:00 Hall · 14:00
+   *  Hall" inline hint with jump-links to the calendar. Empty when the
+   *  submission isn't on the planned agenda. */
+  scheduled_in: {
+    slot_id: number;
+    starts_at: number;
+    ends_at: number;
+    room_id: number;
+    room_name: string;
+  }[];
 }
 interface SubmissionCreated { id: number; status: SubmissionStatus }
 
 type SlotKind = "normal" | "unconference" | "mixer";
-interface SlotOut {
+export interface SlotOut {
   id: number; type: SlotKind;
   title: string | null; description: string | null;
   starts_at: number; ends_at: number;
+  // All of the below are the *effective* values — resolved via
+  // `effectiveSlotConfig` on the server. When the slot belongs to a series,
+  // they reflect the series; when standalone, the slot's own columns.
   unconf_use_all_rooms: boolean;
   unconf_use_all_submissions: boolean;
   unconf_avoid_repeats: boolean;
@@ -214,21 +231,56 @@ interface SlotOut {
   mixer_avoid_repeats: boolean | null;
   // Effective avoid-repeats mode for this slot (the override resolved against
   // the conference default). UI shows this for display; mods change behavior
-  // by writing `mixer_avoid_repeats` via `agenda.updateSlot`.
+  // by writing `mixer_avoid_repeats` via `agenda.updateSlot` (standalone) or
+  // `agenda.updateSeries` (series member).
   mixer_avoid_repeats_effective: boolean;
   unconf_room_ids: number[];
   unconf_submission_ids: number[];
+  // Series linkage. `null` when this is a standalone slot. When set, the UI
+  // shows a "linked offering" indicator and routes config edits through the
+  // series-level form.
+  series_id: number | null;
+  // 1-based index of this offering within its series, ordered by `starts_at`.
+  // Null for standalone slots.
+  series_offering_index: number | null;
+  // Total siblings in this series (including this slot). Null for standalone.
+  series_total_offerings: number | null;
 }
-interface TrackOut {
+
+export interface SlotSeriesOut {
+  id: number;
+  type: SlotKind;
+  title: string | null;
+  description: string | null;
+  unconf_use_all_rooms: boolean;
+  unconf_use_all_submissions: boolean;
+  unconf_avoid_repeats: boolean;
+  mixer_avoid_repeats: boolean | null;
+  avoid_repeats_across_siblings: boolean;
+  unconf_room_ids: number[];
+  unconf_submission_ids: number[];
+  slot_ids: number[];           // siblings, ordered by starts_at
+}
+export interface TrackOut {
   id: number; slot_id: number; room_id: number;
-  submission_id: number | null;
-  title: string | null; speakers: string | null;
-  star_count: number; starred_by_me: boolean;
+  /** Every planned track is anchored to a Submission (Path C). The track
+   *  display name and submitter credit come from there. */
+  submission_id: number;
+  /** Display name resolved from the linked Submission. Always present. */
+  title: string;
+  /** Optional addendum text appended to the submitter's name when listing
+   *  speakers (e.g. for co-presenters). Null/empty = just show the
+   *  submission's submitter. */
+  speakers: string | null;
+  /** Number of participants who starred the linked Submission. */
+  star_count: number;
+  /** True when the viewer starred the linked Submission. The Track itself
+   *  has no per-user opt-in any more — Path C unifies the signal. */
+  starred_by_me: boolean;
   requirements: string[];
-  /** When true, this static track is force-attended for every participant
-   * — it lands on every schedule regardless of `starred_by_me` and the
-   * star toggle is disabled on the client. Only meaningful for normal-type
-   * slots. */
+  /** When true, force-attended for every participant — lands on every
+   *  schedule regardless of `starred_by_me`. Only meaningful for normal
+   *  slots. */
   mandatory: boolean;
 }
 interface PlacementOut {
@@ -240,10 +292,29 @@ interface MixerPlacementOut {
 }
 interface AgendaOut {
   slots: SlotOut[];
+  slot_series: SlotSeriesOut[];
   tracks: TrackOut[];
   placements: PlacementOut[];
   mixer_placements: MixerPlacementOut[];
 }
+
+// Response of `agenda.updateSeries`. When the requested patch would orphan
+// existing track assignments or placements, the server short-circuits with
+// `kind: "needs_confirmation"` describing exactly what will be removed.
+// The client re-submits the same patch with `confirm: true` to apply it
+// and cascade-delete the orphans.
+export type UpdateSeriesResult =
+  | { kind: "ok" }
+  | {
+      kind: "needs_confirmation";
+      removed_track_assignments: number;
+      removed_unconference_placements: number;
+      removed_user_assignments: number;
+      // Rooms/submissions that would be dropped from the pool; surface in
+      // the confirm dialog so the mod knows what they're removing.
+      removed_room_ids: number[];
+      removed_submission_ids: number[];
+    };
 
 interface AssignmentOut {
   source: "unconference" | "static" | "mixer" | "expert";
@@ -265,8 +336,12 @@ interface AssignmentOut {
   /** Static rows only: true when the track is moderator-marked mandatory
    * (the row is in the schedule regardless of the user's star choice). */
   mandatory?: boolean;
+  /** Static rows only: true when the viewer is the linked submission's
+   *  submitter (so they're speaking, not attending). UI shows a "You're
+   *  speaking" badge to distinguish from "you're attending." */
+  is_submitter?: boolean;
 }
-interface MyAssignmentsOut {
+export interface MyAssignmentsOut {
   assignments: AssignmentOut[];
   unplaced_slots: number[];
 }
@@ -576,18 +651,43 @@ export const contract = {
       .input(v.object({ slug: Slug, id: Id, ...UpdateSlotSchema.pipe[0].entries }))
       .output(type<Ok>()),
     deleteSlot: oc.input(v.object({ slug: Slug, id: Id })).output(type<Ok>()),
+    // Duplicate an existing slot as a linked offering. If the source is
+    // standalone, a new SlotSeries is created with the source + the new
+    // sibling as members. If the source is already in a series, the new
+    // sibling joins that series.
+    duplicateSlot: oc
+      .input(v.object({ slug: Slug, id: Id, ...DuplicateSlotSchema.pipe[0].entries }))
+      .output(type<{ slot_id: number; series_id: number }>()),
+    // Series-level config edit. Returns `needs_confirmation` when the patch
+    // would orphan track assignments / placements; resubmit with `confirm: true`.
+    updateSeries: oc
+      .input(v.object({ slug: Slug, id: Id, ...UpdateSlotSeriesSchema.entries }))
+      .output(type<UpdateSeriesResult>()),
+    // Promote a series member back to a standalone slot. Snapshots the
+    // current series config onto the slot's own columns and clears
+    // `series_id`. The series stays around for its remaining members.
+    detachSeries: oc
+      .input(v.object({ slug: Slug, slot_id: Id }))
+      .output(type<Ok>()),
+    // Delete a series. `mode = "series_only"` detaches all members first
+    // (snapshotting config onto each). `mode = "with_slots"` cascade-deletes
+    // every sibling slot too.
+    deleteSeries: oc
+      .input(v.object({
+        slug: Slug, id: Id,
+        mode: v.picklist(["series_only", "with_slots"] as const),
+      }))
+      .output(type<Ok>()),
     setTrack: oc
       .input(v.object({ slug: Slug, slot_id: Id, ...TrackAssignmentSchema.entries }))
       .output(type<Ok>()),
     clearTrack: oc
       .input(v.object({ slug: Slug, slot_id: Id, room_id: Id }))
       .output(type<Ok>()),
-    starTrack: oc
-      .input(v.object({ slug: Slug, slot_id: Id, track_id: Id }))
-      .output(type<Ok>()),
-    unstarTrack: oc
-      .input(v.object({ slug: Slug, slot_id: Id, track_id: Id }))
-      .output(type<Ok>()),
+    // Path C: per-track stars no longer exist. Participants star the
+    // underlying Submission via `submissions.star` / `submissions.unstar`,
+    // and every linked TrackAssignment derives onto their schedule. The
+    // old `agenda.starTrack` / `agenda.unstarTrack` endpoints were removed.
     assign: oc
       .input(v.object({
         slug: Slug, slot_id: Id,

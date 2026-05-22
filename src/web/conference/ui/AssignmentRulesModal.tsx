@@ -47,6 +47,40 @@ export function AssignmentRulesModal({
           which session. Here&apos;s exactly what it does, in order.
         </Text>
 
+        <Section title="What does “star” mean?">
+          <Rule>
+            <strong>Star = “I want this on my schedule.”</strong> One
+            action, two effects: the unconference algorithm uses your
+            stars to decide which sessions get a room and which one to
+            assign you to, AND every planned-slot track linked to a
+            session you starred lands on your schedule automatically.
+          </Rule>
+          <Rule>
+            <strong>Where you star matters less than what you star.</strong>{" "}
+            The Sessions tab and the Agenda calendar both expose a star on
+            each session — they hit the same underlying record. Star in
+            either place and your schedule updates everywhere.
+          </Rule>
+          <Rule>
+            <strong>Repeated offerings.</strong> When a mod duplicates a
+            slot or schedules the same session in multiple slots, your
+            single star yields a schedule entry per offering. The
+            schedule view groups them with a “same session also at HH:MM”
+            caption so you know they&apos;re the same content and can pick
+            which one(s) to actually attend.
+          </Rule>
+          <Rule>
+            <strong>“Required” tracks</strong> (mod-flagged keynotes /
+            opening / closing) and sessions where you&apos;re the submitter
+            land on your schedule whether you star them or not.
+          </Rule>
+          <Rule>
+            Stars are public — counts drive the unconference ranking and
+            are visible to everyone. The only private bit is{" "}
+            <em>which</em> sessions <em>you</em> personally starred.
+          </Rule>
+        </Section>
+
         <Section index={1} title="Which sessions get a room">
           <Rule>
             Sessions are ranked by <strong>star count</strong> — how many
@@ -56,9 +90,11 @@ export function AssignmentRulesModal({
           </Rule>
           {isMod && (
             <Rule modOnly>
-              Sessions marked <em>finished</em> (placement cap reached, or
-              the manual &quot;mark as finished&quot; toggle) drop out before
-              ranking. Re-publishing or bumping the cap brings them back.
+              Sessions tagged <em>Fully scheduled</em> (placement cap reached)
+              or <em>Marked complete</em> (manual toggle) drop out of the
+              ranking pool. Participants can still see and star them; bumping
+              the cap or clearing the manual flag brings them back into
+              future runs.
             </Rule>
           )}
           <Rule>

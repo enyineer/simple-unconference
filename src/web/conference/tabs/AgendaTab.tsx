@@ -25,6 +25,7 @@ import type {
   AgendaData,
   Room,
   Slot,
+  SlotSeries,
   Submission,
   Track,
 } from "../types";
@@ -48,13 +49,18 @@ const SLOT_KIND_LABEL: Record<SlotKind, string> = {
 // slot kind will do before they create it.
 const SLOT_KIND_TIP: Record<SlotKind, string> = {
   normal:
-    "Planned slots run a fixed agenda — you pick which talk (or custom title) runs in each room. " +
-    "Attendees can star a talk to add it to their personal schedule.",
+    "Planned slots run a fixed agenda — you pick which published Submission runs in each room. " +
+    "Attendees star the underlying Submission (here on the Agenda, or on the Sessions tab) " +
+    "to add this offering to their personal schedule. Mark a track as \"required\" to force it onto " +
+    "every attendee's schedule regardless of their stars.",
   unconference:
-    "Unconference slots are auto-assigned. The algorithm places the most-starred published submissions " +
-    "in your rooms and balances attendees across them based on their stars. Re-run anytime as people star or unstar.",
+    "Unconference slots are auto-assigned. The algorithm places the most-starred published Submissions " +
+    "in your rooms and balances attendees across them based on their stars. " +
+    "Star counts come from the same Star button participants click on the Sessions tab and the Agenda — " +
+    "one star drives both unconference ranking and planned-track schedule visibility. " +
+    "Re-run anytime as people star or unstar.",
   mixer:
-    "Mixer slots split every conference member evenly across the rooms you select — no submissions involved. " +
+    "Mixer slots split every conference member evenly across the rooms you select — no Submissions involved. " +
     'By default mixers are "exclusive": the algorithm tries not to put two participants in the same room across mixers, ' +
     'so repeated "meet each other" slots actually meet new people. Switch a mixer to "fresh shuffle" if you want it ' +
     "to ignore prior mixers. The default is owner-configurable in Settings.",
@@ -83,6 +89,7 @@ export function AgendaTab({
   const [subs, setSubs] = useState<Submission[]>([]);
   const [adding, setAdding] = useState(false);
   const [selectedSlotId, setSelectedSlotId] = useState<number | null>(null);
+  const toast = useToast();
 
   const fetchAgenda = useCallback(() => Promise.all([
     api.agenda.get({ slug }),
@@ -104,7 +111,7 @@ export function AgendaTab({
       })
       .catch(() => {
         if (cancelled) return;
-        setData({ slots: [], tracks: [], placements: [], mixer_placements: [] });
+        setData({ slots: [], slot_series: [], tracks: [], placements: [], mixer_placements: [] });
       });
     return () => { cancelled = true; };
   }, [fetchAgenda]);
@@ -114,56 +121,48 @@ export function AgendaTab({
       await api.agenda.updateSlot({ slug, id, starts_at, ends_at });
       await refresh();
     } catch (e) {
-      alert(errorCode(e));
+      toast.error(errorCode(e));
       await refresh(); // restore correct render if the update failed
     }
   }
 
   const requirementsConfirm = useRequirementsConfirm();
 
-  // The handlers run a confirmation step when there are requirements to
-  // acknowledge; otherwise they fire straight through to the API. Unstarring
-  // never prompts — that's a removal action with no risk.
+  // Path C: the track-level star UI is wired to the *underlying Submission*.
+  // Clicking the star on a planned track in the calendar toggles the
+  // submission star — which then derives all linked TrackAssignments onto
+  // the participant's schedule (including siblings, if the slot is in a
+  // series). Requirements come from BOTH the track and the linked
+  // submission, surfaced in one combined confirmation step.
   async function toggleStaticStar(track: {
     id: number;
     slot_id: number;
     starred_by_me: boolean;
   }) {
+    const full = data?.tracks.find((t) => t.id === track.id);
+    if (!full) return;
+    const linkedSub = subs.find((s) => s.id === full.submission_id) ?? null;
     if (track.starred_by_me) {
       try {
-        await api.agenda.unstarTrack({
-          slug,
-          slot_id: track.slot_id,
-          track_id: track.id,
-        });
+        await api.submissions.unstar({ slug, id: full.submission_id });
         await refresh();
       } catch (e) {
-        alert(errorCode(e));
+        toast.error(errorCode(e));
       }
       return;
     }
-    // Look up the full track + linked submission for the confirmation step.
-    // The Calendar passes a thin shape; we keep the source of truth here.
-    const full = data?.tracks.find((t) => t.id === track.id);
-    const requirements = full?.requirements ?? [];
-    const linkedSub =
-      full?.submission_id != null
-        ? subs.find((s) => s.id === full.submission_id) ?? null
-        : null;
-    const displayTitle = linkedSub?.title ?? full?.title ?? "Session";
+    const requirements = Array.from(
+      new Set([...(full.requirements ?? []), ...(linkedSub?.requirements ?? [])]),
+    );
     requirementsConfirm.request({
-      title: displayTitle,
+      title: linkedSub?.title ?? "Session",
       requirements,
       onConfirm: async () => {
         try {
-          await api.agenda.starTrack({
-            slug,
-            slot_id: track.slot_id,
-            track_id: track.id,
-          });
+          await api.submissions.star({ slug, id: full.submission_id });
           await refresh();
         } catch (e) {
-          alert(errorCode(e));
+          toast.error(errorCode(e));
         }
       },
     });
@@ -178,7 +177,7 @@ export function AgendaTab({
         await api.submissions.unstar({ slug, id: sub.id });
         await refresh();
       } catch (e) {
-        alert(errorCode(e));
+        toast.error(errorCode(e));
       }
       return;
     }
@@ -191,7 +190,7 @@ export function AgendaTab({
           await api.submissions.star({ slug, id: sub.id });
           await refresh();
         } catch (e) {
-          alert(errorCode(e));
+          toast.error(errorCode(e));
         }
       },
     });
@@ -280,6 +279,11 @@ export function AgendaTab({
             key={selectedSlot.id}
             slug={slug}
             slot={selectedSlot}
+            series={
+              selectedSlot.series_id !== null
+                ? data.slot_series.find((s) => s.id === selectedSlot.series_id) ?? null
+                : null
+            }
             rooms={rooms}
             subs={subs}
             tracks={data.tracks.filter((t) => t.slot_id === selectedSlot.id)}
@@ -290,6 +294,7 @@ export function AgendaTab({
             timeZone={timeZone}
             inSheet
             onChange={refresh}
+            onSelectSlot={(id) => setSelectedSlotId(id)}
           />
         )}
       </Sheet>
@@ -434,6 +439,10 @@ function NewSlotForm({
 interface SlotBlockProps {
   slug: string;
   slot: Slot;
+  /** The series this slot belongs to, when `slot.series_id != null`. Null
+   *  for standalone slots. Drives the badge, the "Detach offering" action,
+   *  and which configure form mounts (slot-level vs series-level). */
+  series: SlotSeries | null;
   rooms: Room[];
   subs: Submission[];
   tracks: Track[];
@@ -447,6 +456,10 @@ interface SlotBlockProps {
   timeZone: string;
   onChange: () => Promise<void>;
   onClose?: () => void;
+  /** When set, the badge area renders prev/next buttons that hop to the
+   *  matching sibling slot. The callback drives the parent's selected-slot
+   *  state. Null/undefined hides the navigation. */
+  onSelectSlot?: (slotId: number) => void;
   /** When rendered inside a Sheet, skip the outer Card chrome (the sheet
    * already provides the header + container). */
   inSheet?: boolean;
@@ -476,6 +489,7 @@ type PreConflict =
 function SlotBlock({
   slug,
   slot,
+  series,
   rooms,
   subs,
   tracks,
@@ -484,15 +498,18 @@ function SlotBlock({
   timeZone,
   onChange,
   onClose,
+  onSelectSlot,
   inSheet,
 }: SlotBlockProps) {
   const [configuring, setConfiguring] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
   const [conflicts, setConflicts] = useState<PreConflict[] | null>(null);
   const toast = useToast();
   const isUnconf = slot.type === "unconference";
   const isMixer = slot.type === "mixer";
   const isAssignable = isUnconf || isMixer;
+  const inSeries = series !== null;
 
   // Effective rooms in this slot's scope. Both unconference and mixer use
   // `unconf_use_all_rooms` + `unconf_room_ids` for room scoping (the field
@@ -528,8 +545,29 @@ function SlotBlock({
 
   async function remove() {
     if (!confirm("Delete this slot?")) return;
-    await api.agenda.deleteSlot({ slug, id: slot.id });
-    await onChange();
+    try {
+      await api.agenda.deleteSlot({ slug, id: slot.id });
+      toast.success("Slot deleted.");
+      await onChange();
+    } catch (e) {
+      toast.error(errorCode(e));
+    }
+  }
+
+  async function detach() {
+    if (!inSeries) return;
+    const msg =
+      "Detach this offering from its series? It will become a standalone " +
+      "slot with the series's current configuration snapshotted onto it; " +
+      "future series edits will no longer affect it.";
+    if (!confirm(msg)) return;
+    try {
+      await api.agenda.detachSeries({ slug, slot_id: slot.id });
+      toast.success("Offering detached from series.");
+      await onChange();
+    } catch (e) {
+      toast.error(errorCode(e));
+    }
   }
 
   async function runAssignment(excludeSubmissionIds?: number[]) {
@@ -656,6 +694,47 @@ function SlotBlock({
               {timeZone}
             </span>
             {!inSheet && <Badge variant={badgeVariant}>{badgeText}</Badge>}
+            {/* Series indicator. Visible to everyone — non-mods see it as
+                context for "this session runs at multiple times"; mods use
+                it as a signal that config edits route through the series
+                form. Prev/next arrows hop the sheet to a sibling so you
+                can compare offerings without closing and re-opening. */}
+            {inSeries && slot.series_offering_index !== null && slot.series_total_offerings !== null && (() => {
+              const siblings = series?.slot_ids ?? [];
+              const idx = siblings.indexOf(slot.id);
+              const prevId = idx > 0 ? siblings[idx - 1] : null;
+              const nextId = idx >= 0 && idx < siblings.length - 1 ? siblings[idx + 1] : null;
+              const canNav = onSelectSlot !== undefined;
+              return (
+                <Stack direction="row" gap="condensed" align="center">
+                  {canNav && (
+                    <Button
+                      size="small"
+                      variant="invisible"
+                      onClick={() => prevId != null && onSelectSlot(prevId)}
+                      disabled={prevId === null}
+                      aria-label="Previous offering"
+                    >
+                      ‹
+                    </Button>
+                  )}
+                  <Badge variant="default">
+                    Offering {slot.series_offering_index} of {slot.series_total_offerings}
+                  </Badge>
+                  {canNav && (
+                    <Button
+                      size="small"
+                      variant="invisible"
+                      onClick={() => nextId != null && onSelectSlot(nextId)}
+                      disabled={nextId === null}
+                      aria-label="Next offering"
+                    >
+                      ›
+                    </Button>
+                  )}
+                </Stack>
+              );
+            })()}
           </div>
         </Stack>
         {isAssignable && <AssignmentRulesTrigger isMod={isMod} />}
@@ -696,6 +775,16 @@ function SlotBlock({
               )}
             </>
           )}
+          {isMod && (
+            <Button onClick={() => setDuplicating(true)} size="small">
+              Duplicate
+            </Button>
+          )}
+          {isMod && inSeries && (
+            <Button onClick={detach} size="small">
+              Detach offering
+            </Button>
+          )}
           {/* Spacer pushes Delete / Close to the far right. */}
           <div style={{ flex: 1 }} />
           {isMod && (
@@ -711,6 +800,21 @@ function SlotBlock({
         </Stack>
       )}
 
+      {isMod && duplicating && (
+        <Sheet open onClose={() => setDuplicating(false)} title="Duplicate as another offering">
+          <DuplicateSlotForm
+            slug={slug}
+            slot={slot}
+            timeZone={timeZone}
+            onCancel={() => setDuplicating(false)}
+            onDuplicated={async () => {
+              setDuplicating(false);
+              await onChange();
+            }}
+          />
+        </Sheet>
+      )}
+
       {isMod && editing && (
         <SlotEditForm
           slug={slug}
@@ -724,16 +828,31 @@ function SlotBlock({
       )}
 
       {isAssignable && configuring && (
-        <SlotConfigure
-          slug={slug}
-          slot={slot}
-          rooms={rooms}
-          subs={subs}
-          onSaved={async () => {
-            setConfiguring(false);
-            await onChange();
-          }}
-        />
+        inSeries && series
+          ? (
+            <SeriesEditForm
+              slug={slug}
+              series={series}
+              rooms={rooms}
+              subs={subs}
+              onSaved={async () => {
+                setConfiguring(false);
+                await onChange();
+              }}
+            />
+          )
+          : (
+            <SlotConfigure
+              slug={slug}
+              slot={slot}
+              rooms={rooms}
+              subs={subs}
+              onSaved={async () => {
+                setConfiguring(false);
+                await onChange();
+              }}
+            />
+          )
       )}
 
       {isMod && isUnconf && conflicts && (
@@ -927,9 +1046,8 @@ function TrackEditor({
   const [submissionId, setSubmissionId] = useState<string>(
     track?.submission_id ? String(track.submission_id) : "",
   );
-  const [title, setTitle] = useState(track?.title ?? "");
   const [speakers, setSpeakers] = useState(track?.speakers ?? "");
-  const submission = track?.submission_id
+  const submission = track
     ? subs.find((s) => s.id === track.submission_id)
     : undefined;
   // Pre-fill from the track's own requirements; if absent, fall back to the
@@ -941,21 +1059,21 @@ function TrackEditor({
   const [requirements, setRequirements] = useState(initialReqs.join(", "));
   const [mandatory, setMandatory] = useState(track?.mandatory ?? false);
   const [busy, setBusy] = useState(false);
+  // Path C: track display title always comes from the linked submission.
   const display = submission?.title ?? track?.title;
   const requirementsConfirm = useRequirementsConfirm();
+  const toast = useToast();
 
   async function toggleStar() {
     if (!track) return;
+    // Path C: star/unstar the underlying Submission. The track's
+    // `starred_by_me` is derived from that submission's star on the server.
     if (track.starred_by_me) {
       try {
-        await api.agenda.unstarTrack({
-          slug,
-          slot_id: slot.id,
-          track_id: track.id,
-        });
+        await api.submissions.unstar({ slug, id: track.submission_id });
         await onChange();
       } catch (e) {
-        alert(errorCode(e));
+        toast.error(errorCode(e));
       }
       return;
     }
@@ -964,36 +1082,38 @@ function TrackEditor({
       requirements: track.requirements,
       onConfirm: async () => {
         try {
-          await api.agenda.starTrack({
-            slug,
-            slot_id: slot.id,
-            track_id: track.id,
-          });
+          await api.submissions.star({ slug, id: track.submission_id });
           await onChange();
         } catch (e) {
-          alert(errorCode(e));
+          toast.error(errorCode(e));
         }
       },
     });
   }
 
   async function save() {
+    // Path C: every track must reference a Submission. The form refuses
+    // to save without one — the picker validates this before submit.
+    if (!submissionId) {
+      toast.error("Select a session to schedule in this room.");
+      return;
+    }
     setBusy(true);
     try {
       await api.agenda.setTrack({
         slug,
         slot_id: slot.id,
         room_id: room.id,
-        submission_id: submissionId ? Number(submissionId) : null,
-        title: title.trim() || null,
+        submission_id: Number(submissionId),
         speakers: speakers.trim() || null,
         requirements: parseLabels(requirements),
         mandatory,
       });
       setEditing(false);
       await onChange();
+      toast.success(track ? `Updated track in ${room.name}.` : `Set track in ${room.name}.`);
     } catch (e) {
-      alert(errorCode(e));
+      toast.error(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -1001,9 +1121,14 @@ function TrackEditor({
 
   async function clear() {
     if (!confirm(`Clear track in ${room.name}?`)) return;
-    await api.agenda.clearTrack({ slug, slot_id: slot.id, room_id: room.id });
+    try {
+      await api.agenda.clearTrack({ slug, slot_id: slot.id, room_id: room.id });
+      toast.success(`Cleared track in ${room.name}.`);
+    } catch (e) {
+      toast.error(errorCode(e));
+      return;
+    }
     setSubmissionId("");
-    setTitle("");
     setSpeakers("");
     setRequirements("");
     await onChange();
@@ -1016,11 +1141,11 @@ function TrackEditor({
         <Card title={`Edit track — ${room.name}`}>
           <Stack gap="condensed">
             <SearchableSelect
-              label="Linked submission (optional)"
+              label="Session"
               value={submissionId}
               onChange={setSubmissionId}
               options={[
-                { value: "", label: "— none (use custom title) —" },
+                { value: "", label: "— select a session —" },
                 ...subs.map((sub) => ({
                   value: String(sub.id),
                   label: sub.title,
@@ -1030,16 +1155,10 @@ function TrackEditor({
               placeholder="Search sessions…"
             />
             <TextInput
-              label="Custom title (when no submission)"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. Welcome Keynote"
-            />
-            <TextInput
-              label="Speakers"
+              label="Co-speakers (optional)"
               value={speakers}
               onChange={(e) => setSpeakers(e.target.value)}
-              placeholder="e.g. Alice, Bob"
+              placeholder="Additional speaker names beyond the submitter"
             />
             <TextInput
               label="Requirements (comma-separated)"
@@ -1194,7 +1313,6 @@ function TrackEditor({
                 setSubmissionId(
                   track?.submission_id ? String(track.submission_id) : "",
                 );
-                setTitle(track?.title ?? "");
                 setSpeakers(track?.speakers ?? "");
                 const reqs = track?.requirements?.length
                   ? track.requirements
@@ -1684,6 +1802,7 @@ function SlotConfigure({
       ),
   );
   const [busy, setBusy] = useState(false);
+  const toast = useToast();
 
   async function save() {
     setBusy(true);
@@ -1698,8 +1817,9 @@ function SlotConfigure({
         unconf_submission_ids: useAllSubs ? [] : [...pickedSubs],
       });
       await onSaved();
+      toast.success("Slot configuration saved.");
     } catch (e) {
-      alert(errorCode(e));
+      toast.error(errorCode(e));
     } finally {
       setBusy(false);
     }
@@ -1830,6 +1950,438 @@ function SlotConfigure({
           </Button>
         </Stack>
       </Stack>
+    </Card>
+  );
+}
+
+// ---- Duplicate-slot sheet contents ----------------------------------------
+//
+// Mods click "Duplicate" on any slot to spawn another offering of it. If the
+// source is standalone, the server creates a SlotSeries rooted at the source
+// and links both. If the source is already in a series, the new sibling
+// joins that series. From the mod's POV it's just "make another one of this
+// at time T" — the series machinery is transparent.
+function DuplicateSlotForm({
+  slug,
+  slot,
+  timeZone,
+  onCancel,
+  onDuplicated,
+}: {
+  slug: string;
+  slot: Slot;
+  timeZone: string;
+  onCancel: () => void;
+  onDuplicated: () => Promise<void>;
+}) {
+  const duration = slot.ends_at - slot.starts_at;
+  // Default: place the new offering immediately after the source. Mods will
+  // usually want a different time (e.g. afternoon vs morning) but "right
+  // after" is a sensible starting point because it's always valid (doesn't
+  // pre-fill a stale yesterday-time when re-using).
+  const [startsAt, setStartsAt] = useState<number>(slot.ends_at);
+  const [endsAt, setEndsAt] = useState<number>(slot.ends_at + duration);
+  const [title, setTitle] = useState(slot.title ?? "");
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (endsAt <= startsAt) {
+      toast.error("End time must be after start time.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.agenda.duplicateSlot({
+        slug,
+        id: slot.id,
+        new_starts_at: startsAt,
+        new_ends_at: endsAt,
+        title: title.trim() === "" ? null : title.trim(),
+      });
+      toast.success("Offering created.");
+      await onDuplicated();
+    } catch (e) {
+      toast.error(errorCode(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Stack gap="condensed">
+      <Tip>
+        Linked offerings share their room pool, eligible sessions, and
+        assignment flags — edit any of those once on the series form and
+        every offering updates. Time, title, and description stay
+        per-instance.
+      </Tip>
+      <Tip>
+        <strong>Placement counts per offering.</strong> A session placed in
+        two offerings counts as two placements against its cap. If you want
+        the same session to run in every offering, lift its cap on the
+        Sessions tab first.
+      </Tip>
+      <Form onSubmit={submit}>
+        <TextInput
+          label="Title (optional)"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder={slot.title ?? "Same as source"}
+        />
+        <DateTime
+          label="Starts at"
+          value={startsAt}
+          onChange={setStartsAt}
+          timeZone={timeZone}
+          max={endsAt}
+        />
+        <DateTime
+          label="Ends at"
+          value={endsAt}
+          onChange={setEndsAt}
+          timeZone={timeZone}
+          min={startsAt}
+        />
+        <Stack direction="row" gap="condensed">
+          <Button type="submit" variant="primary" disabled={busy}>
+            Create offering
+          </Button>
+          <Button onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+        </Stack>
+      </Form>
+    </Stack>
+  );
+}
+
+// ---- Series-level configure form ------------------------------------------
+//
+// Replaces `SlotConfigure` when the slot belongs to a series. Edits hit
+// `agenda.updateSeries` so changes propagate to every sibling via the
+// resolver. The endpoint short-circuits with `kind: "needs_confirmation"`
+// when the patch would orphan existing track assignments or placements;
+// the modal here surfaces what would be removed and offers a confirm-and-
+// cascade button.
+function SeriesEditForm({
+  slug,
+  series,
+  rooms,
+  subs,
+  onSaved,
+}: {
+  slug: string;
+  series: SlotSeries;
+  rooms: Room[];
+  subs: Submission[];
+  onSaved: () => Promise<void>;
+}) {
+  const isMixer = series.type === "mixer";
+  const [useAllRooms, setUseAllRooms] = useState(series.unconf_use_all_rooms);
+  const [useAllSubs, setUseAllSubs] = useState(series.unconf_use_all_submissions);
+  const [avoidRepeats, setAvoidRepeats] = useState(series.unconf_avoid_repeats);
+  const [acrossSiblings, setAcrossSiblings] = useState(series.avoid_repeats_across_siblings);
+  const [pickedRooms, setPickedRooms] = useState<Set<number>>(
+    () => new Set(series.unconf_use_all_rooms ? rooms.map((r) => r.id) : series.unconf_room_ids),
+  );
+  const [pickedSubs, setPickedSubs] = useState<Set<number>>(
+    () => new Set(series.unconf_use_all_submissions ? subs.map((s) => s.id) : series.unconf_submission_ids),
+  );
+  const [busy, setBusy] = useState(false);
+  // Captured server response when a save needs confirmation. The modal
+  // re-fires the same patch with `confirm: true` when the mod agrees.
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    removed_track_assignments: number;
+    removed_unconference_placements: number;
+    removed_user_assignments: number;
+    removed_room_ids: number[];
+    removed_submission_ids: number[];
+  } | null>(null);
+  const toast = useToast();
+
+  function toggle<T>(set: Set<T>, val: T): Set<T> {
+    const next = new Set(set);
+    if (next.has(val)) next.delete(val);
+    else next.add(val);
+    return next;
+  }
+
+  async function save(confirm = false) {
+    setBusy(true);
+    try {
+      const res = await api.agenda.updateSeries({
+        slug,
+        id: series.id,
+        unconf_use_all_rooms: useAllRooms,
+        unconf_use_all_submissions: useAllSubs,
+        unconf_avoid_repeats: avoidRepeats,
+        avoid_repeats_across_siblings: acrossSiblings,
+        unconf_room_ids: useAllRooms ? [] : [...pickedRooms],
+        unconf_submission_ids: useAllSubs ? [] : [...pickedSubs],
+        confirm,
+      });
+      if (res.kind === "needs_confirmation") {
+        setPendingConfirm({
+          removed_track_assignments: res.removed_track_assignments,
+          removed_unconference_placements: res.removed_unconference_placements,
+          removed_user_assignments: res.removed_user_assignments,
+          removed_room_ids: res.removed_room_ids,
+          removed_submission_ids: res.removed_submission_ids,
+        });
+        return;
+      }
+      setPendingConfirm(null);
+      toast.success("Series updated.");
+      await onSaved();
+    } catch (e) {
+      toast.error(errorCode(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteSeries(mode: "series_only" | "with_slots") {
+    const msg = mode === "series_only"
+      ? "Disband this series? Each offering will become a standalone slot " +
+        "with the series's current configuration snapshotted onto it. The " +
+        "offerings themselves are kept."
+      : "Delete this series AND every offering in it? This removes the " +
+        "slots from the calendar; track assignments and placements on " +
+        "them go too. Cannot be undone.";
+    if (!confirm(msg)) return;
+    setBusy(true);
+    try {
+      await api.agenda.deleteSeries({ slug, id: series.id, mode });
+      toast.success(mode === "series_only" ? "Series disbanded; offerings kept." : "Series deleted.");
+      await onSaved();
+    } catch (e) {
+      toast.error(errorCode(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const roomNameById = new Map(rooms.map((r) => [r.id, r.name]));
+  const subTitleById = new Map(subs.map((s) => [s.id, s.title]));
+
+  return (
+    <Card title={isMixer ? "Configure mixer series" : "Configure unconference series"}>
+      <Stack gap="condensed">
+        <Tip>
+          Editing here applies to every linked offering ({series.slot_ids.length} total).
+          Per-instance fields (time, title, description) stay on each
+          offering via its own Edit form.
+        </Tip>
+
+        <Stack gap="condensed">
+          <Text><strong>Rooms</strong></Text>
+          <Stack direction="row" gap="condensed">
+            <Button
+              size="small"
+              variant={useAllRooms ? "primary" : "default"}
+              onClick={() => setUseAllRooms(true)}
+            >
+              All rooms
+            </Button>
+            <Button
+              size="small"
+              variant={!useAllRooms ? "primary" : "default"}
+              onClick={() => setUseAllRooms(false)}
+            >
+              Select rooms
+            </Button>
+          </Stack>
+          {!useAllRooms && (
+            <Stack direction="row" gap="condensed" wrap>
+              {rooms.map((r) => (
+                <Button
+                  key={r.id}
+                  size="small"
+                  variant={pickedRooms.has(r.id) ? "primary" : "default"}
+                  onClick={() => setPickedRooms((s) => toggle(s, r.id))}
+                >
+                  {r.name}
+                </Button>
+              ))}
+              {rooms.length === 0 && <Text muted>No rooms exist yet.</Text>}
+            </Stack>
+          )}
+        </Stack>
+
+        {!isMixer && (
+          <Stack gap="condensed">
+            <Text><strong>Eligible submissions</strong></Text>
+            <Stack direction="row" gap="condensed">
+              <Button
+                size="small"
+                variant={useAllSubs ? "primary" : "default"}
+                onClick={() => setUseAllSubs(true)}
+              >
+                All published
+              </Button>
+              <Button
+                size="small"
+                variant={!useAllSubs ? "primary" : "default"}
+                onClick={() => setUseAllSubs(false)}
+              >
+                Select submissions
+              </Button>
+            </Stack>
+            {!useAllSubs && (
+              <Stack direction="row" gap="condensed" wrap>
+                {subs.map((s) => (
+                  <Button
+                    key={s.id}
+                    size="small"
+                    variant={pickedSubs.has(s.id) ? "primary" : "default"}
+                    onClick={() => setPickedSubs((set) => toggle(set, s.id))}
+                  >
+                    {s.title}
+                  </Button>
+                ))}
+                {subs.length === 0 && <Text muted>No published submissions yet.</Text>}
+              </Stack>
+            )}
+          </Stack>
+        )}
+
+        {!isMixer && (
+          <Stack gap="condensed">
+            <Text><strong>Repeat avoidance</strong></Text>
+            <Tip>
+              Conference-wide avoid: never assign a participant to a session
+              they&apos;ve already attended in any earlier slot of the conference.
+            </Tip>
+            <Stack direction="row" gap="condensed">
+              <Button
+                size="small"
+                variant={avoidRepeats ? "primary" : "default"}
+                onClick={() => setAvoidRepeats(true)}
+              >
+                Avoid repeats
+              </Button>
+              <Button
+                size="small"
+                variant={!avoidRepeats ? "primary" : "default"}
+                onClick={() => setAvoidRepeats(false)}
+              >
+                Allow repeats
+              </Button>
+            </Stack>
+          </Stack>
+        )}
+
+        <Stack gap="condensed">
+          <Text><strong>Cross-offering rotation</strong></Text>
+          <Tip>
+            When on (the default), a participant placed in a session in one
+            offering won&apos;t be re-placed in the same session in a sibling
+            offering — so duplicating a slot to add capacity actually
+            rotates people through. Turn off for series where attending
+            twice is the point (e.g. an open discussion that runs three
+            times).
+          </Tip>
+          <Stack direction="row" gap="condensed">
+            <Button
+              size="small"
+              variant={acrossSiblings ? "primary" : "default"}
+              onClick={() => setAcrossSiblings(true)}
+            >
+              Rotate across offerings
+            </Button>
+            <Button
+              size="small"
+              variant={!acrossSiblings ? "primary" : "default"}
+              onClick={() => setAcrossSiblings(false)}
+            >
+              Allow re-attendance
+            </Button>
+          </Stack>
+        </Stack>
+
+        <Stack direction="row" gap="condensed">
+          <Button variant="primary" onClick={() => save(false)} disabled={busy}>
+            Save series
+          </Button>
+        </Stack>
+
+        <Stack gap="condensed">
+          <Text muted>
+            <strong>Series lifecycle.</strong> &ldquo;Disband&rdquo; keeps every
+            offering as a standalone slot. &ldquo;Delete with offerings&rdquo; removes
+            the series and every offering in it.
+          </Text>
+          <Stack direction="row" gap="condensed" wrap>
+            <Button onClick={() => deleteSeries("series_only")} disabled={busy}>
+              Disband series
+            </Button>
+            <Button variant="danger" onClick={() => deleteSeries("with_slots")} disabled={busy}>
+              Delete with offerings
+            </Button>
+          </Stack>
+        </Stack>
+      </Stack>
+
+      {pendingConfirm && (
+        <Sheet
+          open
+          onClose={() => setPendingConfirm(null)}
+          title="Confirm series change"
+        >
+          <Stack gap="condensed">
+            <Text>
+              This change would remove existing assignments from one or
+              more offerings:
+            </Text>
+            <Stack gap="condensed">
+              {pendingConfirm.removed_track_assignments > 0 && (
+                <Text>
+                  • {pendingConfirm.removed_track_assignments} track
+                  assignment(s) in planned offerings
+                </Text>
+              )}
+              {pendingConfirm.removed_unconference_placements > 0 && (
+                <Text>
+                  • {pendingConfirm.removed_unconference_placements}{" "}
+                  unconference placement(s)
+                </Text>
+              )}
+              {pendingConfirm.removed_user_assignments > 0 && (
+                <Text>
+                  • {pendingConfirm.removed_user_assignments}{" "}
+                  participant assignment(s) affected
+                </Text>
+              )}
+              {pendingConfirm.removed_room_ids.length > 0 && (
+                <Text muted>
+                  Rooms dropped from the pool:{" "}
+                  {pendingConfirm.removed_room_ids
+                    .map((id) => roomNameById.get(id) ?? `#${id}`)
+                    .join(", ")}
+                </Text>
+              )}
+              {pendingConfirm.removed_submission_ids.length > 0 && (
+                <Text muted>
+                  Sessions dropped from the pool:{" "}
+                  {pendingConfirm.removed_submission_ids
+                    .map((id) => subTitleById.get(id) ?? `#${id}`)
+                    .join(", ")}
+                </Text>
+              )}
+            </Stack>
+            <Stack direction="row" gap="condensed">
+              <Button variant="danger" onClick={() => save(true)} disabled={busy}>
+                Apply and remove
+              </Button>
+              <Button onClick={() => setPendingConfirm(null)} disabled={busy}>
+                Cancel
+              </Button>
+            </Stack>
+          </Stack>
+        </Sheet>
+      )}
     </Card>
   );
 }
@@ -2414,6 +2966,7 @@ function MixerBody({
   const selectedRooms = rooms.filter((r) => selected.has(r.id));
   const totalCapacity = selectedRooms.reduce((acc, r) => acc + r.capacity, 0);
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
+  const toast = useToast();
 
   // Persist a new selection. If every conference room ends up selected we
   // store `unconfUseAllRooms=true` so newly-added rooms auto-participate;
@@ -2429,7 +2982,7 @@ function MixerBody({
       });
       await onChange();
     } catch (e) {
-      alert(errorCode(e));
+      toast.error(errorCode(e));
     }
   }
 
@@ -2461,7 +3014,7 @@ function MixerBody({
       });
       await onChange();
     } catch (e) {
-      alert(errorCode(e));
+      toast.error(errorCode(e));
     }
   }
 

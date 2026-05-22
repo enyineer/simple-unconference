@@ -57,87 +57,30 @@ export interface Room {
   tags: string[];
 }
 
-export interface Submission {
-  id: number;
-  submitter_id: number;
-  submitter_name: string | null;
-  /** Only mods/owners see this; participants get null. */
-  submitter_email: string | null;
-  title: string;
-  description: string;
-  status: "submitted" | "published" | "rejected";
-  star_count: number;
-  starred_by_me: boolean;
-  created_at: number;
-  tags: string[];
-  requirements: string[];
-  /** Required room features. The assignment algorithm filters candidate
-   * rooms to those whose tag set is a superset of these values. Frozen
-   * once the session is published (submitters can no longer edit; mods can).
-   * Empty array means "any room is fine." */
-  room_requirements: string[];
-  /** Per-submission override of the conference's max placements cap.
-   * `null` means "inherit". Mods/owners can set this from the Sessions tab. */
-  max_placements: number | null;
-  /** Moderator override — true treats this session as finished regardless of
-   * placement count. */
-  manually_finished: boolean;
-  /** Moderator-set pre-assignment to a specific room. When set, the
-   * unconference algorithm pins this submission to this room (overriding
-   * star-based placement). `null` means "auto-place". */
-  pre_assigned_room_id: number | null;
-  /** Moderator-set: when true, this session can be placed (or its
-   * submitter can host) in multiple overlapping slots. Default false
-   * enforces the no-overlap rule. */
-  allow_overlapping_placements: boolean;
-  /** Static TrackAssignment + UnconferencePlacement total for this session. */
-  placement_count: number;
-  /** Resolved against the conference default. Finished sessions are excluded
-   * from future unconference assignment pools; participants don't see them
-   * on the Sessions overview. */
-  is_finished: boolean;
-}
+// Re-exported from the contract — `Submission` is the wire shape for
+// `submissions.list` / `submissions.update` etc. Duplicating it client-side
+// just creates drift, so we take the contract type directly.
+import type { SubmissionOut } from "../../shared/contract";
+export type Submission = SubmissionOut;
 
-export interface Slot {
-  id: number;
-  type: "normal" | "unconference" | "mixer";
-  title: string | null;
-  description: string | null;
-  starts_at: number;
-  ends_at: number;
-  unconf_use_all_rooms: boolean;
-  unconf_use_all_submissions: boolean;
-  unconf_avoid_repeats: boolean;
-  /** Mixer-only override of the conference's default avoid-repeats mode.
-   * `null` = inherit; `true` = exclusive mix; `false` = fresh shuffle. */
-  mixer_avoid_repeats: boolean | null;
-  /** Resolved (override → conference default) avoid-repeats mode. The
-   * algorithm uses this on the server; the UI shows it for display. */
-  mixer_avoid_repeats_effective: boolean;
-  unconf_room_ids: number[];
-  unconf_submission_ids: number[];
-}
-
-export interface Track {
-  id: number;
-  slot_id: number;
-  room_id: number;
-  submission_id: number | null;
-  title: string | null;
-  speakers: string | null;
-  star_count: number;
-  starred_by_me: boolean;
-  /** Per-track prerequisites (e.g. "laptop"). Set by mods in the
-   *  TrackEditor; independent of any linked submission's requirements. */
-  requirements: string[];
-  /** Moderator flag: when true, the track is force-attended for every
-   *  participant. The UI hides/disables the star toggle and renders a
-   *  "Required" badge. */
-  mandatory: boolean;
-}
+// Re-export the contract types directly — these are pure data shapes the
+// server returns, so duplicating them client-side just creates drift risk.
+// (The other types in this file should follow this pattern over time; not
+// touching them in this PR to keep the diff focused on slot series + Path C.)
+import type {
+  SlotOut, SlotSeriesOut, TrackOut, UpdateSeriesResult,
+} from "../../shared/contract";
+export type Slot = SlotOut;
+export type SlotSeries = SlotSeriesOut;
+export type Track = TrackOut;
+export type { UpdateSeriesResult };
 
 export interface AgendaData {
   slots: Slot[];
+  /** Every series in the conference. The client uses this to render the
+   *  series-level edit form and to count siblings without re-deriving from
+   *  `slots`. */
+  slot_series: SlotSeries[];
   tracks: Track[];
   /** Unconference placements; `attendee_count` is the number of users
    * currently assigned to that submission in that slot (used to compute
@@ -153,27 +96,5 @@ export interface AgendaData {
   mixer_placements: { slot_id: number; room_id: number; attendee_count: number }[];
 }
 
-export interface MyAssignments {
-  assignments: {
-    source: "unconference" | "static" | "mixer" | "expert";
-    /** Null for expert bookings (no AgendaSlot backs them). */
-    slot_id: number | null;
-    submission_id: number | null;
-    room_id: number | null;
-    /** Denormalized event window — present on every row. */
-    starts_at: number;
-    ends_at: number;
-    title: string | null;
-    /** Only set on unconference + mixer rows. True when the user picked this
-     * session themselves; false when the algorithm placed them. */
-    manual?: boolean;
-    /** Present on expert-source rows so the UI can offer cancellation. */
-    booking_id?: number;
-    /** Expert rows only: "booker" when the user reserved an expert,
-     * "expert" when someone booked this user as an expert. */
-    expert_role?: "booker" | "expert";
-    /** Static rows only: true when the track is moderator-marked mandatory. */
-    mandatory?: boolean;
-  }[];
-  unplaced_slots: number[];
-}
+import type { MyAssignmentsOut } from "../../shared/contract";
+export type MyAssignments = MyAssignmentsOut;

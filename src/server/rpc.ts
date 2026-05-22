@@ -27,6 +27,7 @@ import {
   type Role,
 } from "./lib/permissions";
 import { assignUnconferenceSlot, assignMixerSlot, pairKey, type AssignmentInput } from "./assignment";
+import { effectiveSlotConfig, SLOT_CONFIG_INCLUDE } from "./lib/slot-config";
 import { deriveSlots, pickAvailableRoom } from "./experts";
 import { notify, notifyMany, modIdentityIds, notifyQuotaThreshold } from "./notifications";
 import {
@@ -1107,6 +1108,18 @@ const submissionsRouter = {
           tags: { select: { value: true }, orderBy: { value: "asc" } },
           requirements: { select: { value: true }, orderBy: { value: "asc" } },
           roomRequirements: { select: { value: true }, orderBy: { value: "asc" } },
+          // Path C: every TrackAssignment whose submissionId points at this
+          // sub. The Sessions tab uses this to render the inline "Scheduled
+          // at: 10:00 Hall · 14:00 Hall" hint so users can see, at the
+          // moment they're starring, where the planned schedule will pick
+          // their interest up.
+          trackAssignments: {
+            include: {
+              slot: { select: { startsAt: true, endsAt: true } },
+              room: { select: { id: true, name: true } },
+            },
+            orderBy: { slot: { startsAt: "asc" } },
+          },
         },
         orderBy: { createdAt: "desc" },
       }),
@@ -1144,15 +1157,22 @@ const submissionsRouter = {
         allow_overlapping_placements: s.allowOverlappingPlacements,
         placement_count: placementCount,
         is_finished,
+        scheduled_in: s.trackAssignments.map((t) => ({
+          slot_id: t.slotId,
+          starts_at: t.slot.startsAt.getTime(),
+          ends_at: t.slot.endsAt.getTime(),
+          room_id: t.roomId,
+          room_name: t.room.name,
+        })),
       };
     });
 
-    // Hide finished sessions from non-mods on the overview. Mods/owners still
-    // see them (rendered with a "finished" badge in the UI) so they can flip
-    // the manual override or bump the cap.
-    const visible = isMod ? rows : rows.filter((r) => !r.is_finished);
-
-    return visible.sort((a, b) =>
+    // Path C: `is_finished` is informational only. Participants still see
+    // every published submission, including fully-scheduled ones, so they
+    // can star (and have planned tracks land on their schedule via the
+    // derivation rule). Mods see the same list (plus their own drafts /
+    // rejected when filtered).
+    return rows.sort((a, b) =>
       b.star_count !== a.star_count ? b.star_count - a.star_count : b.created_at - a.created_at,
     );
   }),
@@ -1481,24 +1501,22 @@ async function runAssignmentForSlot(
 ) {
   const slot = await prisma.agendaSlot.findUniqueOrThrow({
     where: { id: slotId },
-    include: {
-      selectedRooms: { select: { roomId: true } },
-      selectedSubmissions: { select: { submissionId: true } },
-    },
+    include: SLOT_CONFIG_INCLUDE,
   });
+  const cfg = effectiveSlotConfig(slot);
 
-  const roomWhere = slot.unconfUseAllRooms
+  const roomWhere = cfg.unconfUseAllRooms
     ? { conferenceId: confId }
-    : { conferenceId: confId, id: { in: slot.selectedRooms.map((r) => r.roomId) } };
+    : { conferenceId: confId, id: { in: cfg.roomIds } };
   let rooms = await prisma.room.findMany({
     where: roomWhere, select: { id: true, capacity: true, name: true },
   });
 
-  const subWhere = slot.unconfUseAllSubmissions
+  const subWhere = cfg.unconfUseAllSubmissions
     ? { conferenceId: confId, status: "published" as const }
     : {
         conferenceId: confId, status: "published" as const,
-        id: { in: slot.selectedSubmissions.map((s) => s.submissionId) },
+        id: { in: cfg.submissionIds },
       };
   const rawSubs = await prisma.submission.findMany({
     where: subWhere,
@@ -1527,7 +1545,6 @@ async function runAssignmentForSlot(
       where: {
         slotId: { not: slotId },
         slot: { conferenceId: confId },
-        submissionId: { not: null },
       },
       _count: { submissionId: true },
     }),
@@ -1540,7 +1557,6 @@ async function runAssignmentForSlot(
     placementCountBySub.set(p.submissionId, (placementCountBySub.get(p.submissionId) ?? 0) + p._count.submissionId);
   }
   for (const t of otherTracks) {
-    if (t.submissionId === null) continue;
     placementCountBySub.set(t.submissionId, (placementCountBySub.get(t.submissionId) ?? 0) + t._count.submissionId);
   }
   let eligibleSubs = rawSubs.filter((s) => {
@@ -1614,7 +1630,7 @@ async function runAssignmentForSlot(
       }
       for (const t of overlapTracks) {
         excludedRoomIds.add(t.roomId);
-        if (t.submissionId !== null) overlapPlacedSessionIds.add(t.submissionId);
+        overlapPlacedSessionIds.add(t.submissionId);
       }
       for (const a of overlapAssigns) {
         busyUserIds.add(a.userId);
@@ -1997,16 +2013,46 @@ async function runAssignmentForSlot(
     topNSubs.splice(0, topNSubs.length, ...trial);
   }
 
+  // Build the prior-assignments map the algorithm uses to skip "user already
+  // attended this submission in a previous slot."
+  //
+  // Two independent axes decide which prior UserAssignments count:
+  //   - Conference-wide repeats: when the *current* slot has
+  //     `unconfAvoidRepeats=true`, prior assignments in NON-sibling slots
+  //     are included (the existing default).
+  //   - Cross-sibling repeats: when the current slot belongs to a series
+  //     and that series has `avoidRepeatsAcrossSiblings=true`, prior
+  //     assignments in SIBLING slots are included.
+  //
+  // The two flags are independent, so the four combinations cover every
+  // case mods asked for: full conference-wide avoid + sibling avoid
+  // (workshop repeated for capacity); conference-wide off + sibling on
+  // (only series-local rotation); conference-wide on + sibling off
+  // (sibling-exempt — "open discussion runs 3x, you can attend all 3");
+  // both off (do not avoid anything).
+  const siblingSlotIds = cfg.series
+    ? (await prisma.agendaSlot.findMany({
+        where: { seriesId: cfg.series.id, id: { not: slotId } },
+        select: { id: true },
+      })).map((s) => s.id)
+    : [];
+  const siblingSet = new Set(siblingSlotIds);
+  const conferenceWideAvoid = cfg.unconfAvoidRepeats;
+  const acrossSiblingsAvoid = cfg.series?.avoidRepeatsAcrossSiblings ?? false;
+
   const prior = await prisma.userAssignment.findMany({
     where: {
       slot: { conferenceId: confId, type: "unconference", id: { not: slotId } },
       submissionId: { not: null },
     },
-    select: { userId: true, submissionId: true },
+    select: { userId: true, submissionId: true, slotId: true },
   });
   const priorAssignments = new Map<number, Set<number>>();
   for (const p of prior) {
     if (p.submissionId === null) continue;
+    const isSibling = siblingSet.has(p.slotId);
+    const include = isSibling ? acrossSiblingsAvoid : conferenceWideAvoid;
+    if (!include) continue;
     let set = priorAssignments.get(p.userId);
     if (!set) { set = new Set(); priorAssignments.set(p.userId, set); }
     set.add(p.submissionId);
@@ -2029,7 +2075,11 @@ async function runAssignmentForSlot(
     rooms: rooms.map((r) => ({ id: r.id, capacity: r.capacity })),
     submissions: topNSubs.map((s) => ({ id: s.id, submitter_id: s.submitterId })),
     stars, priorAssignments,
-    avoidRepeats: slot.unconfAvoidRepeats,
+    // The algorithm only consults `priorAssignments` when this is true. We
+    // pre-filtered the map per-axis above, so passing true whenever either
+    // axis wants avoidance yields the right behaviour with an empty map
+    // (no-op) when neither does.
+    avoidRepeats: conferenceWideAvoid || acrossSiblingsAvoid,
     fixedAssignments,
     preAssignments,
   };
@@ -2074,16 +2124,17 @@ async function runAssignmentForSlot(
 async function runMixerForSlot(prisma: PrismaClient, confId: number, slotId: number) {
   const slot = await prisma.agendaSlot.findUniqueOrThrow({
     where: { id: slotId },
-    include: { selectedRooms: { select: { roomId: true } } },
+    include: SLOT_CONFIG_INCLUDE,
   });
+  const cfg = effectiveSlotConfig(slot);
   const conf = await prisma.conference.findUniqueOrThrow({
     where: { id: confId },
     select: { mixerAvoidRepeatsDefault: true },
   });
 
-  const roomWhere = slot.unconfUseAllRooms
+  const roomWhere = cfg.unconfUseAllRooms
     ? { conferenceId: confId }
-    : { conferenceId: confId, id: { in: slot.selectedRooms.map((r) => r.roomId) } };
+    : { conferenceId: confId, id: { in: cfg.roomIds } };
   let rooms = await prisma.room.findMany({
     where: roomWhere, select: { id: true, capacity: true, name: true },
   });
@@ -2146,24 +2197,55 @@ async function runMixerForSlot(prisma: PrismaClient, confId: number, slotId: num
     .map((i) => i.id)
     .filter((id) => !busyUserIds.has(id));
 
-  // Resolve the slot's effective mode against the conference default. When
-  // exclusive, gather pairings from every OTHER exclusive mixer in the
-  // conference. "Other" excludes this slot itself so re-running a mixer
-  // doesn't avoid the pairings it produced last time (which would force the
-  // algorithm to scramble pointlessly on every rerun).
-  const effectiveAvoid = slot.mixerAvoidRepeats ?? conf.mixerAvoidRepeatsDefault;
+  // Pairing avoidance has the same two independent axes as unconference
+  // avoid-repeats (see runAssignmentForSlot for the rationale):
+  //   - Conference-wide: when *this* slot is exclusive, gather pairings
+  //     from every other exclusive mixer EXCEPT siblings.
+  //   - Cross-sibling: when this slot's series has
+  //     `avoidRepeatsAcrossSiblings=true`, gather pairings from every
+  //     sibling regardless of each sibling's own `mixerAvoidRepeats`
+  //     (the series-level opt-in trumps the per-slot setting for siblings).
+  // "Other" still excludes this slot itself so re-running doesn't avoid
+  // its own pairings.
+  const conferenceWideAvoid = cfg.mixerAvoidRepeats ?? conf.mixerAvoidRepeatsDefault;
+  const siblingSlotIds = cfg.series
+    ? (await prisma.agendaSlot.findMany({
+        where: { seriesId: cfg.series.id, id: { not: slotId } },
+        select: { id: true },
+      })).map((s) => s.id)
+    : [];
+  const siblingSet = new Set(siblingSlotIds);
+  const acrossSiblingsAvoid = cfg.series?.avoidRepeatsAcrossSiblings ?? false;
+
   let priorPairings: Set<string> | undefined;
-  if (effectiveAvoid) {
+  if (conferenceWideAvoid || (acrossSiblingsAvoid && siblingSlotIds.length > 0)) {
+    // Filtering on `type: "mixer"` against the slot column is safe because
+    // `type` is immutable per series — a sibling of a mixer series has
+    // `slot.type === "mixer"` set at duplicate time.
     const otherMixers = await prisma.agendaSlot.findMany({
       where: {
         conferenceId: confId,
         type: "mixer",
         id: { not: slotId },
       },
-      select: { id: true, mixerAvoidRepeats: true },
+      select: {
+        id: true,
+        mixerAvoidRepeats: true,
+        series: { select: { mixerAvoidRepeats: true } },
+      },
     });
     const exclusiveSlotIds = otherMixers
-      .filter((m) => (m.mixerAvoidRepeats ?? conf.mixerAvoidRepeatsDefault))
+      .filter((m) => {
+        const isSibling = siblingSet.has(m.id);
+        if (isSibling) {
+          // Siblings are included when the series opts in, regardless of
+          // each sibling's own mixerAvoidRepeats setting.
+          return acrossSiblingsAvoid;
+        }
+        if (!conferenceWideAvoid) return false;
+        const eff = m.series ? m.series.mixerAvoidRepeats : m.mixerAvoidRepeats;
+        return eff ?? conf.mixerAvoidRepeatsDefault;
+      })
       .map((m) => m.id);
     priorPairings = new Set<string>();
     if (exclusiveSlotIds.length > 0) {
@@ -2214,29 +2296,125 @@ async function runMixerForSlot(prisma: PrismaClient, confId: number, slotId: num
   };
 }
 
+// Series-with-its-rooms-and-submissions, the input shape both snapshot
+// helpers below need. We pre-load it once at the call site to avoid
+// re-fetching inside each per-member loop iteration.
+type SeriesSnapshot = {
+  id: number;
+  unconfUseAllRooms: boolean;
+  unconfUseAllSubmissions: boolean;
+  unconfAvoidRepeats: boolean;
+  mixerAvoidRepeats: boolean | null;
+  selectedRooms: { roomId: number }[];
+  selectedSubmissions: { submissionId: number }[];
+};
+
+// Copy a series's resolved config onto a member slot's own columns +
+// SlotRoom/SlotSubmission rows. The caller is responsible for clearing
+// the slot's `seriesId` (or for the caller's transaction to do so), since
+// the same helper is reused by deleteSeries / detachSeries / auto-detach.
+async function snapshotSeriesOntoSlot(
+  tx: Prisma.TransactionClient,
+  series: SeriesSnapshot,
+  slotId: number,
+) {
+  await tx.agendaSlot.update({
+    where: { id: slotId },
+    data: {
+      seriesId: null,
+      unconfUseAllRooms: series.unconfUseAllRooms,
+      unconfUseAllSubmissions: series.unconfUseAllSubmissions,
+      unconfAvoidRepeats: series.unconfAvoidRepeats,
+      mixerAvoidRepeats: series.mixerAvoidRepeats,
+    },
+  });
+  await tx.slotRoom.deleteMany({ where: { slotId } });
+  if (series.selectedRooms.length > 0) {
+    await tx.slotRoom.createMany({
+      data: series.selectedRooms.map((r) => ({ slotId, roomId: r.roomId })),
+    });
+  }
+  await tx.slotSubmission.deleteMany({ where: { slotId } });
+  if (series.selectedSubmissions.length > 0) {
+    await tx.slotSubmission.createMany({
+      data: series.selectedSubmissions.map((s) => ({ slotId, submissionId: s.submissionId })),
+    });
+  }
+}
+
+// Called after any sibling removal (deleteSlot on a series member, the
+// user-initiated detach in detachSeries). A series with 0 or 1 members is
+// pointless — the badge would read "Offering 1 of 1" and the series form
+// would offer to edit a "shared" config that's really only used by one
+// slot. We dissolve in that case: snapshot the series config onto the
+// lone survivor (so its behaviour is preserved) and delete the series.
+async function maybeAutoDetachSingleton(prisma: PrismaClient, seriesId: number) {
+  const series = await prisma.slotSeries.findUnique({
+    where: { id: seriesId },
+    include: {
+      slots: { select: { id: true } },
+      selectedRooms: { select: { roomId: true } },
+      selectedSubmissions: { select: { submissionId: true } },
+    },
+  });
+  if (!series) return;
+  if (series.slots.length > 1) return;
+  await prisma.$transaction(async (tx) => {
+    if (series.slots.length === 1) {
+      await snapshotSeriesOntoSlot(tx, series, series.slots[0]!.id);
+    }
+    await tx.slotSeries.delete({ where: { id: series.id } });
+  });
+}
+
 const agendaRouter = {
   get: requireConf("participant").agenda.get.handler(async ({ context }) => {
     const confId = context.conferenceId;
     const userId = actorIdentityId(context);
-    const [slots, tracks, placements, slotRooms, slotSubs, myStaticStars, mixerAssigns, unconfCounts, conf] = await Promise.all([
+    const [slots, series, tracks, placements, myStars, mixerAssigns, unconfCounts, conf] = await Promise.all([
+      // Every slot is read with its series + own join rows so
+      // `effectiveSlotConfig` can resolve which side owns each field. No
+      // separate SlotRoom/SlotSubmission scan is needed — the include covers
+      // both sides at once.
       context.prisma.agendaSlot.findMany({
         where: { conferenceId: confId }, orderBy: { startsAt: "asc" },
+        include: SLOT_CONFIG_INCLUDE,
       }),
+      // Surface every series in the conference so the client can render
+      // "offering 2 of 3" badges and route series-level edits.
+      context.prisma.slotSeries.findMany({
+        where: { conferenceId: confId },
+        include: {
+          selectedRooms: { select: { roomId: true } },
+          selectedSubmissions: { select: { submissionId: true } },
+          slots: { orderBy: { startsAt: "asc" }, select: { id: true } },
+        },
+      }),
+      // Tracks come with their linked submission so the client can render
+      // title + submitter without an extra round-trip, and with a per-track
+      // star count derived from the submission's stars (Path C: the planned
+      // schedule and the unconference algorithm share one Star table).
       context.prisma.trackAssignment.findMany({
         where: { slot: { conferenceId: confId } },
         include: {
-          _count: { select: { stars: true } },
+          submission: {
+            select: {
+              title: true,
+              submitterId: true,
+              _count: { select: { stars: true } },
+            },
+          },
           requirements: { select: { value: true }, orderBy: { value: "asc" } },
         },
       }),
       context.prisma.unconferencePlacement.findMany({
         where: { slot: { conferenceId: confId } },
       }),
-      context.prisma.slotRoom.findMany({ where: { slot: { conferenceId: confId } } }),
-      context.prisma.slotSubmission.findMany({ where: { slot: { conferenceId: confId } } }),
-      context.prisma.staticStar.findMany({
-        where: { userId, track: { slot: { conferenceId: confId } } },
-        select: { trackId: true },
+      // Replaces the StaticStar lookup. `starred_by_me` on a Track is now
+      // "did the viewer star the linked submission" — no per-track table.
+      context.prisma.star.findMany({
+        where: { userId, submission: { conferenceId: confId } },
+        select: { submissionId: true },
       }),
       context.prisma.userAssignment.groupBy({
         by: ["slotId", "roomId"],
@@ -2253,24 +2431,51 @@ const agendaRouter = {
         select: { mixerAvoidRepeatsDefault: true },
       }),
     ]);
-    const starredTrackIds = new Set(myStaticStars.map((s) => s.trackId));
+    const starredSubIds = new Set(myStars.map((s) => s.submissionId));
+    const siblingsBySeries = new Map<number, number[]>(
+      series.map((s) => [s.id, s.slots.map((x) => x.id)]),
+    );
     return {
-      slots: slots.map((s) => ({
-        id: s.id, type: s.type, title: s.title, description: s.description,
-        starts_at: s.startsAt.getTime(), ends_at: s.endsAt.getTime(),
+      slots: slots.map((s) => {
+        const eff = effectiveSlotConfig(s);
+        const siblings = s.seriesId ? siblingsBySeries.get(s.seriesId) ?? [] : null;
+        const offeringIndex = siblings ? siblings.indexOf(s.id) + 1 : null;
+        return {
+          id: s.id, type: s.type, title: s.title, description: s.description,
+          starts_at: s.startsAt.getTime(), ends_at: s.endsAt.getTime(),
+          unconf_use_all_rooms: eff.unconfUseAllRooms,
+          unconf_use_all_submissions: eff.unconfUseAllSubmissions,
+          unconf_avoid_repeats: eff.unconfAvoidRepeats,
+          mixer_avoid_repeats: eff.mixerAvoidRepeats,
+          mixer_avoid_repeats_effective: eff.mixerAvoidRepeats ?? conf.mixerAvoidRepeatsDefault,
+          unconf_room_ids: eff.roomIds,
+          unconf_submission_ids: eff.submissionIds,
+          series_id: s.seriesId,
+          series_offering_index: offeringIndex,
+          series_total_offerings: siblings ? siblings.length : null,
+        };
+      }),
+      slot_series: series.map((s) => ({
+        id: s.id,
+        type: s.type,
+        title: s.title,
+        description: s.description,
         unconf_use_all_rooms: s.unconfUseAllRooms,
         unconf_use_all_submissions: s.unconfUseAllSubmissions,
         unconf_avoid_repeats: s.unconfAvoidRepeats,
         mixer_avoid_repeats: s.mixerAvoidRepeats,
-        mixer_avoid_repeats_effective: s.mixerAvoidRepeats ?? conf.mixerAvoidRepeatsDefault,
-        unconf_room_ids: slotRooms.filter((r) => r.slotId === s.id).map((r) => r.roomId),
-        unconf_submission_ids: slotSubs.filter((x) => x.slotId === s.id).map((x) => x.submissionId),
+        avoid_repeats_across_siblings: s.avoidRepeatsAcrossSiblings,
+        unconf_room_ids: s.selectedRooms.map((r) => r.roomId),
+        unconf_submission_ids: s.selectedSubmissions.map((x) => x.submissionId),
+        slot_ids: s.slots.map((x) => x.id),
       })),
       tracks: tracks.map((t) => ({
         id: t.id, slot_id: t.slotId, room_id: t.roomId,
-        submission_id: t.submissionId, title: t.title, speakers: t.speakers,
-        star_count: t._count.stars,
-        starred_by_me: starredTrackIds.has(t.id),
+        submission_id: t.submissionId, speakers: t.speakers,
+        // Track display name always comes from the linked submission now.
+        title: t.submission.title,
+        star_count: t.submission._count.stars,
+        starred_by_me: starredSubIds.has(t.submissionId),
         requirements: t.requirements.map((r) => r.value),
         mandatory: t.mandatory,
       })),
@@ -2325,6 +2530,23 @@ const agendaRouter = {
       where: { id: input.id, conferenceId: context.conferenceId },
     });
     if (!slot) throw new ORPCError("NOT_FOUND");
+    // When the slot belongs to a series, config fields (rooms/submissions
+    // pool, avoid-repeats flags, etc.) are series-owned. The mod must route
+    // those edits through `agenda.updateSeries`. Per-instance fields
+    // (time, title, description) remain editable here.
+    if (slot.seriesId !== null) {
+      const seriesOwned = (
+        input.unconf_use_all_rooms !== undefined
+        || input.unconf_use_all_submissions !== undefined
+        || input.unconf_avoid_repeats !== undefined
+        || input.mixer_avoid_repeats !== undefined
+        || input.unconf_room_ids !== undefined
+        || input.unconf_submission_ids !== undefined
+      );
+      if (seriesOwned) {
+        throw new ORPCError("BAD_REQUEST", { message: "field_is_series_owned" });
+      }
+    }
     await context.prisma.$transaction(async (tx) => {
       await tx.agendaSlot.update({
         where: { id: input.id },
@@ -2374,9 +2596,391 @@ const agendaRouter = {
   }),
 
   deleteSlot: requireConf("moderator").agenda.deleteSlot.handler(async ({ input, context }) => {
-    await context.prisma.agendaSlot.deleteMany({
+    // Look up the slot's series link first — after deletion we may need to
+    // collapse the series if only one member remains (a "series of one" is
+    // just a standalone slot in disguise; keeping the wrapper around is
+    // pointless and surfaces a noisy "Offering 1 of 1" badge).
+    const slot = await context.prisma.agendaSlot.findFirst({
       where: { id: input.id, conferenceId: context.conferenceId },
+      select: { id: true, seriesId: true },
     });
+    if (!slot) return { ok: true as const };
+    await context.prisma.agendaSlot.delete({ where: { id: slot.id } });
+    if (slot.seriesId !== null) {
+      await maybeAutoDetachSingleton(context.prisma, slot.seriesId);
+    }
+    return { ok: true as const };
+  }),
+
+  duplicateSlot: requireConf("moderator").agenda.duplicateSlot.handler(async ({ input, context }) => {
+    if (input.new_ends_at <= input.new_starts_at) {
+      throw new ORPCError("BAD_REQUEST", { message: "ends_before_starts" });
+    }
+    const source = await context.prisma.agendaSlot.findFirst({
+      where: { id: input.id, conferenceId: context.conferenceId },
+      include: {
+        selectedRooms: { select: { roomId: true } },
+        selectedSubmissions: { select: { submissionId: true } },
+        // Planned slots carry their schedule content in TrackAssignment
+        // rows (one per room/track). For a duplicate to be useful — same
+        // workshop running twice, same keynote across two timeslots — we
+        // copy those rows onto the new sibling. Unconference / mixer slots
+        // have no tracks; the include just returns an empty array.
+        trackAssignments: {
+          include: { requirements: { select: { value: true } } },
+        },
+      },
+    });
+    if (!source) throw new ORPCError("NOT_FOUND");
+
+    const result = await context.prisma.$transaction(async (tx) => {
+      let seriesId = source.seriesId;
+      if (seriesId === null) {
+        // Bootstrap a series rooted at the source's current config. The
+        // series now owns these fields; the source slot's own columns and
+        // SlotRoom/SlotSubmission rows are left in place but stop being
+        // read (the resolver routes through the series).
+        const created = await tx.slotSeries.create({
+          data: {
+            conferenceId: context.conferenceId,
+            type: source.type,
+            title: source.title,
+            description: source.description,
+            unconfUseAllRooms: source.unconfUseAllRooms,
+            unconfUseAllSubmissions: source.unconfUseAllSubmissions,
+            unconfAvoidRepeats: source.unconfAvoidRepeats,
+            mixerAvoidRepeats: source.mixerAvoidRepeats,
+            // avoidRepeatsAcrossSiblings defaults to true — matches the
+            // common case where each session in the duplicated block should
+            // only land on a given attendee's schedule once.
+          },
+        });
+        seriesId = created.id;
+        if (source.selectedRooms.length > 0) {
+          await tx.seriesRoom.createMany({
+            data: source.selectedRooms.map((r) => ({ seriesId: seriesId!, roomId: r.roomId })),
+          });
+        }
+        if (source.selectedSubmissions.length > 0) {
+          await tx.seriesSubmission.createMany({
+            data: source.selectedSubmissions.map((s) => ({ seriesId: seriesId!, submissionId: s.submissionId })),
+          });
+        }
+        await tx.agendaSlot.update({
+          where: { id: source.id }, data: { seriesId },
+        });
+      }
+      // The new sibling carries only per-instance fields + the FK back to
+      // the series. Its `type` is copied because `type` is treated as
+      // immutable per series (SQL filters against agenda_slots.type need to
+      // stay correct without a join). Every other config field is left at
+      // schema default and ignored by the resolver while seriesId is set.
+      const sibling = await tx.agendaSlot.create({
+        data: {
+          conferenceId: context.conferenceId,
+          seriesId,
+          type: source.type,
+          title: input.title ?? source.title,
+          description: source.description,
+          startsAt: new Date(input.new_starts_at),
+          endsAt: new Date(input.new_ends_at),
+        },
+      });
+      // Copy each TrackAssignment onto the sibling, preserving the linked
+      // submission, optional addendum speakers, and mandatory flag.
+      // Per-user stars are not copied — under Path C they live on the
+      // Submission (not the Track), so the sibling automatically appears on
+      // every starred-by-user MyAssignments via the derivation rule.
+      // We create rows one at a time (instead of `createMany`) so we can
+      // pick up each new row's id to attach its TrackRequirement children.
+      for (const src of source.trackAssignments) {
+        const copy = await tx.trackAssignment.create({
+          data: {
+            slotId: sibling.id,
+            roomId: src.roomId,
+            submissionId: src.submissionId,
+            speakers: src.speakers,
+            mandatory: src.mandatory,
+          },
+          select: { id: true },
+        });
+        if (src.requirements.length > 0) {
+          await tx.trackRequirement.createMany({
+            data: src.requirements.map((r) => ({ trackId: copy.id, value: r.value })),
+          });
+        }
+      }
+      return { slotId: sibling.id, seriesId: seriesId! };
+    });
+
+    return { slot_id: result.slotId, series_id: result.seriesId };
+  }),
+
+  updateSeries: requireConf("moderator").agenda.updateSeries.handler(async ({ input, context }) => {
+    const series = await context.prisma.slotSeries.findFirst({
+      where: { id: input.id, conferenceId: context.conferenceId },
+      include: {
+        slots: { select: { id: true } },
+        selectedRooms: { select: { roomId: true } },
+        selectedSubmissions: { select: { submissionId: true } },
+      },
+    });
+    if (!series) throw new ORPCError("NOT_FOUND");
+
+    const memberSlotIds = series.slots.map((s) => s.id);
+
+    // Compute pool diffs to identify what would be orphaned. We only need
+    // to check track assignments + placements when a pool field is being
+    // tightened (use-all flipped off, or items removed from the explicit
+    // list). When use-all is staying on, no rooms or submissions can be
+    // dropped, so no orphans are possible.
+    const nextUseAllRooms = input.unconf_use_all_rooms ?? series.unconfUseAllRooms;
+    const nextUseAllSubs  = input.unconf_use_all_submissions ?? series.unconfUseAllSubmissions;
+    const nextRoomIds = input.unconf_room_ids ?? series.selectedRooms.map((r) => r.roomId);
+    const nextSubIds  = input.unconf_submission_ids ?? series.selectedSubmissions.map((s) => s.submissionId);
+
+    let orphanedTrackIds: number[] = [];
+    let orphanedPlacementKeys: { slotId: number; submissionId: number }[] = [];
+    let removedRoomIds: number[] = [];
+    let removedSubmissionIds: number[] = [];
+
+    if (memberSlotIds.length > 0) {
+      // Track assignments live on AgendaSlot via roomId + submissionId. They
+      // become orphans when their room or submission falls out of the
+      // narrowed pool. Same for unconference placements.
+      if (!nextUseAllRooms) {
+        const okRooms = new Set(nextRoomIds);
+        const prevRooms = new Set(series.selectedRooms.map((r) => r.roomId));
+        // When use-all flipped from true → false, *every* room not in
+        // nextRoomIds is "removed." When the list narrowed in place,
+        // removed = prev \ next.
+        if (series.unconfUseAllRooms) {
+          // Can't list all conference rooms cheaply without an extra query;
+          // any track/placement with a roomId not in okRooms is orphaned.
+          const tracks = await context.prisma.trackAssignment.findMany({
+            where: { slotId: { in: memberSlotIds }, NOT: { roomId: { in: nextRoomIds } } },
+            select: { id: true, roomId: true },
+          });
+          orphanedTrackIds = tracks.map((t) => t.id);
+          const places = await context.prisma.unconferencePlacement.findMany({
+            where: { slotId: { in: memberSlotIds }, NOT: { roomId: { in: nextRoomIds } } },
+            select: { slotId: true, submissionId: true, roomId: true },
+          });
+          orphanedPlacementKeys = places.map((p) => ({ slotId: p.slotId, submissionId: p.submissionId }));
+          removedRoomIds = [...new Set([...tracks.map((t) => t.roomId), ...places.map((p) => p.roomId)])];
+        } else {
+          const dropped = [...prevRooms].filter((id) => !okRooms.has(id));
+          if (dropped.length > 0) {
+            const tracks = await context.prisma.trackAssignment.findMany({
+              where: { slotId: { in: memberSlotIds }, roomId: { in: dropped } },
+              select: { id: true },
+            });
+            orphanedTrackIds = tracks.map((t) => t.id);
+            const places = await context.prisma.unconferencePlacement.findMany({
+              where: { slotId: { in: memberSlotIds }, roomId: { in: dropped } },
+              select: { slotId: true, submissionId: true },
+            });
+            orphanedPlacementKeys = places.map((p) => ({ slotId: p.slotId, submissionId: p.submissionId }));
+            removedRoomIds = dropped;
+          }
+        }
+      }
+      if (!nextUseAllSubs) {
+        const okSubs = new Set(nextSubIds);
+        const prevSubs = new Set(series.selectedSubmissions.map((s) => s.submissionId));
+        if (series.unconfUseAllSubmissions) {
+          const tracks = await context.prisma.trackAssignment.findMany({
+            where: {
+              slotId: { in: memberSlotIds },
+              NOT: { submissionId: { in: nextSubIds } },
+            },
+            select: { id: true, submissionId: true },
+          });
+          orphanedTrackIds = [...new Set([...orphanedTrackIds, ...tracks.map((t) => t.id)])];
+          const places = await context.prisma.unconferencePlacement.findMany({
+            where: { slotId: { in: memberSlotIds }, NOT: { submissionId: { in: nextSubIds } } },
+            select: { slotId: true, submissionId: true },
+          });
+          orphanedPlacementKeys = [
+            ...orphanedPlacementKeys,
+            ...places.map((p) => ({ slotId: p.slotId, submissionId: p.submissionId })),
+          ];
+          removedSubmissionIds = [...new Set([
+            ...tracks.map((t) => t.submissionId),
+            ...places.map((p) => p.submissionId),
+          ])];
+        } else {
+          const dropped = [...prevSubs].filter((id) => !okSubs.has(id));
+          if (dropped.length > 0) {
+            const tracks = await context.prisma.trackAssignment.findMany({
+              where: { slotId: { in: memberSlotIds }, submissionId: { in: dropped } },
+              select: { id: true },
+            });
+            orphanedTrackIds = [...new Set([...orphanedTrackIds, ...tracks.map((t) => t.id)])];
+            const places = await context.prisma.unconferencePlacement.findMany({
+              where: { slotId: { in: memberSlotIds }, submissionId: { in: dropped } },
+              select: { slotId: true, submissionId: true },
+            });
+            orphanedPlacementKeys = [
+              ...orphanedPlacementKeys,
+              ...places.map((p) => ({ slotId: p.slotId, submissionId: p.submissionId })),
+            ];
+            removedSubmissionIds = dropped;
+          }
+        }
+      }
+    }
+
+    if ((orphanedTrackIds.length > 0 || orphanedPlacementKeys.length > 0) && !input.confirm) {
+      // UserAssignments hang off both tracks and placements, but participant-
+      // schedule rows derived from them get cleaned up implicitly when we
+      // delete the parent (no FK cascade — handled below in the apply path).
+      // We surface a precise count for the confirm dialog.
+      const userAssignCount = await context.prisma.userAssignment.count({
+        where: {
+          slotId: { in: memberSlotIds },
+          OR: [
+            ...(orphanedPlacementKeys.length > 0
+              ? [{ OR: orphanedPlacementKeys.map(({ slotId, submissionId }) => ({ slotId, submissionId })) }]
+              : []),
+          ],
+        },
+      });
+      return {
+        kind: "needs_confirmation" as const,
+        removed_track_assignments: orphanedTrackIds.length,
+        removed_unconference_placements: orphanedPlacementKeys.length,
+        removed_user_assignments: userAssignCount,
+        removed_room_ids: removedRoomIds,
+        removed_submission_ids: removedSubmissionIds,
+      };
+    }
+
+    // Apply the patch: write SlotSeries + replace its join tables. The
+    // resolver (effectiveSlotConfig) routes every read through these rows
+    // for series members, so no per-slot propagation is needed — the slots'
+    // own columns and SlotRoom/SlotSubmission stay where they were (stale
+    // and unread until/unless the slot is detached).
+    await context.prisma.$transaction(async (tx) => {
+      await tx.slotSeries.update({
+        where: { id: series.id },
+        data: {
+          title: input.title ?? undefined,
+          description: input.description ?? undefined,
+          unconfUseAllRooms: input.unconf_use_all_rooms ?? undefined,
+          unconfUseAllSubmissions: input.unconf_use_all_submissions ?? undefined,
+          unconfAvoidRepeats: input.unconf_avoid_repeats ?? undefined,
+          mixerAvoidRepeats: input.mixer_avoid_repeats === undefined
+            ? undefined
+            : input.mixer_avoid_repeats,
+          avoidRepeatsAcrossSiblings: input.avoid_repeats_across_siblings ?? undefined,
+        },
+      });
+
+      if (input.unconf_room_ids !== undefined) {
+        const validRooms = await tx.room.findMany({
+          where: { conferenceId: context.conferenceId, id: { in: input.unconf_room_ids } },
+          select: { id: true },
+        });
+        const ok = [...new Set(validRooms.map((r) => r.id))];
+        await tx.seriesRoom.deleteMany({ where: { seriesId: series.id } });
+        if (ok.length > 0) {
+          await tx.seriesRoom.createMany({ data: ok.map((roomId) => ({ seriesId: series.id, roomId })) });
+        }
+      }
+      if (input.unconf_submission_ids !== undefined) {
+        const validSubs = await tx.submission.findMany({
+          where: { conferenceId: context.conferenceId, id: { in: input.unconf_submission_ids } },
+          select: { id: true },
+        });
+        const ok = [...new Set(validSubs.map((s) => s.id))];
+        await tx.seriesSubmission.deleteMany({ where: { seriesId: series.id } });
+        if (ok.length > 0) {
+          await tx.seriesSubmission.createMany({
+            data: ok.map((submissionId) => ({ seriesId: series.id, submissionId })),
+          });
+        }
+      }
+
+      // Cascade-delete orphans (caller supplied `confirm: true` or there
+      // were none to begin with). UserAssignments tied to dropped placements
+      // go too, so participant schedules don't reference removed sessions.
+      if (orphanedTrackIds.length > 0) {
+        await tx.trackAssignment.deleteMany({ where: { id: { in: orphanedTrackIds } } });
+      }
+      if (orphanedPlacementKeys.length > 0) {
+        for (const { slotId, submissionId } of orphanedPlacementKeys) {
+          await tx.unconferencePlacement.deleteMany({ where: { slotId, submissionId } });
+          await tx.userAssignment.deleteMany({ where: { slotId, submissionId } });
+        }
+      }
+    });
+
+    return { kind: "ok" as const };
+  }),
+
+  detachSeries: requireConf("moderator").agenda.detachSeries.handler(async ({ input, context }) => {
+    const slot = await context.prisma.agendaSlot.findFirst({
+      where: { id: input.slot_id, conferenceId: context.conferenceId },
+      include: {
+        series: {
+          include: {
+            selectedRooms: { select: { roomId: true } },
+            selectedSubmissions: { select: { submissionId: true } },
+          },
+        },
+      },
+    });
+    if (!slot) throw new ORPCError("NOT_FOUND");
+    if (slot.seriesId === null || !slot.series) {
+      throw new ORPCError("BAD_REQUEST", { message: "not_in_series" });
+    }
+    const series = slot.series;
+    // Snapshot the series's current config onto the slot's own columns and
+    // join rows, then clear the FK. After this the slot is standalone and
+    // behaves exactly as it did while linked. `type` is already in sync
+    // (immutable per series).
+    await context.prisma.$transaction(async (tx) => {
+      await snapshotSeriesOntoSlot(tx, series, slot.id);
+    });
+    // If detaching this slot leaves the series with one remaining member,
+    // there's no point keeping the series around — auto-detach the
+    // singleton too.
+    await maybeAutoDetachSingleton(context.prisma, series.id);
+    return { ok: true as const };
+  }),
+
+  deleteSeries: requireConf("moderator").agenda.deleteSeries.handler(async ({ input, context }) => {
+    const series = await context.prisma.slotSeries.findFirst({
+      where: { id: input.id, conferenceId: context.conferenceId },
+      include: {
+        slots: { select: { id: true } },
+        selectedRooms: { select: { roomId: true } },
+        selectedSubmissions: { select: { submissionId: true } },
+      },
+    });
+    if (!series) throw new ORPCError("NOT_FOUND");
+    if (input.mode === "series_only") {
+      // Snapshot the series's config onto each member before detaching, so
+      // every surviving slot keeps its current effective config as a
+      // standalone slot.
+      await context.prisma.$transaction(async (tx) => {
+        for (const member of series.slots) {
+          await snapshotSeriesOntoSlot(tx, series, member.id);
+        }
+        await tx.slotSeries.delete({ where: { id: series.id } });
+      });
+    } else {
+      // mode === "with_slots": every sibling goes too. Delete slots first
+      // (the FK is SetNull, so dropping the series alone would just orphan
+      // the members rather than removing them).
+      await context.prisma.$transaction([
+        context.prisma.agendaSlot.deleteMany({
+          where: { id: { in: series.slots.map((s) => s.id) } },
+        }),
+        context.prisma.slotSeries.delete({ where: { id: series.id } }),
+      ]);
+    }
     return { ok: true as const };
   }),
 
@@ -2386,6 +2990,14 @@ const agendaRouter = {
     });
     if (!slot) throw new ORPCError("NOT_FOUND");
     if (slot.type !== "normal") throw new ORPCError("BAD_REQUEST", { message: "not_a_static_slot" });
+    // Path C: every planned track is anchored to a Submission. Custom-title
+    // tracks no longer exist — to schedule an invited speaker who isn't a
+    // participant, the mod creates a Submission for them first.
+    const submission = await context.prisma.submission.findFirst({
+      where: { id: input.submission_id, conferenceId: context.conferenceId },
+      select: { id: true },
+    });
+    if (!submission) throw new ORPCError("BAD_REQUEST", { message: "submission_not_in_conference" });
     const speakers = (input.speakers ?? "").trim() || null;
     // Track requirements are replaced (not merged) on each save so the
     // editor's "clear all" intent is honored. When omitted, leave the
@@ -2399,13 +3011,13 @@ const agendaRouter = {
         where: { slotId_roomId: { slotId: input.slot_id, roomId: input.room_id } },
         create: {
           slotId: input.slot_id, roomId: input.room_id,
-          submissionId: input.submission_id ?? null,
-          title: input.title ?? null, speakers,
+          submissionId: input.submission_id,
+          speakers,
           mandatory: input.mandatory ?? false,
         },
         update: {
-          submissionId: input.submission_id ?? null,
-          title: input.title ?? null, speakers,
+          submissionId: input.submission_id,
+          speakers,
           // Omit from update payload when client didn't send it, so existing
           // value sticks (avoids clobbering a mod-toggled flag on unrelated edits).
           mandatory: input.mandatory ?? undefined,
@@ -2435,38 +3047,10 @@ const agendaRouter = {
     return { ok: true as const };
   }),
 
-  starTrack: requireConf("participant").agenda.starTrack.handler(async ({ input, context }) => {
-    const t = await context.prisma.trackAssignment.findFirst({
-      where: { id: input.track_id, slotId: input.slot_id, slot: { conferenceId: context.conferenceId } },
-      select: { id: true, mandatory: true, slot: { select: { type: true } } },
-    });
-    if (!t) throw new ORPCError("NOT_FOUND");
-    if (t.slot.type !== "normal") throw new ORPCError("BAD_REQUEST", { message: "not_a_static_track" });
-    // Mandatory tracks are force-attended — starring is a no-op. We accept it
-    // silently so a client that hasn't refreshed yet doesn't error out.
-    if (t.mandatory) return { ok: true as const };
-    const myIdentityId = actorIdentityId(context);
-    await context.prisma.staticStar.upsert({
-      where: { userId_trackId: { userId: myIdentityId, trackId: input.track_id } },
-      create: { userId: myIdentityId, trackId: input.track_id },
-      update: {},
-    });
-    return { ok: true as const };
-  }),
-
-  unstarTrack: requireConf("participant").agenda.unstarTrack.handler(async ({ input, context }) => {
-    const t = await context.prisma.trackAssignment.findFirst({
-      where: { id: input.track_id, slot: { conferenceId: context.conferenceId } },
-      select: { id: true, mandatory: true },
-    });
-    if (!t) throw new ORPCError("NOT_FOUND");
-    // Mandatory tracks can't be unstarred — they're force-attended by design.
-    if (t.mandatory) throw new ORPCError("FORBIDDEN", { message: "track_is_mandatory" });
-    await context.prisma.staticStar.deleteMany({
-      where: { userId: actorIdentityId(context), trackId: input.track_id },
-    });
-    return { ok: true as const };
-  }),
+  // Path C: planned-track "stars" no longer exist as a separate concept.
+  // Participants star the underlying Submission via `submissions.star`, and
+  // every linked TrackAssignment derives onto their MyAssignments. The old
+  // `agenda.starTrack` / `agenda.unstarTrack` endpoints have been removed.
 
   assign: requireConf("moderator").agenda.assign.handler(async ({ input, context }) => {
     const slot = await context.prisma.agendaSlot.findFirst({
@@ -2527,7 +3111,7 @@ const agendaRouter = {
   myAssignments: requireConf("participant").agenda.myAssignments.handler(async ({ context }) => {
     const confId = context.conferenceId;
     const userId = actorIdentityId(context);
-    const [assigns, placements, staticStars, mandatoryTracks, expertBookerBookings, ownExpert] = await Promise.all([
+    const [assigns, placements, derivedTracks, expertBookerBookings, ownExpert] = await Promise.all([
       context.prisma.userAssignment.findMany({
         where: { userId, slot: { conferenceId: confId } },
         include: {
@@ -2539,24 +3123,26 @@ const agendaRouter = {
       context.prisma.unconferencePlacement.findMany({
         where: { slot: { conferenceId: confId } },
       }),
-      context.prisma.staticStar.findMany({
-        where: { userId, track: { slot: { conferenceId: confId } } },
-        include: {
-          track: {
-            include: {
-              submission: { select: { title: true } },
-              slot: { select: { startsAt: true, endsAt: true } },
-            },
-          },
-        },
-      }),
-      // Mandatory static tracks are force-attended — fetch every mandatory
-      // track in the conference and union with the user's own StaticStars,
-      // deduplicated by track id.
+      // Path C derivation: a TrackAssignment lands on the participant's
+      // schedule when ANY of:
+      //   - it's `mandatory: true` (everyone attends);
+      //   - the participant has starred the linked Submission;
+      //   - the participant IS the linked Submission's submitter (so the
+      //     submitter sees their own scheduled speaking gigs without needing
+      //     to star themselves).
+      // This single query unions all three sources at the DB level. Dedup is
+      // implicit because TrackAssignment rows are unique.
       context.prisma.trackAssignment.findMany({
-        where: { mandatory: true, slot: { conferenceId: confId } },
+        where: {
+          slot: { conferenceId: confId },
+          OR: [
+            { mandatory: true },
+            { submission: { stars: { some: { userId } } } },
+            { submission: { submitterId: userId } },
+          ],
+        },
         include: {
-          submission: { select: { title: true } },
+          submission: { select: { title: true, submitterId: true } },
           slot: { select: { startsAt: true, endsAt: true } },
         },
       }),
@@ -2622,56 +3208,23 @@ const agendaRouter = {
             ?? (a.slot.type === "mixer" ? a.room?.name ?? null : null),
           manual: a.manual,
         })),
-        // Union of: (a) user-starred static tracks, (b) every mandatory static
-        // track in the conference. Dedup by track id — a mandatory track the
-        // user happens to have starred is still a single schedule row, but
-        // surfaces with `mandatory: true` so the UI can render the badge and
-        // hide the unstar action.
-        ...(() => {
-          const seen = new Set<number>();
-          const rows: Array<{
-            source: "static";
-            slot_id: number;
-            submission_id: number | null;
-            room_id: number;
-            starts_at: number;
-            ends_at: number;
-            title: string | null;
-            manual: false;
-            mandatory: boolean;
-          }> = [];
-          for (const s of staticStars) {
-            if (seen.has(s.track.id)) continue;
-            seen.add(s.track.id);
-            rows.push({
-              source: "static",
-              slot_id: s.track.slotId,
-              submission_id: s.track.submissionId,
-              room_id: s.track.roomId,
-              starts_at: s.track.slot.startsAt.getTime(),
-              ends_at: s.track.slot.endsAt.getTime(),
-              title: s.track.submission?.title ?? s.track.title ?? null,
-              manual: false,
-              mandatory: s.track.mandatory,
-            });
-          }
-          for (const t of mandatoryTracks) {
-            if (seen.has(t.id)) continue;
-            seen.add(t.id);
-            rows.push({
-              source: "static",
-              slot_id: t.slotId,
-              submission_id: t.submissionId,
-              room_id: t.roomId,
-              starts_at: t.slot.startsAt.getTime(),
-              ends_at: t.slot.endsAt.getTime(),
-              title: t.submission?.title ?? t.title ?? null,
-              manual: false,
-              mandatory: true,
-            });
-          }
-          return rows;
-        })(),
+        // Path C derived planned-track rows. The `OR`'d query above unions
+        // mandatory + starred-submission + submitter-self. We tag the row
+        // with the originating reason so the client can render distinct
+        // affordances (e.g. "Required" badge for mandatory, "You're
+        // speaking" for submitter-self).
+        ...derivedTracks.map((t) => ({
+          source: "static" as const,
+          slot_id: t.slotId,
+          submission_id: t.submissionId,
+          room_id: t.roomId,
+          starts_at: t.slot.startsAt.getTime(),
+          ends_at: t.slot.endsAt.getTime(),
+          title: t.submission.title,
+          manual: false as const,
+          mandatory: t.mandatory,
+          is_submitter: t.submission.submitterId === userId,
+        })),
         ...expertBookerBookings.map((b) => ({
           source: "expert" as const,
           slot_id: null,

@@ -31,10 +31,16 @@ export interface CalMixerPlacement {
 }
 export interface CalTrack {
   id: number; slot_id: number; room_id: number;
-  submission_id: number | null;
-  title: string | null;
+  /** Path C: every track links to a Submission. The track display title
+   *  comes from that submission. */
+  submission_id: number;
+  title: string;
   speakers: string | null;
+  /** Number of participants who starred the linked Submission (drives the
+   *  star pill on the calendar). */
   star_count: number;
+  /** True when the viewer starred the linked Submission. Toggling the star
+   *  hits `submissions.star` / `unstar`, not a per-track endpoint. */
   starred_by_me: boolean;
   /** Moderator-marked "required for everyone" — render a Required badge in
    * place of the star toggle. */
@@ -113,12 +119,23 @@ interface SlotLayout {
   cols: number;
 }
 function layoutSlots(slots: CalSlot[]): SlotLayout[] {
+  // Calendar labels show HH:MM, so overlap decisions need to match minute
+  // granularity. Without this, a slot ending at 18:07:30 (labelled "18:07")
+  // and a slot starting at 18:07:15 (also labelled "18:07") get rendered
+  // side-by-side because they technically overlap by 15s — visually
+  // confusing because the labels read as adjacent. Snapping to whole
+  // minutes (floor for both) makes the layout align with what the user
+  // can see: same-minute touches do NOT count as overlap.
+  const MIN = 60_000;
+  const startMin = (s: CalSlot) => Math.floor(s.starts_at / MIN);
+  const endMin = (s: CalSlot) => Math.floor(s.ends_at / MIN);
+
   const sorted = [...slots].sort((a, b) => a.starts_at - b.starts_at);
   const out: SlotLayout[] = [];
 
   let cluster: { slot: CalSlot; col: number }[] = [];
   let clusterEnd = -Infinity;
-  let colEnds: number[] = []; // colEnds[i] = latest end of slots placed in col i (within cluster)
+  let colEnds: number[] = []; // colEnds[i] = latest end-minute of slots placed in col i (within cluster)
 
   const flush = () => {
     const cols = Math.max(1, colEnds.length);
@@ -129,17 +146,19 @@ function layoutSlots(slots: CalSlot[]): SlotLayout[] {
   };
 
   for (const s of sorted) {
-    if (s.starts_at >= clusterEnd) flush();
+    const sStart = startMin(s);
+    const sEnd = endMin(s);
+    if (sStart >= clusterEnd) flush();
     // pick the first column whose last slot ended by the time this one starts
-    let col = colEnds.findIndex((end) => end <= s.starts_at);
+    let col = colEnds.findIndex((end) => end <= sStart);
     if (col === -1) {
       col = colEnds.length;
-      colEnds.push(s.ends_at);
+      colEnds.push(sEnd);
     } else {
-      colEnds[col] = s.ends_at;
+      colEnds[col] = sEnd;
     }
     cluster.push({ slot: s, col });
-    clusterEnd = Math.max(clusterEnd, s.ends_at);
+    clusterEnd = Math.max(clusterEnd, sEnd);
   }
   flush();
   return out;
@@ -884,7 +903,11 @@ function SubEventCard({
             lineHeight: "14px",
             cursor: "pointer",
           }}
-          title={star.starredByMe ? "Unstar" : "Star this talk"}
+          title={
+            star.starredByMe
+              ? "Starred — on your schedule. Tap to unstar."
+              : "Star this session — adds it to your schedule and signals interest for unconference."
+          }
         >
           {star.starredByMe ? "★" : "☆"} {star.count}
         </button>

@@ -280,9 +280,12 @@ export type CreateSlotInput = v.InferOutput<typeof CreateSlotSchema>;
 
 export const TrackAssignmentSchema = v.object({
   room_id: PosInt,
-  submission_id: v.optional(v.union([v.number(), v.null()])),
-  title: v.optional(v.union([v.string(), v.null()])),
-  // Free-text speakers, e.g. "Alice, Bob". null/empty clears.
+  // Required: every planned track is anchored to a Submission. For invited
+  // speakers without participant accounts, the mod first creates a
+  // Submission for them on the Sessions tab, then schedules it here.
+  submission_id: PosInt,
+  // Optional addendum text appended to the submitter's name when listing
+  // speakers (for co-presenters or guest names). null/empty clears.
   speakers: v.optional(v.union([v.string(), v.null()])),
   // Per-track prerequisites (e.g. "laptop", "github account"). Same label
   // shape as submission requirements; replaces the track's set on save.
@@ -323,6 +326,44 @@ export const UpdateSlotSchema = v.pipe(
   ),
 );
 export type UpdateSlotInput = v.InferOutput<typeof UpdateSlotSchema>;
+
+// ----- slot series --------------------------------------------------------
+
+// Mods duplicate an existing slot to create a "linked offering" of it. The
+// new sibling shares the source slot's series (creating one if needed) and
+// gets its own time window. `title` is optional per-instance override; if
+// omitted the new sibling inherits the source's title.
+export const DuplicateSlotSchema = v.pipe(
+  v.object({
+    new_starts_at: PosInt,
+    new_ends_at: PosInt,
+    title: v.optional(v.union([v.string(), v.null()])),
+  }),
+  v.forward(
+    v.check((input) => input.new_ends_at > input.new_starts_at, "End time must be after start time."),
+    ["new_ends_at"],
+  ),
+);
+export type DuplicateSlotInput = v.InferOutput<typeof DuplicateSlotSchema>;
+
+// Series-level edit. All fields are series-owned (mirroring UpdateSlotSchema
+// but without per-instance time/title/description). If the edit would
+// orphan track assignments or unconference placements in any sibling, the
+// server returns a "needs_confirmation" response; the client re-submits
+// with `confirm: true` to cascade-delete the orphans.
+export const UpdateSlotSeriesSchema = v.object({
+  title:       v.optional(v.union([v.string(), v.null()])),
+  description: v.optional(v.union([v.string(), v.null()])),
+  unconf_use_all_rooms:       v.optional(v.boolean()),
+  unconf_use_all_submissions: v.optional(v.boolean()),
+  unconf_avoid_repeats:       v.optional(v.boolean()),
+  mixer_avoid_repeats:        v.optional(v.union([v.boolean(), v.null()])),
+  avoid_repeats_across_siblings: v.optional(v.boolean()),
+  unconf_room_ids:       v.optional(v.array(PosInt)),
+  unconf_submission_ids: v.optional(v.array(PosInt)),
+  confirm: v.optional(v.boolean()),
+});
+export type UpdateSlotSeriesInput = v.InferOutput<typeof UpdateSlotSeriesSchema>;
 
 // ----- experts ------------------------------------------------------------
 
