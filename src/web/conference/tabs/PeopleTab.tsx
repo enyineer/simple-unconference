@@ -197,7 +197,21 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
 
       {isMod && (
         <Stack gap="condensed">
-          <Heading level={3}>Pending invites</Heading>
+          <Stack direction="row" justify="between" align="center" wrap>
+            <Heading level={3}>Pending invites</Heading>
+            {invites && invites.some((i) => i.claimed_at === null) && (
+              <Button
+                size="small"
+                onClick={() => {
+                  const pending = invites.filter((i) => i.claimed_at === null);
+                  downloadInvitesCsv(slug, pending);
+                  toast.success(`Exported ${pending.length} pending invite${pending.length === 1 ? "" : "s"}.`);
+                }}
+              >
+                Download CSV
+              </Button>
+            )}
+          </Stack>
           {!invites ? (
             <Spinner label="Loading…" />
           ) : invites.filter((i) => i.claimed_at === null).length === 0 ? (
@@ -264,6 +278,40 @@ function InviteRow({
       </div>
     </div>
   );
+}
+
+function csvEscape(value: string): string {
+  if (/[",\r\n]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+function buildInvitesCsv(invites: PendingInvite[]): string {
+  const headers = ["email", "role", "token", "url", "created_at", "expires_at"];
+  const rows = invites.map((inv) => [
+    inv.email,
+    inv.role,
+    inv.token,
+    absoluteUrl(inv.url),
+    new Date(inv.created_at).toISOString(),
+    new Date(inv.expires_at).toISOString(),
+  ].map(csvEscape).join(","));
+  return [headers.join(","), ...rows].join("\r\n") + "\r\n";
+}
+
+function downloadInvitesCsv(slug: string, invites: PendingInvite[]): void {
+  // Prepend a UTF-8 BOM so Excel opens non-ASCII emails correctly.
+  const blob = new Blob(["﻿" + buildInvitesCsv(invites)], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const stamp = new Date().toISOString().slice(0, 10);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${slug}-pending-invites-${stamp}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 function formatExpiry(ms: number): string {
