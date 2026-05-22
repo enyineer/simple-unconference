@@ -451,6 +451,8 @@ interface SlotBlockProps {
     submission_id: number;
     room_id: number;
     attendee_count: number;
+    star_count: number;
+    room_capacity: number;
   }[];
   isMod: boolean;
   timeZone: string;
@@ -977,6 +979,10 @@ function AddTrackPicker({
   onChange: () => Promise<void>;
 }) {
   const [pickedRoomId, setPickedRoomId] = useState<number | null>(null);
+  // Auto-room mode: the mod picks a session first and the server picks the
+  // room (honoring the session's pin / room_requirements). Toggled via the
+  // primary "Auto-assign room" button below.
+  const [autoMode, setAutoMode] = useState(false);
   const room = pickedRoomId
     ? unassignedRooms.find((r) => r.id === pickedRoomId) ?? null
     : null;
@@ -999,6 +1005,21 @@ function AddTrackPicker({
     );
   }
 
+  if (autoMode) {
+    return (
+      <AutoRoomPicker
+        slug={slug}
+        slot={slot}
+        subs={subs}
+        onCancel={() => setAutoMode(false)}
+        onDone={async () => {
+          setAutoMode(false);
+          await onChange();
+        }}
+      />
+    );
+  }
+
   return (
     <div
       style={{
@@ -1015,13 +1036,129 @@ function AddTrackPicker({
         fontSize: 13,
       }}
     >
-      <span style={{ fontWeight: 500 }}>+ Add track for</span>
+      <span style={{ fontWeight: 500 }}>+ Add track</span>
+      <Button size="small" variant="primary" onClick={() => setAutoMode(true)}>
+        Auto-assign room
+      </Button>
+      <span style={{ opacity: 0.7 }}>or pin to room:</span>
       {unassignedRooms.map((r) => (
         <Button key={r.id} size="small" onClick={() => setPickedRoomId(r.id)}>
           {r.name}
         </Button>
       ))}
     </div>
+  );
+}
+
+// "Auto-assign room" flow: mod selects a Submission; the server chooses the
+// room based on Submission.preAssignedRoomId / room_requirements / largest
+// free room. Conflicts come back as a structured payload — we surface them as
+// readable toasts so the mod knows what to fix (or which room to clear).
+function AutoRoomPicker({
+  slug,
+  slot,
+  subs,
+  onCancel,
+  onDone,
+}: {
+  slug: string;
+  slot: Slot;
+  subs: Submission[];
+  onCancel: () => void;
+  onDone: () => Promise<void>;
+}) {
+  const [submissionId, setSubmissionId] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  async function save() {
+    if (!submissionId) {
+      toast.error("Select a session to schedule.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await api.agenda.scheduleSubmission({
+        slug,
+        slot_id: slot.id,
+        submission_id: Number(submissionId),
+      });
+      if (r.kind === "conflict") {
+        const sub = subs.find((s) => s.id === Number(submissionId));
+        const title = sub?.title ?? "this session";
+        switch (r.reason) {
+          case "pin_room_taken":
+            toast.error(
+              `${title} is pinned to ${r.pinned_room?.name ?? "a room"}, but that room is already in use here.`,
+            );
+            break;
+          case "pin_room_out_of_scope":
+            toast.error(
+              `${title} is pinned to ${r.pinned_room?.name ?? "a room"}, which is not in this slot's room set.`,
+            );
+            break;
+          case "unsatisfiable_requirements": {
+            const tags = r.required_tags.join(", ");
+            if (r.candidate_room_names.length > 0) {
+              toast.error(
+                `${title} needs ${tags || "specific room tags"}; the only matching rooms (${r.candidate_room_names.join(", ")}) are already in use.`,
+              );
+            } else {
+              toast.error(
+                `${title} needs ${tags || "specific room tags"}, but no room in this slot has them.`,
+              );
+            }
+            break;
+          }
+          case "no_free_room":
+            toast.error(
+              `Every room in this slot is already taken. Clear a track first to free one up.`,
+            );
+            break;
+        }
+        return;
+      }
+      toast.success(`Scheduled in ${r.room_name}.`);
+      await onDone();
+    } catch (e) {
+      toast.error(errorCode(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="Auto-assign room">
+      <Stack gap="condensed">
+        <Text muted>
+          Pick the session; the server places it in the best available room
+          (the session&apos;s pinned room if set, otherwise the largest free
+          room whose tags match the session&apos;s requirements).
+        </Text>
+        <SearchableSelect
+          label="Session"
+          value={submissionId}
+          onChange={setSubmissionId}
+          options={[
+            { value: "", label: "— select a session —" },
+            ...subs.map((sub) => ({
+              value: String(sub.id),
+              label: sub.title,
+              hint: sub.submitter_name ?? undefined,
+            })),
+          ]}
+          placeholder="Search sessions…"
+        />
+        <div style={{ display: "flex", gap: 8 }}>
+          <Button variant="primary" onClick={save} disabled={busy || !submissionId}>
+            {busy ? "Scheduling…" : "Schedule"}
+          </Button>
+          <Button onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
+      </Stack>
+    </Card>
   );
 }
 
@@ -1295,6 +1432,27 @@ function TrackEditor({
               ★ Required
             </span>
           )}
+          {track && display && !track.mandatory && track.star_count > room.capacity && (
+            <span
+              title={`${track.star_count} people have starred this session — the room holds ${room.capacity}. Consider moving to a larger room or duplicating the slot.`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                padding: "2px 8px",
+                borderRadius: 999,
+                background:
+                  "var(--bgColor-danger-muted, rgba(207,34,46,0.12))",
+                color: "var(--fgColor-danger, #cf222e)",
+                fontSize: 11,
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: 0.4,
+              }}
+            >
+              ⚠ Room may be full
+            </span>
+          )}
           {track && display && !track.mandatory && (
             <Button
               size="small"
@@ -1394,6 +1552,8 @@ function UnconferenceBody({
     submission_id: number;
     room_id: number;
     attendee_count: number;
+    star_count: number;
+    room_capacity: number;
   }[];
   onChange: () => Promise<void>;
 }) {
@@ -1618,7 +1778,37 @@ function UnconferenceBody({
                     </span>
                   )}
                 </span>
-                <div style={{ gridColumn: 2, gridRow: 1 }} />
+                <div
+                  style={{
+                    gridColumn: 2,
+                    gridRow: 1,
+                    display: "flex",
+                    gap: 6,
+                    alignItems: "center",
+                  }}
+                >
+                  {p.star_count > p.room_capacity && (
+                    <span
+                      title={`${p.star_count} people starred this session — the room holds ${p.room_capacity}. The algorithm placed ${p.attendee_count}; the remaining ${p.star_count - p.attendee_count} starrers are unplaced or in another starred session.`}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                        padding: "2px 8px",
+                        borderRadius: 999,
+                        background:
+                          "var(--bgColor-danger-muted, rgba(207,34,46,0.12))",
+                        color: "var(--fgColor-danger, #cf222e)",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        textTransform: "uppercase",
+                        letterSpacing: 0.4,
+                      }}
+                    >
+                      ⚠ Room may be full ({p.star_count}/{p.room_capacity})
+                    </span>
+                  )}
+                </div>
                 <div
                   style={{
                     gridColumn: "1 / -1",

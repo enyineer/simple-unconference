@@ -172,6 +172,11 @@ export function AssignmentRulesModal({
           <Rule>
             <strong>Same participant:</strong> if you&apos;re assigned in one
             slot, you won&apos;t also be assigned in an overlapping slot.
+            This includes <em>derived</em> attendance: starring a session
+            that&apos;s scheduled in an overlapping planned slot counts as
+            attending it, so the unconference algorithm leaves you alone
+            for that time. The same goes for required tracks (everyone is
+            busy then) and for sessions you submitted (you&apos;re speaking).
           </Rule>
           <Rule>
             Excluded rooms, sessions, and participants are reported after
@@ -184,9 +189,46 @@ export function AssignmentRulesModal({
           <Rule>
             When a slot has <em>avoid repeats</em> enabled, the system
             won&apos;t put you in a session you&apos;ve already attended in an
-            earlier unconference slot of this conference. Hosts (the
-            submitter) are exempt — leading your own session always wins.
+            earlier slot of this conference. That includes derived
+            planned-track attendance — if you starred a session that ran
+            earlier as a planned track, it counts as already attended.
+            Hosts (the submitter) are exempt — leading your own session
+            always wins.
           </Rule>
+        </Section>
+
+        <Section title="Planned tracks &amp; soft capacity">
+          <Rule>
+            Planned tracks come from the moderator-built schedule rather
+            than the unconference algorithm. One star covers both: if you
+            star a session that&apos;s also scheduled as a planned track,
+            that planned offering lands on your schedule too.
+          </Rule>
+          <Rule>
+            Stars don&apos;t enforce a hard room cap. When more people star a
+            planned track than the room holds, the row shows a{" "}
+            <em>room may be crowded</em> badge — advisory only. Not
+            everyone who stars necessarily shows up, but it&apos;s a hint to
+            arrive early or watch for an upgrade.
+          </Rule>
+          {isMod && (
+            <Rule modOnly>
+              The track editor surfaces the same warning to you (
+              <em>Room may be full</em>) when stars exceed capacity.
+              Consider moving the session to a bigger room or duplicating
+              the slot as a sibling offering.
+            </Rule>
+          )}
+          {isMod && (
+            <Rule modOnly>
+              When adding a track, you can pick <em>Auto-assign room</em>{" "}
+              instead of choosing a specific room: the server picks the
+              best match using the session&apos;s pinned room (if any), its
+              required features, and the largest free room in scope.
+              Conflicts surface as a readable error so you know what to
+              clear or repin.
+            </Rule>
+          )}
         </Section>
 
         {isMod && (

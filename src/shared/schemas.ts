@@ -296,6 +296,18 @@ export const TrackAssignmentSchema = v.object({
 });
 export type TrackAssignmentInput = v.InferOutput<typeof TrackAssignmentSchema>;
 
+// `agenda.scheduleSubmission`: like `setTrack`, but the server picks the
+// room. Honors `Submission.preAssignedRoomId` (hard pin) and
+// `Submission.roomRequirements` (tag constraints); picks the largest free
+// matching room otherwise. Returns a structured conflict when no room fits.
+export const ScheduleSubmissionSchema = v.object({
+  submission_id: PosInt,
+  speakers: v.optional(v.union([v.string(), v.null()])),
+  requirements: v.optional(LabelList),
+  mandatory: v.optional(v.boolean()),
+});
+export type ScheduleSubmissionInput = v.InferOutput<typeof ScheduleSubmissionSchema>;
+
 // PATCH /agenda/:id — moderators can tweak time, title, and the per-slot
 // unconference configuration (which rooms / which submissions participate).
 export const UpdateSlotSchema = v.pipe(

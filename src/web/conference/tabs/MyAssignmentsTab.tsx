@@ -155,6 +155,8 @@ export function MyAssignmentsTab({
                       manual={a.manual ?? false}
                       mandatory={a.mandatory ?? false}
                       isSubmitter={a.is_submitter ?? false}
+                      expectedAttendance={a.expected_attendance ?? null}
+                      roomCapacity={a.room_capacity ?? null}
                       startsAt={a.starts_at}
                       endsAt={a.ends_at}
                       room={room}
@@ -307,7 +309,9 @@ const SOURCE_LABEL: Record<ScheduleSource, string> = {
 };
 
 function ScheduleCard({
-  title, source, manual, mandatory, isSubmitter, startsAt, endsAt, room, timeZone,
+  title, source, manual, mandatory, isSubmitter,
+  expectedAttendance, roomCapacity,
+  startsAt, endsAt, room, timeZone,
   alternates, conflicts, onRoomClick, onChangeSession,
 }: {
   title: string;
@@ -320,6 +324,11 @@ function ScheduleCard({
    *  (so they're speaking, not attending). Drives a "You're speaking" badge
    *  so the row reads correctly. */
   isSubmitter: boolean;
+  /** Static rows only: how many people starred the linked submission
+   *  (rough attendance estimate). Null for non-static sources. */
+  expectedAttendance: number | null;
+  /** Static rows only: capacity of the assigned room. Null when not applicable. */
+  roomCapacity: number | null;
   startsAt: number;
   endsAt: number;
   room: Room | null | undefined;
@@ -335,6 +344,13 @@ function ScheduleCard({
   /** Opens the session-switch picker. Only set for unconference sources. */
   onChangeSession?: () => void;
 }) {
+  // Soft capacity warning: only shown for non-mandatory planned tracks where
+  // more participants starred the session than the room can hold. Advisory
+  // only — the assignment algorithm never enforces a hard cap on stars.
+  const showCapacityWarning =
+    source === "static" && !mandatory
+    && expectedAttendance !== null && roomCapacity !== null
+    && expectedAttendance > roomCapacity;
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
   // Accent stripe per source: unconference = accent (blue), mixer = success
   // (green), expert = done (purple), planned = neutral.
@@ -390,6 +406,11 @@ function ScheduleCard({
           {mandatory && <Pill variant="attention">required</Pill>}
           {manual && <Pill variant="primary">manual pick</Pill>}
           {isSubmitter && <Pill variant="success">you&apos;re speaking</Pill>}
+          {showCapacityWarning && (
+            <Pill variant="attention">
+              room may be crowded ({expectedAttendance}/{roomCapacity})
+            </Pill>
+          )}
           {conflicts.length > 0 && (
             <Pill variant="attention">
               conflicts with {conflicts[0]}{conflicts.length > 1 ? ` (+${conflicts.length - 1})` : ""}

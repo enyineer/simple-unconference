@@ -1586,9 +1586,18 @@ async function runAssignmentForSlot(
   //       overlapping slot can't be placed here unless its
   //       `allowOverlappingPlacements` flag is set (mods opt-in for
   //       sessions designed to run in parallel — recurring workshops, etc).
-  //   (d) Busy participant: a user already assigned in an overlapping slot
+  //   (d) Busy participant: a user already locked into an overlapping slot
   //       can't attend another session here. We drop them from the stars
-  //       map below.
+  //       map below. "Locked into" means ANY of:
+  //         - they have an explicit UserAssignment row in the overlapping
+  //           slot (unconference / mixer / manual pick);
+  //         - they starred a Submission that's placed (unconference) or
+  //           scheduled as a TrackAssignment in the overlapping slot —
+  //           Path C derivation says they'll attend it;
+  //         - they're the submitter of such a Submission (auto-derived
+  //           speaking gig);
+  //         - the overlapping slot has any mandatory TrackAssignment
+  //           (everyone in the conference is force-attending).
   //
   // The overlap-detection query is a single round-trip with placements,
   // tracks, and user-assignments loaded in parallel.
@@ -1615,7 +1624,7 @@ async function runAssignmentForSlot(
         }),
         prisma.trackAssignment.findMany({
           where: { slotId: { in: overlappingIds } },
-          select: { submissionId: true, roomId: true },
+          select: { submissionId: true, roomId: true, mandatory: true },
         }),
         prisma.userAssignment.findMany({
           where: { slotId: { in: overlappingIds } },
@@ -1625,6 +1634,7 @@ async function runAssignmentForSlot(
 
       const excludedRoomIds = new Set<number>();
       const overlapPlacedSessionIds = new Set<number>();
+      let hasMandatoryOverlap = false;
       for (const p of overlapPlacements) {
         excludedRoomIds.add(p.roomId);
         overlapPlacedSessionIds.add(p.submissionId);
@@ -1632,6 +1642,7 @@ async function runAssignmentForSlot(
       for (const t of overlapTracks) {
         excludedRoomIds.add(t.roomId);
         overlapPlacedSessionIds.add(t.submissionId);
+        if (t.mandatory) hasMandatoryOverlap = true;
       }
       for (const a of overlapAssigns) {
         busyUserIds.add(a.userId);
@@ -1652,6 +1663,36 @@ async function runAssignmentForSlot(
         let set = placementsBySubmitter.get(p.submitterId);
         if (!set) { set = new Set(); placementsBySubmitter.set(p.submitterId, set); }
         set.add(p.id);
+      }
+
+      // Path C busy-user derivation: stars + submitter + mandatory.
+      //   - Stars on overlapping placed/tracked sessions → the starring user
+      //     is going to attend that session (MyAssignments derives the row).
+      //   - Submitter of any overlapping placed/tracked session → they're
+      //     speaking; they can't also be a participant elsewhere.
+      //   - Any mandatory track in an overlapping slot → every conference
+      //     identity is force-attending. We union the full identity list.
+      // We run these as one parallel batch (only the queries we actually need).
+      const needDerivedStars = overlapPlacedSessionIds.size > 0;
+      const needAllIdentities = hasMandatoryOverlap;
+      const [derivedStarsRows, allIdentitiesForMandatory] = await Promise.all([
+        needDerivedStars
+          ? prisma.star.findMany({
+              where: { submissionId: { in: [...overlapPlacedSessionIds] } },
+              select: { userId: true },
+            })
+          : Promise.resolve([] as { userId: number }[]),
+        needAllIdentities
+          ? prisma.conferenceIdentity.findMany({
+              where: { conferenceId: confId },
+              select: { id: true },
+            })
+          : Promise.resolve([] as { id: number }[]),
+      ]);
+      for (const s of derivedStarsRows) busyUserIds.add(s.userId);
+      for (const p of placedOverlappingByOtherSubmitter) busyUserIds.add(p.submitterId);
+      if (hasMandatoryOverlap) {
+        for (const i of allIdentitiesForMandatory) busyUserIds.add(i.id);
       }
 
       // Apply (c) and (b) to the candidate pool.
@@ -2041,22 +2082,88 @@ async function runAssignmentForSlot(
   const conferenceWideAvoid = cfg.unconfAvoidRepeats;
   const acrossSiblingsAvoid = cfg.series?.avoidRepeatsAcrossSiblings ?? false;
 
-  const prior = await prisma.userAssignment.findMany({
-    where: {
-      slot: { conferenceId: confId, type: "unconference", id: { not: slotId } },
-      submissionId: { not: null },
-    },
-    select: { userId: true, submissionId: true, slotId: true },
-  });
+  // Two sources contribute to prior attendance:
+  //   1. Explicit UserAssignment rows in non-current unconference slots
+  //      (the original source).
+  //   2. Derived planned-track attendance (Path C): every TrackAssignment in
+  //      a non-current slot contributes (userId, submissionId) tuples for
+  //      every starring user, the submitter, and — when mandatory — every
+  //      conference identity. Without this, a starred planned-track session
+  //      wouldn't count toward avoid-repeats for cross-slot rotation.
+  const [prior, priorTracks] = await Promise.all([
+    prisma.userAssignment.findMany({
+      where: {
+        slot: { conferenceId: confId, type: "unconference", id: { not: slotId } },
+        submissionId: { not: null },
+      },
+      select: { userId: true, submissionId: true, slotId: true },
+    }),
+    prisma.trackAssignment.findMany({
+      where: { slot: { conferenceId: confId, id: { not: slotId } } },
+      select: {
+        slotId: true, submissionId: true, mandatory: true,
+        submission: { select: { submitterId: true } },
+      },
+    }),
+  ]);
   const priorAssignments = new Map<number, Set<number>>();
+  function recordPrior(userId: number, submissionId: number, fromSlotId: number) {
+    const isSibling = siblingSet.has(fromSlotId);
+    const include = isSibling ? acrossSiblingsAvoid : conferenceWideAvoid;
+    if (!include) return;
+    let set = priorAssignments.get(userId);
+    if (!set) { set = new Set(); priorAssignments.set(userId, set); }
+    set.add(submissionId);
+  }
   for (const p of prior) {
     if (p.submissionId === null) continue;
-    const isSibling = siblingSet.has(p.slotId);
-    const include = isSibling ? acrossSiblingsAvoid : conferenceWideAvoid;
-    if (!include) continue;
-    let set = priorAssignments.get(p.userId);
-    if (!set) { set = new Set(); priorAssignments.set(p.userId, set); }
-    set.add(p.submissionId);
+    recordPrior(p.userId, p.submissionId, p.slotId);
+  }
+  // Derive star + submitter + mandatory contributors from prior planned tracks.
+  // Only fetch stars / identities when there's actually planned-track history
+  // AND at least one avoid axis is on (otherwise the data is thrown away).
+  const anyAvoid = conferenceWideAvoid || acrossSiblingsAvoid;
+  if (anyAvoid && priorTracks.length > 0) {
+    const priorSubIds = [...new Set(priorTracks.map((t) => t.submissionId))];
+    const hasMandatoryPrior = priorTracks.some((t) => t.mandatory);
+    const [priorStarRows, mandatoryIdentities] = await Promise.all([
+      prisma.star.findMany({
+        where: { submissionId: { in: priorSubIds } },
+        select: { userId: true, submissionId: true },
+      }),
+      hasMandatoryPrior
+        ? prisma.conferenceIdentity.findMany({
+            where: { conferenceId: confId }, select: { id: true },
+          })
+        : Promise.resolve([] as { id: number }[]),
+    ]);
+    // Map submission -> [slotIds where it's tracked] so we can attribute each
+    // (userId, submissionId) pair to the right slot for sibling-axis filtering.
+    const subToSlotIds = new Map<number, number[]>();
+    for (const t of priorTracks) {
+      const arr = subToSlotIds.get(t.submissionId) ?? [];
+      arr.push(t.slotId);
+      subToSlotIds.set(t.submissionId, arr);
+    }
+    // Stars: every starring user attends every tracked offering of the sub.
+    for (const s of priorStarRows) {
+      const slots = subToSlotIds.get(s.submissionId);
+      if (!slots) continue;
+      for (const sid of slots) recordPrior(s.userId, s.submissionId, sid);
+    }
+    // Submitter: derived per track row directly.
+    for (const t of priorTracks) {
+      recordPrior(t.submission.submitterId, t.submissionId, t.slotId);
+    }
+    // Mandatory: every identity attends every mandatory track.
+    if (hasMandatoryPrior) {
+      for (const t of priorTracks) {
+        if (!t.mandatory) continue;
+        for (const i of mandatoryIdentities) {
+          recordPrior(i.id, t.submissionId, t.slotId);
+        }
+      }
+    }
   }
 
   const manualRows = await prisma.userAssignment.findMany({
@@ -2410,6 +2517,13 @@ const agendaRouter = {
       }),
       context.prisma.unconferencePlacement.findMany({
         where: { slot: { conferenceId: confId } },
+        include: {
+          // Demand vs supply signal: total stars on the submission and the
+          // assigned room's capacity. Surfaces a "Room may be full" warning
+          // when stars exceed capacity (clients render the badge).
+          submission: { select: { _count: { select: { stars: true } } } },
+          room: { select: { capacity: true } },
+        },
       }),
       // Replaces the StaticStar lookup. `starred_by_me` on a Track is now
       // "did the viewer star the linked submission" — no per-track table.
@@ -2486,6 +2600,8 @@ const agendaRouter = {
         return {
           slot_id: p.slotId, submission_id: p.submissionId, room_id: p.roomId,
           attendee_count: count,
+          star_count: p.submission._count.stars,
+          room_capacity: p.room.capacity,
         };
       }),
       mixer_placements: mixerAssigns
@@ -3048,6 +3164,181 @@ const agendaRouter = {
     return { ok: true as const };
   }),
 
+  // Auto-room counterpart to `setTrack`. The mod picks a submission; the
+  // server picks the room. Priority order:
+  //   1. `Submission.preAssignedRoomId` — hard pin. If the room is in the
+  //      slot's effective scope and not yet taken, we use it. Out-of-scope
+  //      or taken → structured conflict.
+  //   2. Otherwise, find the largest free room in scope whose tag set
+  //      satisfies every entry of `Submission.roomRequirements`. Ties broken
+  //      by smallest room id (deterministic).
+  //   3. If no such room exists, we report whether the failure is "no rooms
+  //      match the tag set at all" or "matching rooms exist but every one
+  //      is taken" via `candidate_room_names`.
+  // This is intentionally simpler than the unconference matcher: we never
+  // swap rooms of *existing* tracks, so mods see predictable, additive
+  // changes. If they need a swap, they can clear a track and re-schedule.
+  scheduleSubmission: requireConf("moderator").agenda.scheduleSubmission.handler(async ({ input, context }) => {
+    const slot = await context.prisma.agendaSlot.findFirst({
+      where: { id: input.slot_id, conferenceId: context.conferenceId },
+      include: SLOT_CONFIG_INCLUDE,
+    });
+    if (!slot) throw new ORPCError("NOT_FOUND");
+    if (slot.type !== "normal") {
+      throw new ORPCError("BAD_REQUEST", { message: "not_a_static_slot" });
+    }
+    const submission = await context.prisma.submission.findFirst({
+      where: { id: input.submission_id, conferenceId: context.conferenceId },
+      select: {
+        id: true,
+        preAssignedRoomId: true,
+        roomRequirements: { select: { value: true } },
+      },
+    });
+    if (!submission) {
+      throw new ORPCError("BAD_REQUEST", { message: "submission_not_in_conference" });
+    }
+
+    const cfg = effectiveSlotConfig(slot);
+    const roomWhere = cfg.unconfUseAllRooms
+      ? { conferenceId: context.conferenceId }
+      : { conferenceId: context.conferenceId, id: { in: cfg.roomIds } };
+    const [scopedRooms, existingTracks] = await Promise.all([
+      context.prisma.room.findMany({
+        where: roomWhere,
+        select: { id: true, name: true, capacity: true },
+      }),
+      context.prisma.trackAssignment.findMany({
+        where: { slotId: input.slot_id },
+        select: { roomId: true },
+      }),
+    ]);
+    const takenRoomIds = new Set(existingTracks.map((t) => t.roomId));
+    const requiredTags = submission.roomRequirements.map((r) => r.value);
+
+    // Resolve all rooms' tags up front so we can build `candidate_room_names`
+    // for conflict responses without an extra query.
+    const roomTagsRows = scopedRooms.length === 0
+      ? []
+      : await context.prisma.roomTag.findMany({
+          where: { roomId: { in: scopedRooms.map((r) => r.id) } },
+          select: { roomId: true, value: true },
+        });
+    const tagsByRoom = new Map<number, Set<string>>();
+    for (const r of scopedRooms) tagsByRoom.set(r.id, new Set());
+    for (const row of roomTagsRows) tagsByRoom.get(row.roomId)?.add(row.value);
+    function roomSatisfiesRequirements(roomId: number): boolean {
+      if (requiredTags.length === 0) return true;
+      const tags = tagsByRoom.get(roomId);
+      if (!tags) return false;
+      for (const req of requiredTags) if (!tags.has(req)) return false;
+      return true;
+    }
+
+    // For "pinned room taken / out of scope" responses we may need the room
+    // name even when it isn't in scope. Fetch lazily only if needed.
+    async function fetchRoomName(roomId: number): Promise<string | null> {
+      const inScope = scopedRooms.find((r) => r.id === roomId);
+      if (inScope) return inScope.name;
+      const row = await context.prisma.room.findFirst({
+        where: { id: roomId, conferenceId: context.conferenceId },
+        select: { name: true },
+      });
+      return row?.name ?? null;
+    }
+
+    let chosenRoomId: number | null = null;
+    if (submission.preAssignedRoomId !== null) {
+      const pinnedId = submission.preAssignedRoomId;
+      const pinnedRoom = scopedRooms.find((r) => r.id === pinnedId) ?? null;
+      if (!pinnedRoom) {
+        return {
+          kind: "conflict" as const,
+          reason: "pin_room_out_of_scope" as const,
+          pinned_room: { id: pinnedId, name: (await fetchRoomName(pinnedId)) ?? "(unknown room)" },
+          required_tags: requiredTags,
+          candidate_room_names: [],
+        };
+      }
+      if (takenRoomIds.has(pinnedId)) {
+        return {
+          kind: "conflict" as const,
+          reason: "pin_room_taken" as const,
+          pinned_room: { id: pinnedId, name: pinnedRoom.name },
+          required_tags: requiredTags,
+          candidate_room_names: [],
+        };
+      }
+      chosenRoomId = pinnedId;
+    } else {
+      const matching = scopedRooms.filter((r) => roomSatisfiesRequirements(r.id));
+      const free = matching.filter((r) => !takenRoomIds.has(r.id));
+      if (free.length === 0) {
+        // Two distinct failure modes here, both surfaced clearly to the mod:
+        //   - `matching.length === 0` and we have any requirements →
+        //     "unsatisfiable_requirements" (no room has the right tags).
+        //   - matching rooms exist but are all taken → "no_free_room" with
+        //     `candidate_room_names` filled so the mod sees what to clear.
+        if (requiredTags.length > 0 && matching.length === 0) {
+          return {
+            kind: "conflict" as const,
+            reason: "unsatisfiable_requirements" as const,
+            pinned_room: null,
+            required_tags: requiredTags,
+            candidate_room_names: [],
+          };
+        }
+        return {
+          kind: "conflict" as const,
+          reason: requiredTags.length > 0
+            ? "unsatisfiable_requirements" as const
+            : "no_free_room" as const,
+          pinned_room: null,
+          required_tags: requiredTags,
+          candidate_room_names: matching.map((r) => r.name),
+        };
+      }
+      // Largest capacity first, smallest id as deterministic tiebreaker.
+      free.sort((a, b) => {
+        if (a.capacity !== b.capacity) return b.capacity - a.capacity;
+        return a.id - b.id;
+      });
+      chosenRoomId = free[0]!.id;
+    }
+
+    const speakers = (input.speakers ?? "").trim() || null;
+    const reqs = input.requirements === undefined
+      ? undefined
+      : normalizeLabels(input.requirements);
+    const chosenRoom = scopedRooms.find((r) => r.id === chosenRoomId)!;
+
+    const track = await context.prisma.$transaction(async (tx) => {
+      const created = await tx.trackAssignment.create({
+        data: {
+          slotId: input.slot_id,
+          roomId: chosenRoomId!,
+          submissionId: input.submission_id,
+          speakers,
+          mandatory: input.mandatory ?? false,
+        },
+        select: { id: true },
+      });
+      if (reqs !== undefined && reqs.length > 0) {
+        await tx.trackRequirement.createMany({
+          data: reqs.map((value) => ({ trackId: created.id, value })),
+        });
+      }
+      return created;
+    });
+
+    return {
+      kind: "ok" as const,
+      track_id: track.id,
+      room_id: chosenRoomId!,
+      room_name: chosenRoom.name,
+    };
+  }),
+
   // Path C: planned-track "stars" no longer exist as a separate concept.
   // Participants star the underlying Submission via `submissions.star`, and
   // every linked TrackAssignment derives onto their MyAssignments. The old
@@ -3143,8 +3434,16 @@ const agendaRouter = {
           ],
         },
         include: {
-          submission: { select: { title: true, submitterId: true } },
+          submission: {
+            select: {
+              title: true, submitterId: true,
+              // Used to surface a "this room may be crowded" hint to the
+              // participant when more people starred than the room holds.
+              _count: { select: { stars: true } },
+            },
+          },
           slot: { select: { startsAt: true, endsAt: true } },
+          room: { select: { capacity: true } },
         },
       }),
       // Bookings I made as the booker.
@@ -3225,6 +3524,8 @@ const agendaRouter = {
           manual: false as const,
           mandatory: t.mandatory,
           is_submitter: t.submission.submitterId === userId,
+          expected_attendance: t.submission._count.stars,
+          room_capacity: t.room?.capacity ?? null,
         })),
         ...expertBookerBookings.map((b) => ({
           source: "expert" as const,

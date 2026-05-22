@@ -2268,6 +2268,170 @@ describe("overlapping slot exclusions", () => {
   });
 });
 
+describe("overlapping slot exclusions: Path C derived attendance", () => {
+  // After the Path C refactor, a participant lands on a planned track via
+  // mandatory ∨ starred ∨ submitter-of — without producing a UserAssignment
+  // row. The unconference assignment algorithm must still treat them as busy
+  // for overlapping slots; these tests guard that invariant.
+  let ctx: TestApp;
+  beforeAll(() => { ctx = setupTestApp(); });
+  afterAll(async () => { await ctx.cleanup(); });
+
+  async function plannedVsUnconfFixture(prefix: string) {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, `${prefix}-owner@example.com`);
+    const conf = await owner.rpc.conferences.create({ name: `Derived ${prefix}` });
+    const rPlanned = await owner.rpc.rooms.create({ slug: conf.slug, name: "Main Hall", capacity: 100 });
+    const rUnconf = await owner.rpc.rooms.create({ slug: conf.slug, name: "Side Room", capacity: 30 });
+    const t = Date.now();
+    // Planned slot at 10:00–11:00, unconference slot at 10:30–11:30 (overlap).
+    const slotPlanned = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", title: "Keynote",
+      starts_at: t, ends_at: t + 60 * 60 * 1000,
+    });
+    const slotUnconf = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t + 30 * 60 * 1000, ends_at: t + 90 * 60 * 1000,
+    });
+    return { owner, conf, rPlanned, rUnconf, slotPlanned, slotUnconf };
+  }
+
+  test("starring a planned-track submission in an overlapping slot marks the user busy", async () => {
+    const f = await plannedVsUnconfFixture("star");
+    // The planned-track submission — published, scheduled at the keynote slot.
+    const subKeynote = await f.owner.rpc.submissions.create({ slug: f.conf.slug, title: "Keynote" });
+    await f.owner.rpc.submissions.publish({ slug: f.conf.slug, id: subKeynote.id });
+    await f.owner.rpc.agenda.setTrack({
+      slug: f.conf.slug, slot_id: f.slotPlanned.id,
+      room_id: f.rPlanned.id, submission_id: subKeynote.id,
+    });
+    // An unrelated submission published for the overlapping unconference slot.
+    const subUnconf = await f.owner.rpc.submissions.create({ slug: f.conf.slug, title: "Side" });
+    await f.owner.rpc.submissions.publish({ slug: f.conf.slug, id: subUnconf.id });
+    await f.owner.rpc.agenda.updateSlot({
+      slug: f.conf.slug, id: f.slotUnconf.id,
+      unconf_use_all_submissions: false, unconf_submission_ids: [subUnconf.id],
+    });
+
+    // A participant stars BOTH the keynote (planned track → derives attendance)
+    // AND the unconference candidate. Pre-fix, the algo would assign them to
+    // subUnconf because no UserAssignment row exists for the keynote. Post-fix,
+    // the derived attendance flags them busy.
+    const { client: p, identity_id: pid } =
+      await inviteAndClaim(ctx.app, f.owner, f.conf.slug, `star-${Math.random()}@x.com`);
+    await p.rpc.submissions.star({ slug: f.conf.slug, id: subKeynote.id });
+    await p.rpc.submissions.star({ slug: f.conf.slug, id: subUnconf.id });
+
+    const r = await f.owner.rpc.agenda.assign({ slug: f.conf.slug, slot_id: f.slotUnconf.id });
+    if (r.kind !== "unconference") throw new Error("expected unconference");
+    expect(r.user_assignments.some((u) => u.user_id === pid)).toBe(false);
+    expect(r.overlap_exclusions.user_ids).toContain(pid);
+  });
+
+  test("mandatory planned track in an overlapping slot marks every participant busy", async () => {
+    const f = await plannedVsUnconfFixture("mand");
+    const subKeynote = await f.owner.rpc.submissions.create({ slug: f.conf.slug, title: "All Hands" });
+    await f.owner.rpc.submissions.publish({ slug: f.conf.slug, id: subKeynote.id });
+    await f.owner.rpc.agenda.setTrack({
+      slug: f.conf.slug, slot_id: f.slotPlanned.id,
+      room_id: f.rPlanned.id, submission_id: subKeynote.id,
+      mandatory: true,
+    });
+    const subUnconf = await f.owner.rpc.submissions.create({ slug: f.conf.slug, title: "Side" });
+    await f.owner.rpc.submissions.publish({ slug: f.conf.slug, id: subUnconf.id });
+    await f.owner.rpc.agenda.updateSlot({
+      slug: f.conf.slug, id: f.slotUnconf.id,
+      unconf_use_all_submissions: false, unconf_submission_ids: [subUnconf.id],
+    });
+
+    // Participant who did NOT star the keynote — but mandatory means they're
+    // attending regardless. They should be excluded from the unconference.
+    const { client: p, identity_id: pid } =
+      await inviteAndClaim(ctx.app, f.owner, f.conf.slug, `mand-${Math.random()}@x.com`);
+    await p.rpc.submissions.star({ slug: f.conf.slug, id: subUnconf.id });
+
+    const r = await f.owner.rpc.agenda.assign({ slug: f.conf.slug, slot_id: f.slotUnconf.id });
+    if (r.kind !== "unconference") throw new Error("expected unconference");
+    expect(r.user_assignments.some((u) => u.user_id === pid)).toBe(false);
+    expect(r.overlap_exclusions.user_ids).toContain(pid);
+  });
+
+  test("submitter of a planned-track session in an overlapping slot is busy", async () => {
+    const f = await plannedVsUnconfFixture("submitter");
+    // Speaker participant submits the keynote; mod schedules it.
+    const { client: speaker, identity_id: speakerId } =
+      await inviteAndClaim(ctx.app, f.owner, f.conf.slug, `speaker-${Math.random()}@x.com`);
+    const subKeynote = await speaker.rpc.submissions.create({ slug: f.conf.slug, title: "By Speaker" });
+    await f.owner.rpc.submissions.publish({ slug: f.conf.slug, id: subKeynote.id });
+    await f.owner.rpc.agenda.setTrack({
+      slug: f.conf.slug, slot_id: f.slotPlanned.id,
+      room_id: f.rPlanned.id, submission_id: subKeynote.id,
+    });
+    // Speaker also stars an unrelated unconference candidate. They should be
+    // excluded because they're the submitter of the overlapping planned track.
+    const subUnconf = await f.owner.rpc.submissions.create({ slug: f.conf.slug, title: "Side" });
+    await f.owner.rpc.submissions.publish({ slug: f.conf.slug, id: subUnconf.id });
+    await f.owner.rpc.agenda.updateSlot({
+      slug: f.conf.slug, id: f.slotUnconf.id,
+      unconf_use_all_submissions: false, unconf_submission_ids: [subUnconf.id],
+    });
+    await speaker.rpc.submissions.star({ slug: f.conf.slug, id: subUnconf.id });
+
+    const r = await f.owner.rpc.agenda.assign({ slug: f.conf.slug, slot_id: f.slotUnconf.id });
+    if (r.kind !== "unconference") throw new Error("expected unconference");
+    expect(r.user_assignments.some((u) => u.user_id === speakerId)).toBe(false);
+    expect(r.overlap_exclusions.user_ids).toContain(speakerId);
+  });
+
+  test("derived planned-track attendance counts toward avoid-repeats across non-overlapping slots", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "repeats-owner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Repeats" });
+    await owner.rpc.conferences.update({
+      slug: conf.slug, submission_max_placements_default: null,
+    });
+    const room = await owner.rpc.rooms.create({ slug: conf.slug, name: "Hall", capacity: 50 });
+    const subShared = await owner.rpc.submissions.create({ slug: conf.slug, title: "Shared" });
+    // Mark it as allowing overlapping placements so the algo doesn't refuse it
+    // on "same_session" grounds when it could be placed in slot 2.
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: subShared.id });
+    await owner.rpc.submissions.update({
+      slug: conf.slug, id: subShared.id, allow_overlapping_placements: true,
+    });
+    const t = Date.now();
+    // Slot 1 (planned) at 10:00, slot 2 (unconference) at 11:00 — NOT overlapping.
+    const slotPlanned = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", title: "First offering",
+      starts_at: t, ends_at: t + 60 * 60 * 1000,
+    });
+    const slotUnconf = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: t + 60 * 60 * 1000, ends_at: t + 120 * 60 * 1000,
+    });
+    await owner.rpc.agenda.setTrack({
+      slug: conf.slug, slot_id: slotPlanned.id,
+      room_id: room.id, submission_id: subShared.id,
+    });
+    await owner.rpc.agenda.updateSlot({
+      slug: conf.slug, id: slotUnconf.id,
+      unconf_use_all_submissions: false, unconf_submission_ids: [subShared.id],
+      unconf_avoid_repeats: true,
+    });
+
+    // Participant stars only this shared submission. Avoid-repeats should
+    // notice they "already attended" via the planned track and leave them
+    // unplaced in the unconference slot.
+    const { client: p, identity_id: pid } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, `repeats-${Math.random()}@x.com`);
+    await p.rpc.submissions.star({ slug: conf.slug, id: subShared.id });
+
+    const r = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slotUnconf.id });
+    if (r.kind !== "unconference") throw new Error("expected unconference");
+    expect(r.user_assignments.some((u) => u.user_id === pid)).toBe(false);
+    expect(r.unplaced_users).toContain(pid);
+  });
+});
+
 describe("manual session switching", () => {
   let ctx: TestApp;
   beforeAll(() => { ctx = setupTestApp(); });
@@ -4492,5 +4656,173 @@ describe("Path C: unified star + planned-schedule derivation", () => {
     await part.rpc.submissions.star({ slug: conf.slug, id: sub.id });
     const me = await part.rpc.agenda.myAssignments({ slug: conf.slug });
     expect(me.assignments.find((a) => a.slot_id === slot.id)?.title).toBe("Keynote");
+  });
+});
+
+describe("agenda.scheduleSubmission (auto-room planned tracks)", () => {
+  let ctx: TestApp;
+  beforeAll(() => { ctx = setupTestApp(); });
+  afterAll(async () => { await ctx.cleanup(); });
+
+  async function plannedFixture(prefix: string) {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, `${prefix}-owner@example.com`);
+    const conf = await owner.rpc.conferences.create({ name: `Auto ${prefix}` });
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", title: "Morning Plenary",
+      starts_at: Date.now(), ends_at: Date.now() + 60 * 60 * 1000,
+    });
+    return { owner, conf, slot };
+  }
+
+  test("picks the largest free room when no pin or tag constraint", async () => {
+    const f = await plannedFixture("largest");
+    const small = await f.owner.rpc.rooms.create({ slug: f.conf.slug, name: "Small", capacity: 10 });
+    const big = await f.owner.rpc.rooms.create({ slug: f.conf.slug, name: "Big", capacity: 100 });
+    const sub = await f.owner.rpc.submissions.create({ slug: f.conf.slug, title: "T" });
+    await f.owner.rpc.submissions.publish({ slug: f.conf.slug, id: sub.id });
+
+    const r = await f.owner.rpc.agenda.scheduleSubmission({
+      slug: f.conf.slug, slot_id: f.slot.id, submission_id: sub.id,
+    });
+    if (r.kind !== "ok") throw new Error(`expected ok, got ${r.kind}`);
+    expect(r.room_id).toBe(big.id);
+    expect(r.room_name).toBe("Big");
+    // Sanity: an existing-room TrackAssignment now exists.
+    const agenda = await f.owner.rpc.agenda.get({ slug: f.conf.slug });
+    expect(agenda.tracks.some((t) => t.room_id === big.id && t.submission_id === sub.id)).toBe(true);
+    // The small room remains free.
+    expect(agenda.tracks.some((t) => t.room_id === small.id)).toBe(false);
+  });
+
+  test("honors Submission.preAssignedRoomId when the pinned room is free", async () => {
+    const f = await plannedFixture("pin");
+    const big = await f.owner.rpc.rooms.create({ slug: f.conf.slug, name: "Big", capacity: 100 });
+    const pinned = await f.owner.rpc.rooms.create({ slug: f.conf.slug, name: "Studio", capacity: 20 });
+    const sub = await f.owner.rpc.submissions.create({ slug: f.conf.slug, title: "T" });
+    await f.owner.rpc.submissions.update({
+      slug: f.conf.slug, id: sub.id, pre_assigned_room_id: pinned.id,
+    });
+    await f.owner.rpc.submissions.publish({ slug: f.conf.slug, id: sub.id });
+
+    const r = await f.owner.rpc.agenda.scheduleSubmission({
+      slug: f.conf.slug, slot_id: f.slot.id, submission_id: sub.id,
+    });
+    if (r.kind !== "ok") throw new Error(`expected ok, got ${r.kind}`);
+    expect(r.room_id).toBe(pinned.id);
+    // Confirm we ignored the larger room because the pin wins.
+    expect(r.room_id).not.toBe(big.id);
+  });
+
+  test("returns pin_room_taken when the pinned room is already used", async () => {
+    const f = await plannedFixture("pintaken");
+    const room = await f.owner.rpc.rooms.create({ slug: f.conf.slug, name: "Studio", capacity: 20 });
+    const otherSub = await f.owner.rpc.submissions.create({ slug: f.conf.slug, title: "First" });
+    await f.owner.rpc.submissions.publish({ slug: f.conf.slug, id: otherSub.id });
+    await f.owner.rpc.agenda.setTrack({
+      slug: f.conf.slug, slot_id: f.slot.id, room_id: room.id, submission_id: otherSub.id,
+    });
+    const pinned = await f.owner.rpc.submissions.create({ slug: f.conf.slug, title: "Second" });
+    await f.owner.rpc.submissions.update({
+      slug: f.conf.slug, id: pinned.id, pre_assigned_room_id: room.id,
+    });
+    await f.owner.rpc.submissions.publish({ slug: f.conf.slug, id: pinned.id });
+
+    const r = await f.owner.rpc.agenda.scheduleSubmission({
+      slug: f.conf.slug, slot_id: f.slot.id, submission_id: pinned.id,
+    });
+    if (r.kind !== "conflict") throw new Error(`expected conflict, got ${r.kind}`);
+    expect(r.reason).toBe("pin_room_taken");
+    expect(r.pinned_room?.id).toBe(room.id);
+  });
+
+  test("returns unsatisfiable_requirements when no in-scope room has the right tags", async () => {
+    const f = await plannedFixture("noroom");
+    const plain = await f.owner.rpc.rooms.create({ slug: f.conf.slug, name: "Plain", capacity: 50 });
+    // A projector room exists in the conference (so the submission's
+    // room_requirement survives the create-time filter), but the slot's
+    // scope excludes it.
+    await f.owner.rpc.rooms.create({
+      slug: f.conf.slug, name: "Studio", capacity: 20, tags: ["projector"],
+    });
+    await f.owner.rpc.agenda.updateSlot({
+      slug: f.conf.slug, id: f.slot.id,
+      unconf_use_all_rooms: false, unconf_room_ids: [plain.id],
+    });
+    const sub = await f.owner.rpc.submissions.create({
+      slug: f.conf.slug, title: "Needs projector",
+      room_requirements: ["projector"],
+    });
+    await f.owner.rpc.submissions.publish({ slug: f.conf.slug, id: sub.id });
+
+    const r = await f.owner.rpc.agenda.scheduleSubmission({
+      slug: f.conf.slug, slot_id: f.slot.id, submission_id: sub.id,
+    });
+    if (r.kind !== "conflict") throw new Error(`expected conflict, got ${r.kind}`);
+    expect(r.reason).toBe("unsatisfiable_requirements");
+    expect(r.required_tags).toEqual(["projector"]);
+    expect(r.candidate_room_names).toEqual([]);
+  });
+
+  test("returns unsatisfiable_requirements with candidate_room_names when matching rooms are all taken", async () => {
+    const f = await plannedFixture("alltaken");
+    const proj = await f.owner.rpc.rooms.create({
+      slug: f.conf.slug, name: "Studio", capacity: 20, tags: ["projector"],
+    });
+    await f.owner.rpc.rooms.create({ slug: f.conf.slug, name: "Plain", capacity: 50 });
+    const firstSub = await f.owner.rpc.submissions.create({
+      slug: f.conf.slug, title: "First", room_requirements: ["projector"],
+    });
+    await f.owner.rpc.submissions.publish({ slug: f.conf.slug, id: firstSub.id });
+    // Manually pin the projector room.
+    await f.owner.rpc.agenda.setTrack({
+      slug: f.conf.slug, slot_id: f.slot.id, room_id: proj.id, submission_id: firstSub.id,
+    });
+    const secondSub = await f.owner.rpc.submissions.create({
+      slug: f.conf.slug, title: "Second", room_requirements: ["projector"],
+    });
+    await f.owner.rpc.submissions.publish({ slug: f.conf.slug, id: secondSub.id });
+
+    const r = await f.owner.rpc.agenda.scheduleSubmission({
+      slug: f.conf.slug, slot_id: f.slot.id, submission_id: secondSub.id,
+    });
+    if (r.kind !== "conflict") throw new Error(`expected conflict, got ${r.kind}`);
+    expect(r.reason).toBe("unsatisfiable_requirements");
+    expect(r.candidate_room_names).toContain("Studio");
+  });
+
+  test("returns no_free_room when every room in scope is already occupied", async () => {
+    const f = await plannedFixture("none");
+    const only = await f.owner.rpc.rooms.create({ slug: f.conf.slug, name: "Only", capacity: 50 });
+    const first = await f.owner.rpc.submissions.create({ slug: f.conf.slug, title: "First" });
+    await f.owner.rpc.submissions.publish({ slug: f.conf.slug, id: first.id });
+    await f.owner.rpc.agenda.setTrack({
+      slug: f.conf.slug, slot_id: f.slot.id, room_id: only.id, submission_id: first.id,
+    });
+    const second = await f.owner.rpc.submissions.create({ slug: f.conf.slug, title: "Second" });
+    await f.owner.rpc.submissions.publish({ slug: f.conf.slug, id: second.id });
+
+    const r = await f.owner.rpc.agenda.scheduleSubmission({
+      slug: f.conf.slug, slot_id: f.slot.id, submission_id: second.id,
+    });
+    if (r.kind !== "conflict") throw new Error(`expected conflict, got ${r.kind}`);
+    expect(r.reason).toBe("no_free_room");
+    expect(r.candidate_room_names).toEqual(["Only"]);
+  });
+
+  test("rejects calls on non-planned slots", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "auto-bad@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Bad" });
+    await owner.rpc.rooms.create({ slug: conf.slug, name: "R", capacity: 50 });
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: Date.now(), ends_at: Date.now() + 3600_000,
+    });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "T" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+    await expect(owner.rpc.agenda.scheduleSubmission({
+      slug: conf.slug, slot_id: slot.id, submission_id: sub.id,
+    })).rejects.toBeInstanceOf(ORPCError);
   });
 });

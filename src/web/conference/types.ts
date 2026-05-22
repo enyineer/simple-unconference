@@ -84,12 +84,16 @@ export interface AgendaData {
   tracks: Track[];
   /** Unconference placements; `attendee_count` is the number of users
    * currently assigned to that submission in that slot (used to compute
-   * remaining capacity for manual session-switching). */
+   * remaining capacity for manual session-switching). `star_count` and
+   * `room_capacity` power the "Room may be full" warning — when stars
+   * exceed capacity, demand outstripped the room. */
   placements: {
     slot_id: number;
     submission_id: number;
     room_id: number;
     attendee_count: number;
+    star_count: number;
+    room_capacity: number;
   }[];
   /** For mixer slots: per-room headcount after assignment. Privacy-safe
    * aggregate (no user identities). */

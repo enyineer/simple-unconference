@@ -30,6 +30,7 @@ import {
   SignupSchema,
   SignupViaLinkSchema,
   SlotTypeSchema,
+  ScheduleSubmissionSchema,
   TrackAssignmentSchema,
   TransferOwnershipSchema,
   UpdateConferenceSchema,
@@ -285,7 +286,16 @@ export interface TrackOut {
 }
 interface PlacementOut {
   slot_id: number; submission_id: number; room_id: number;
+  /** Number of users actually assigned to this placement after capacity
+   *  clipping. ≤ `room_capacity`. */
   attendee_count: number;
+  /** Total stars on the linked Submission across the whole conference —
+   *  the "demand signal." When `star_count > room_capacity`, more people
+   *  wanted in than the room can fit; the mod sees a soft warning. */
+  star_count: number;
+  /** Capacity of the assigned room, denormalized so the client can compute
+   *  `star_count > room_capacity` without a join. */
+  room_capacity: number;
 }
 interface MixerPlacementOut {
   slot_id: number; room_id: number; attendee_count: number;
@@ -340,6 +350,15 @@ interface AssignmentOut {
    *  submitter (so they're speaking, not attending). UI shows a "You're
    *  speaking" badge to distinguish from "you're attending." */
   is_submitter?: boolean;
+  /** Static rows only: total star count on the linked submission, used as a
+   *  rough expected-attendance estimate. Surfaced as a soft warning to the
+   *  participant when it exceeds the room's capacity. Null for non-static
+   *  sources (where attendance is bounded by the assignment algorithm). */
+  expected_attendance?: number | null;
+  /** Static rows only: capacity of the assigned room, denormalized so the
+   *  client can compare against `expected_attendance` without a second
+   *  lookup. Null when the row has no `room_id`. */
+  room_capacity?: number | null;
 }
 export interface MyAssignmentsOut {
   assignments: AssignmentOut[];
@@ -420,6 +439,38 @@ type AssignResult =
   | {
       kind: "conflict";
       conflicts: PreAssignmentConflict[];
+    };
+
+// Result shape for `agenda.scheduleSubmission`. On success, returns the
+// auto-picked room (or the Submission's pinned room when set). On failure,
+// `reason` explains exactly why no room could be assigned:
+//   - "pin_room_taken": Submission.preAssignedRoomId is set, but another
+//     track in this slot already occupies that room.
+//   - "pin_room_out_of_scope": pinned room isn't in the slot's effective
+//     room set (series-restricted or removed).
+//   - "unsatisfiable_requirements": the submission's room_requirements
+//     can't be satisfied by any free room in scope. `candidate_room_names`
+//     lists rooms whose tag set matches; when empty, no room matches at all;
+//     when non-empty, every matching room is already taken.
+//   - "no_free_room": neither pin nor tag constraints apply, but every
+//     room in scope is already occupied by another track.
+type ScheduleSubmissionResult =
+  | {
+      kind: "ok";
+      track_id: number;
+      room_id: number;
+      room_name: string;
+    }
+  | {
+      kind: "conflict";
+      reason:
+        | "pin_room_taken"
+        | "pin_room_out_of_scope"
+        | "unsatisfiable_requirements"
+        | "no_free_room";
+      pinned_room: { id: number; name: string } | null;
+      required_tags: string[];
+      candidate_room_names: string[];
     };
 
 // ----- contract ------------------------------------------------------------
@@ -681,6 +732,13 @@ export const contract = {
     setTrack: oc
       .input(v.object({ slug: Slug, slot_id: Id, ...TrackAssignmentSchema.entries }))
       .output(type<Ok>()),
+    // Same intent as `setTrack`, but the server picks the room based on the
+    // Submission's pin (`preAssignedRoomId`), its `roomRequirements`, and
+    // the largest free room in the slot's effective scope. Conflicts come
+    // back as a structured payload — see `ScheduleSubmissionResult`.
+    scheduleSubmission: oc
+      .input(v.object({ slug: Slug, slot_id: Id, ...ScheduleSubmissionSchema.entries }))
+      .output(type<ScheduleSubmissionResult>()),
     clearTrack: oc
       .input(v.object({ slug: Slug, slot_id: Id, room_id: Id }))
       .output(type<Ok>()),
