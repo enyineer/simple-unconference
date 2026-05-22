@@ -984,8 +984,11 @@ describe("rooms + agenda + unconference assignment", () => {
       ends_at:   1_700_003_600_000,
     });
 
-    const newStart = 1_700_001_800_000;
-    const newEnd   = 1_700_007_200_000;
+    // Aligned to whole minutes — every user-set instant is clipped to the
+    // minute on write (see clipToMinute in shared/tz). Using a sub-minute
+    // value here would surface as a normalize-then-compare mismatch.
+    const newStart = 1_700_001_780_000;
+    const newEnd   = 1_700_007_180_000;
     await owner.rpc.agenda.updateSlot({
       slug: conf.slug, id: slot.id,
       starts_at: newStart, ends_at: newEnd,

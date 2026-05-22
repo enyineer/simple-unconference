@@ -12,6 +12,7 @@ import { RPCHandler } from "@orpc/server/fetch";
 import type { PrismaClient, SubmissionStatus, Prisma } from "@prisma/client";
 import { randomBytes } from "node:crypto";
 import { contract } from "../shared/contract";
+import { clipToMinute } from "../shared/tz";
 import {
   hashPassword, verifyPassword,
   createOwnerSession, createIdentitySession, destroySession,
@@ -2509,8 +2510,8 @@ const agendaRouter = {
         type: input.type,
         title: input.title ?? null,
         description: input.description ?? null,
-        startsAt: new Date(input.starts_at),
-        endsAt: new Date(input.ends_at),
+        startsAt: new Date(clipToMinute(input.starts_at)),
+        endsAt: new Date(clipToMinute(input.ends_at)),
         // Only meaningful for mixer slots; harmless null on others.
         mixerAvoidRepeats: input.type === "mixer"
           ? (input.mixer_avoid_repeats ?? null)
@@ -2553,8 +2554,8 @@ const agendaRouter = {
         data: {
           title: input.title ?? undefined,
           description: input.description ?? undefined,
-          startsAt: input.starts_at ? new Date(input.starts_at) : undefined,
-          endsAt: input.ends_at ? new Date(input.ends_at) : undefined,
+          startsAt: input.starts_at ? new Date(clipToMinute(input.starts_at)) : undefined,
+          endsAt: input.ends_at ? new Date(clipToMinute(input.ends_at)) : undefined,
           unconfUseAllRooms: input.unconf_use_all_rooms ?? undefined,
           unconfUseAllSubmissions: input.unconf_use_all_submissions ?? undefined,
           unconfAvoidRepeats: input.unconf_avoid_repeats ?? undefined,
@@ -2682,8 +2683,8 @@ const agendaRouter = {
           type: source.type,
           title: input.title ?? source.title,
           description: source.description,
-          startsAt: new Date(input.new_starts_at),
-          endsAt: new Date(input.new_ends_at),
+          startsAt: new Date(clipToMinute(input.new_starts_at)),
+          endsAt: new Date(clipToMinute(input.new_ends_at)),
         },
       });
       // Copy each TrackAssignment onto the sibling, preserving the linked
@@ -3593,8 +3594,8 @@ const expertsRouter = {
     const created = await context.prisma.expertTimeframe.create({
       data: {
         expertId: expert.id,
-        startsAt: new Date(input.starts_at),
-        endsAt: new Date(input.ends_at),
+        startsAt: new Date(clipToMinute(input.starts_at)),
+        endsAt: new Date(clipToMinute(input.ends_at)),
         slotDurationMinutes: input.slot_duration_minutes,
       },
       select: { id: true },
@@ -3632,15 +3633,20 @@ const expertsRouter = {
       const candidateFrames = await tx.expertTimeframe.findMany({
         where: { expertId: expert.id },
       });
+      // Normalize the requested start to whole-minute granularity (same as
+      // every other slot-time write in the system). Timeframes are clipped
+      // on create, so derived slot starts are always at :00 — a raw-ms
+      // input that happened to include seconds would never match otherwise.
+      const requestedStart = clipToMinute(input.starts_at);
       let frame: typeof candidateFrames[number] | null = null;
       let slotEnd = 0;
       for (const tf of candidateFrames) {
         const slots = deriveSlots(tf.startsAt, tf.endsAt, tf.slotDurationMinutes);
-        const hit = slots.find((s) => s.startsAt === input.starts_at);
+        const hit = slots.find((s) => s.startsAt === requestedStart);
         if (hit) { frame = tf; slotEnd = hit.endsAt; break; }
       }
       if (!frame) throw new ORPCError("NOT_FOUND", { message: "slot_not_found" });
-      if (input.starts_at <= Date.now()) {
+      if (requestedStart <= Date.now()) {
         throw new ORPCError("CONFLICT", { message: "slot_in_past" });
       }
       // Max 1 booking per expert for this booker.
@@ -3654,7 +3660,7 @@ const expertsRouter = {
         where: {
           bookerId: myId,
           startsAt: { lt: new Date(slotEnd) },
-          endsAt: { gt: new Date(input.starts_at) },
+          endsAt: { gt: new Date(requestedStart) },
         },
         select: { id: true },
       });
@@ -3670,7 +3676,7 @@ const expertsRouter = {
         where: {
           roomId: { in: candidateRoomIds },
           startsAt: { lt: new Date(slotEnd) },
-          endsAt: { gt: new Date(input.starts_at) },
+          endsAt: { gt: new Date(requestedStart) },
         },
         select: { roomId: true, startsAt: true, endsAt: true },
       });
@@ -3679,7 +3685,7 @@ const expertsRouter = {
         conflictingRows.map((r) => ({
           roomId: r.roomId, startsAt: r.startsAt.getTime(), endsAt: r.endsAt.getTime(),
         })),
-        { startsAt: input.starts_at, endsAt: slotEnd },
+        { startsAt: requestedStart, endsAt: slotEnd },
       );
       if (roomId === null) {
         throw new ORPCError("CONFLICT", { message: "no_room_available" });
@@ -3690,7 +3696,7 @@ const expertsRouter = {
           timeframeId: frame.id,
           bookerId: myId,
           roomId,
-          startsAt: new Date(input.starts_at),
+          startsAt: new Date(requestedStart),
           endsAt: new Date(slotEnd),
         },
       });

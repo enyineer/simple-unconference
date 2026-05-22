@@ -11,7 +11,9 @@ import {
 import { deriveSlots, pickAvailableRoom } from "./experts";
 
 // Pick a time well in the future so the "slot in past" guard never fires.
-const FUTURE_BASE = Date.now() + 7 * 24 * 60 * 60 * 1000;
+// Floor to the minute so the value matches what the server stores — every
+// user-set instant goes through `clipToMinute` on write.
+const FUTURE_BASE = Math.floor((Date.now() + 7 * 24 * 60 * 60 * 1000) / 60_000) * 60_000;
 function at(offsetMin: number): number {
   return FUTURE_BASE + offsetMin * 60_000;
 }

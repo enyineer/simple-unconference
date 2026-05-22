@@ -4,7 +4,7 @@ import {
   Button, Heading, Spinner, Stack,
 } from "../../design-system";
 import { api, errorCode } from "../../api";
-import { formatInTz } from "../../../shared/tz";
+import { clipToMinute, formatInTz } from "../../../shared/tz";
 import { fmtTimeShort } from "../helpers";
 import type { AgendaData, MyAssignments, Room, Slot, Submission } from "../types";
 import { EmptyState } from "../ui/EmptyState";
@@ -97,13 +97,19 @@ export function MyAssignmentsTab({
   }
   function conflictsFor(a: typeof sorted[number]): string[] {
     const out: string[] = [];
+    // Clip to whole minute (same granularity as the displayed labels) so a
+    // touching-minute boundary doesn't get flagged as a 30s overlap.
+    const aStart = clipToMinute(a.starts_at);
+    const aEnd = clipToMinute(a.ends_at);
     for (const other of sorted) {
       if (rowKey(other) === rowKey(a)) continue;
       // Same-submission rows aren't conflicts — they're shown as alternates
       // instead. Real conflicts are between different content at the same time.
       if (a.submission_id !== null && a.submission_id === other.submission_id) continue;
-      // Standard overlap test: a starts before other ends AND other starts before a ends.
-      if (a.starts_at < other.ends_at && other.starts_at < a.ends_at) {
+      const oStart = clipToMinute(other.starts_at);
+      const oEnd = clipToMinute(other.ends_at);
+      // Standard half-open overlap test on whole-minute edges.
+      if (aStart < oEnd && oStart < aEnd) {
         out.push(other.title ?? "Another session");
       }
     }

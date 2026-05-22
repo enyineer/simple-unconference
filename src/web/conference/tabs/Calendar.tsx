@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { formatInTz, instantToWallClock, wallClockToInstant } from "../../../shared/tz";
+import { clipToMinute, formatInTz, instantToWallClock, wallClockToInstant } from "../../../shared/tz";
 import { DragScrollRow } from "../ui/DragScrollRow";
 
 // ----- data shapes the calendar needs --------------------------------------
@@ -123,12 +123,11 @@ function layoutSlots(slots: CalSlot[]): SlotLayout[] {
   // granularity. Without this, a slot ending at 18:07:30 (labelled "18:07")
   // and a slot starting at 18:07:15 (also labelled "18:07") get rendered
   // side-by-side because they technically overlap by 15s — visually
-  // confusing because the labels read as adjacent. Snapping to whole
-  // minutes (floor for both) makes the layout align with what the user
-  // can see: same-minute touches do NOT count as overlap.
-  const MIN = 60_000;
-  const startMin = (s: CalSlot) => Math.floor(s.starts_at / MIN);
-  const endMin = (s: CalSlot) => Math.floor(s.ends_at / MIN);
+  // confusing because the labels read as adjacent. `clipToMinute` (shared
+  // with the MyAssignments conflict detector and the server-side time
+  // normalization) makes the layout align with what the user can see.
+  const startMin = (s: CalSlot) => clipToMinute(s.starts_at);
+  const endMin = (s: CalSlot) => clipToMinute(s.ends_at);
 
   const sorted = [...slots].sort((a, b) => a.starts_at - b.starts_at);
   const out: SlotLayout[] = [];

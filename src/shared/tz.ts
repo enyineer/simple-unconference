@@ -65,6 +65,18 @@ export function wallClockToInstant(wallClock: string, timeZone: string): number 
   return naive - offsetMs;
 }
 
+/**
+ * Floor an epoch instant to the whole minute that contains it. The UI's
+ * time pickers and labels render at minute granularity, so seconds /
+ * milliseconds in any user-facing comparison (overlap detection, conflict
+ * highlighting, calendar column layout) just produce noise that doesn't
+ * match what users can see. Normalize at the boundary instead of
+ * defensively clipping at every read site.
+ */
+export function clipToMinute(ms: number): number {
+  return Math.floor(ms / 60_000) * 60_000;
+}
+
 /** Format an instant in a given timezone using `Intl.DateTimeFormat`. */
 export function formatInTz(
   ms: number,
