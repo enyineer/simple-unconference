@@ -74,18 +74,23 @@ function mimeFor(path: string): string {
 }
 
 // Starts the HTTP server. Exported so the cluster launcher can call it in
-// single-worker mode without spawning a child. `reusePort: true` lets the
-// kernel load-balance new connections across multiple processes sharing
-// this port (used by the cluster launcher; harmless with a single worker).
+// single-worker mode without spawning a child. `reusePort` is enabled only
+// when the cluster launcher forked us (it sets WORKER_ID), so the kernel
+// can load-balance connections across multiple worker processes sharing
+// this port. In single-process mode (dev `bun --hot`, plain `bun start`,
+// WORKERS=1) we leave it off so Bun.serve fails fast with EADDRINUSE if
+// the port is already bound — otherwise an orphaned old backend can keep
+// answering requests alongside the new one and you'd never notice.
 export function startServer(): void {
   const app = buildApp();
   const port = Number(process.env.PORT ?? 3000);
   const distDir = join(import.meta.dir, "../../dist");
   const wantsStatic = process.env.SERVE_STATIC !== "0" && existsSync(distDir);
+  const isClusterWorker = process.env.WORKER_ID !== undefined;
 
   Bun.serve({
     port,
-    reusePort: true,
+    reusePort: isClusterWorker,
     fetch(req) {
       const url = new URL(req.url);
       if (url.pathname.startsWith("/api/")) return app.fetch(req);

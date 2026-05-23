@@ -94,6 +94,32 @@ something the next session would need to know.
 - **`NowIndicator`** in `Calendar.tsx` only renders when the day being drawn
   is today. Aligned to whole-minute ticks via `setTimeout` then `setInterval`.
 
+## Code organization
+
+- **Keep files small and DRY.** This codebase is intentionally split by
+  router (`src/server/rpc/*.ts`), tab area (`src/web/conference/tabs/<area>/*.tsx`),
+  and schema domain (`src/shared/schemas/*.ts`) so each file has one focus.
+  Reach for that pattern when adding new code: drop a new sub-component into
+  the relevant `tabs/<area>/` directory instead of growing the tab's main
+  file; add a new procedure to the right `rpc/<router>.ts` instead of
+  reopening a megafile.
+- **Soft cap ~500 lines per file.** Once a file passes that, look for natural
+  seams (per-component, per-router, per-domain helper) and split. Don't
+  carve a 200-line file into five files just to hit a target — premature
+  splitting buys nothing and forces readers to chase indirection. Split when
+  the file is genuinely doing two things, not because it's "long."
+- **Don't duplicate logic** that another module already exposes. If you find
+  yourself copying a helper, lift it into the nearest shared module
+  (`src/server/rpc/shared.ts`, `src/web/conference/helpers.ts`, etc.) and
+  import it. The privacy / permission helpers in
+  [src/server/lib/permissions.ts](src/server/lib/permissions.ts) are the
+  canonical example — never re-implement role checks inline.
+- **Entry-file re-exports are the integration seam.** `src/shared/contract.ts`
+  and `src/shared/schemas.ts` are thin re-exporters over their sub-module
+  directories so external import paths stay stable. When you add a new
+  schema/type, put it in the right sub-file and let the entry file pick it
+  up via `export *`; don't add it directly to the entry file.
+
 ## Validation
 
 - All form-shaped routes parse the body through valibot schemas in
