@@ -1,5 +1,138 @@
 # simple-unconference
 
+## 0.8.0
+
+### Minor Changes
+
+- [`111068a`](https://github.com/enyineer/simple-unconference/commit/111068ac4b49a227d52fc140be1efcdcfe4cf0f3) Thanks [@enyineer](https://github.com/enyineer)! - Add 1-on-1 chat between conference participants, with realtime delivery, moderation, and read receipts.
+
+  **Chat surface**
+
+  A new "Chat" tab in every conference. Participants can message any other participant who has a published profile and hasn't disabled chat. Moderators can DM unpublished participants for moderation outreach. Composer supports edit (15-minute window, with full revision history kept for moderators) and soft-delete. Messages over 4096 bytes are rejected; rate limits cap new conversations at 10/hour and messages at 30/minute per identity (both env-configurable via `CHAT_NEW_CONVERSATIONS_PER_HOUR`, `CHAT_MESSAGES_PER_MINUTE`, `CHAT_MESSAGE_MAX_BYTES`).
+
+  **Privacy model**
+
+  - Two identities can chat iff both have `profilePublished=true`, both have `chatEnabled=true`, neither is banned, and neither has blocked the other. Mods bypass the published check; everything else still applies. Single source of truth: `canChatWith` in `src/server/lib/permissions.ts`.
+  - Chat responses never include either participant's canonical email. Read receipts (`Message.readAt`) are stripped from the _sender's_ serialization when the _recipient_ has `chatReadReceiptsEnabled=false`.
+  - Per-user blocks (separate from the global chat-enabled toggle) hide the conversation both ways and prevent new conversations.
+
+  **Moderation**
+
+  Reported messages land in the People tab for moderators with the message, its full revision chain, and 5 surrounding messages from the conversation. Actions: Dismiss, Warn (sends a `chat_warning` notification with the report reason), Ban (sets `chatBannedAt` on the sender's identity and soft-deletes the offending message). Banned identities can't send but the conversation stays visible. Unban from the same surface.
+
+  **Realtime infrastructure**
+
+  New `EventBus` abstraction with two implementations: `InProcessBus` for single-worker dev/test, `ClusterBus` for production (`WORKERS > 1`). `ClusterBus` rides Bun's built-in `ipc` callback on `Bun.spawn` — the launcher in `src/server/cluster.ts` mirrors `{type:"bus", event}` messages to every other worker. Per-worker bounded queue (1000 events) with logged drop counters; client `Last-Event-ID` replay heals any losses.
+
+  One global SSE connection per browser tab at `GET /api/realtime/stream`. Mounted at App level via `<RealtimeProvider>`. Multiplexed by event kind via a small client `realtimeBus` (`message.created`, `message.edited`, `message.deleted`, `message.read`, `notification.upserted`, `notification.read`). The existing notification bell now refreshes on push (with a 30s poll as fallback). Bun.serve `idleTimeout: 0` so the API can hold long-lived SSE connections through the 20s heartbeat.
+
+  **Schema additions**
+
+  5 new models — `Conversation`, `Message`, `MessageRevision`, `MessageReport`, `ChatBlock` — plus 5 columns on `ConferenceIdentity` (`chatEnabled`, `chatReadReceiptsEnabled`, `chatBannedAt`, `chatBannedReason`, `chatBannedByUserId`) and 2 on `Notification` (`dedupeKey`, `unreadCount` — generalized coalescing so chat events collapse into one bell row per conversation). Single migration: `20260523082627_add_chat_models`.
+
+  **Notification coalescing**
+
+  `Notification.@@unique([identityId, dedupeKey])` enforces at most one row per conversation per identity. `upsertChatNotification` reuses the existing row regardless of read state: unread → increment count; previously read → reset to a fresh unread cycle. `markRead` nulls the `dedupeKey` so the slot frees for future cycles.
+
+  **Retention**
+
+  Conference deletion blocks when any unresolved chat reports exist (`open_chat_reports` error). Resolved reports are pre-deleted as part of the cascade. Identity removal pre-deletes reports filed against that user's messages — they're leaving entirely, the audit trail closes with them.
+
+  **Frontend routing**
+
+  Migrated from the hand-rolled `matchRoute` helper to `wouter` (~1.5KB) so tabs can be real routes (`/conferences/:slug/chat`, `/conferences/:slug/sessions`, etc.) instead of local `useState`. Deep links, the back/forward buttons, and the bell's "Open chat" CTA all line up with the visible tab. The legacy `useRoute()` / `matchRoute()` helpers are still exported as thin wouter wrappers so older callers keep compiling.
+
+  **New Prometheus metrics**
+
+  Per-worker — `chat_conversations_total`, `chat_conversations_accepted_total`, `chat_messages_total`, `chat_messages_deleted_total`, `chat_reports_total`, `chat_reports_open_total` (alert when sustained), `chat_blocks_total`, `chat_banned_identities_total`, `chat_disabled_identities_total`, `realtime_sse_active_connections`, `realtime_sse_total_connections`, `realtime_sse_replay_message_events_total`, `realtime_sse_replay_notification_events_total`, `bus_active_subscriptions`, `bus_ipc_sent_total`, `bus_ipc_received_total`, `bus_published_total{kind=…}`, `bus_delivered_total{kind=…}`.
+
+  **Operational notes**
+
+  - Unexpected procedure errors now log to console via a new oRPC interceptor (`[rpc] procedure threw …`); intentional `ORPCError` throws stay quiet.
+  - `Bun.serve { idleTimeout: 0 }` is required for SSE to survive past the default ~10s. Don't lower it.
+
+- [`111068a`](https://github.com/enyineer/simple-unconference/commit/111068ac4b49a227d52fc140be1efcdcfe4cf0f3) Thanks [@enyineer](https://github.com/enyineer)! - Move Prometheus metrics from `/api/metrics` on the main app port to a dedicated `/metrics` endpoint on `METRICS_PORT` (default `9090`), and aggregate them across workers in the cluster launcher.
+
+  **Why**
+
+  With `WORKERS > 1`, every worker behind `SO_REUSEPORT` kept its own in-memory counters. Prometheus scrapes landed on whichever worker the kernel picked that round, so `realtime_sse_active_connections`, `bus_*`, etc. oscillated between workers' local snapshots — dashboards showed ~1/Nth of reality. Moving the endpoint to a launcher-owned port also lets ops keep it off the main `Service` (and Ingress) entirely.
+
+  **What changed**
+
+  - New port `METRICS_PORT` (default `9090`) served by the cluster launcher when `WORKERS > 1`, or by the app process in single-worker mode. Path is `/metrics` (no `/api/` prefix).
+  - Workers push per-process snapshots to the launcher over Bun IPC every 5 s. Worker 0 additionally pushes DB row counts + storage stats — single source for the global numbers, no N-way Prisma fan-out.
+  - Aggregation produces per-worker series with a `worker="N"` label for per-process metrics (active connections, bus counters, IPC counters) plus unlabeled global metrics for DB + storage counts. Aggregate with PromQL `sum()`.
+  - New observability metrics: `app_workers_total`, `app_workers_stale_total`, `app_metrics_global_stale`, `worker_uptime_seconds{worker}`. Removed `app_worker_id` (no longer meaningful at the cluster level).
+
+  **Helm chart**
+
+  - New `metrics.enabled` (default `true`) and `metrics.port` (default `9090`) values.
+  - New `ClusterIP` Service `<release>-simple-unconference-metrics` exposing only the metrics port. The main app Service no longer carries a metrics port.
+  - `ServiceMonitor` now targets the metrics Service, `port: metrics`, `path: /metrics`.
+
+  **Breaking changes**
+
+  - `/api/metrics` is removed. External scrape configs must move to the new path + port + Service.
+  - `app_worker_id` is removed; use `app_workers_total` for cluster size or filter per-worker series via the `worker` label.
+  - Per-worker metrics (`realtime_sse_*`, `bus_*`) now carry a `worker` label; dashboards that previously read the raw series will need `sum()` to recover the cluster total.
+
+- [`8c3cf5b`](https://github.com/enyineer/simple-unconference/commit/8c3cf5b532f95c1ca394568ebabad778aad7057a) Thanks [@enyineer](https://github.com/enyineer)! - Paginate + add server-side search to the large list views so big conferences (hundreds-to-thousands of sessions, participants, profiles, rooms, invites, and chat reports) stay responsive.
+
+  **Shared building blocks**
+
+  - New `Page<T> = { items, total, next_cursor }` envelope in `src/shared/contract/types.ts` and a matching `PageInputEntries` valibot primitive (`q`, `cursor`, `limit`) composed into each paginated procedure's input.
+  - Server helpers `parsePageInput` / `pageOf` in `src/server/rpc/shared.ts`. `cursor` is an opaque offset token (decimal string); `limit` clamps to `[1, 100]`, default 25.
+  - Frontend `usePaginatedList` hook in `src/web/conference/usePaginatedList.ts` — owns search `q` with 200ms debounce, cursor stack so Prev is O(1), stale-fetch suppression via a sequence counter, and a `refresh()` hook callers wire to realtime bus events.
+  - `<Pager />` UI in `src/web/conference/ui/Pager.tsx`: "Showing X-Y of N · Page X/Y" + Prev/Next. Drop-in for every list.
+
+  **Paginated + searchable**
+
+  - `rooms.list` — search by name / description / tag.
+  - `submissions.list` — search by title / description / submitter name / tag (mods also match submitter email). `status`, `starred_only`, and `tags[]` (AND) are server-side too so paging counts honor them.
+  - `profiles.list` — search by name / title / company / tag.
+  - `conferences.listParticipants` — search by email / name.
+  - `conferences.listInvites` — search by email; new `status: "pending" | "claimed" | "all"` filter.
+  - `moderation.listChatReports` — search by reason / reporter name / sender name / message body. Returns compact `MessageReportSummaryOut` rows (no surrounding-message window).
+  - `moderation.listChatBans` — search by name / email / ban reason.
+
+  **New escape-hatch procedures**
+
+  Picker / form contexts that genuinely need every row (slot pickers, session room-tag picker, expert/agenda views) keep working via:
+
+  - `rooms.listAll` — unpaginated, `RoomOut[]` (the previous shape of `rooms.list`).
+  - `submissions.listAll` — unpaginated, `SubmissionOut[]` (the previous shape of `submissions.list`); honors the same privacy gate.
+  - `moderation.getChatReport` — full `MessageReportOut` (revisions + ±5 surrounding messages) loaded lazily when the moderator opens a report from the paginated list.
+  - `conferences.exportInvites` — server-streamed CSV-source list of every pending invite matching the current search `q`. The People tab's "Download CSV" button now calls this instead of paging the client through every row, so big rosters export consistently and don't race against creates / claims.
+
+  **UI changes**
+
+  - Rooms tab: search input + pager.
+  - Sessions tab: search now hits the server (folds in tag/title/description/speaker matches); status chips and starred-only toggle are server-driven; pager replaces the implicit "everything in memory" model.
+  - Directory: pager replaces the old "load everything" pattern; the existing 200ms debounce moves into `usePaginatedList`.
+  - People tab: separate search + pager for participants and pending invites; Chat-reports section gets its own search + pager, plus a separate search + pager for the banned-from-chat list. Status chips on reports keep working.
+
+  **Wire-shape changes**
+
+  The `list` procedures above now return `Page<T>` instead of `T[]`. Tests that consumed the array directly use `.items` (or `listAll` where the original semantics matter). All 374 tests pass; `tsc --noEmit` clean.
+
+  **Dev script reliability**
+
+  `bun --hot` reloads file bodies in place, but the oRPC router is built once at module-eval time — `implement(contract)` + the `requireConf(...).foo.list.handler(...)` chain capture references to the contract object then. Reshaping the contract or adding a procedure doesn't propagate to the running router; the API keeps serving the old wire shape while the SPA recompiles against the new types. `scripts/dev.ts` now restarts the API on changes under `src/server/rpc/**` or `src/shared/contract*`, matching the existing Prisma-client watcher pattern. All three watchers share a single 300ms debounced timer.
+
+### Patch Changes
+
+- [`3b0f7de`](https://github.com/enyineer/simple-unconference/commit/3b0f7de9f0cafdea2260fd09b3c02249fc4564e8) Thanks [@enyineer](https://github.com/enyineer)! - Polish the profile page and directory tab for mobile and visual consistency.
+
+  Profile page: the avatar previously rendered at a fixed `256×256`, which dominated narrow viewports. It now sizes responsively (`160×160` on desktop, `88×88` on mobile) and opens in a full-viewport lightbox on click (dismiss with click anywhere or Esc; body scroll is locked while open). Each entry row collapses from `label | value | copy` to a 2-row stack on screens ≤640px so long values get the full width instead of competing with a fixed label column. The "Tags", "Web & socials", and "Contact" sections are now wrapped in `Card` to match the header's chrome, and the in-card heading was demoted from `h1` to `h2` (the page already owns the document-level heading context).
+
+  Directory tab: `YourProfileCard` and `DirectoryRow` now share the same row chrome — the accent-left stripe on the viewer's own row is gone, replaced by an inline "You" badge next to the name, so the directory reads as one consistent list. Rows collapse on screens ≤480px (actions drop below the text instead of being squeezed against the avatar), long names and subtitles ellipsize (subtitle line-clamped to 2 lines), the search input gained a clear (×) button when populated, and a result count line ("12 profiles match your filters") appears above the list.
+
+- [`b9d0ca5`](https://github.com/enyineer/simple-unconference/commit/b9d0ca598df0340f2fcdf6fc487f0f654aa85743) Thanks [@enyineer](https://github.com/enyineer)! - Internal: split the largest source files into focused modules, and fail fast in dev when the API port is already bound.
+
+  The nine largest files (`src/server/rpc.ts` at 4466 lines, `AgendaTab.tsx` at 3448, `SessionsTab.tsx` at 1528, `Calendar.tsx` at 1005, `ExpertsTab.tsx` at 985, `SettingsTab.tsx` at 926, `shared/contract.ts` at 915, `MyAssignmentsTab.tsx` at 718, and `shared/schemas.ts` at 555) have been split by router / component / domain into per-file modules under `src/server/rpc/`, `src/web/conference/tabs/<area>/`, `src/shared/contract/`, and `src/shared/schemas/`. Public exports and import paths used by external consumers are preserved (the shared entry files now re-export from the sub-modules), so no calling code changed. Behavior is identical: typecheck clean, lint clean, all 320 tests pass.
+
+  Dev port guard: `Bun.serve` previously used `reusePort: true` unconditionally, which let a freshly-started dev API silently bind alongside an orphaned old process and answer half the requests. `reusePort` is now enabled only for forked cluster workers (which have `WORKER_ID` set). Single-process mode — `bun dev`, `bun start`, and `WORKERS=1`/unset — leaves it off, so a port collision surfaces as a hard `EADDRINUSE` instead of two backends serving stale code in parallel. Multi-worker production behavior is unchanged.
+
 ## 0.7.0
 
 ### Minor Changes
