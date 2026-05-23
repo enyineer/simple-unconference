@@ -3,6 +3,7 @@ import type { PrismaClient, SubmissionStatus, Prisma } from "@prisma/client";
 import {
   requireConf, actorIdentityId,
   normalizeLabels, filterToExistingRoomTags,
+  pageOf, parsePageInput,
   resolveFinished,
 } from "./shared";
 import { createNotification, createNotifications, modIdentityIds } from "../notifications";
@@ -12,103 +13,174 @@ async function setStatus(prisma: PrismaClient, confId: number, id: number, statu
   await prisma.submission.updateMany({ where: { id, conferenceId: confId }, data: { status } });
 }
 
+const submissionInclude = (myIdentityId: number) => ({
+  submitter: { select: { id: true, email: true, name: true, profilePublished: true } },
+  _count: { select: { stars: true, placements: true, trackAssignments: true } },
+  stars: { where: { userId: myIdentityId }, select: { userId: true } },
+  tags: { select: { value: true }, orderBy: { value: "asc" as const } },
+  requirements: { select: { value: true }, orderBy: { value: "asc" as const } },
+  roomRequirements: { select: { value: true }, orderBy: { value: "asc" as const } },
+  trackAssignments: {
+    include: {
+      slot: { select: { startsAt: true, endsAt: true } },
+      room: { select: { id: true, name: true } },
+    },
+    orderBy: { slot: { startsAt: "asc" as const } },
+  },
+});
+
+type LoadedSubmission = Prisma.SubmissionGetPayload<{
+  include: ReturnType<typeof submissionInclude>;
+}>;
+
+function toSubmissionOut(
+  s: LoadedSubmission,
+  ctx: { isMod: boolean; submissionMaxPlacementsDefault: number | null },
+) {
+  const placementCount = s._count.placements + s._count.trackAssignments;
+  const { is_finished } = resolveFinished(
+    { maxPlacements: s.maxPlacements, manuallyFinished: s.manuallyFinished },
+    ctx.submissionMaxPlacementsDefault,
+    placementCount,
+  );
+  return {
+    id: s.id,
+    conference_id: s.conferenceId,
+    submitter_id: s.submitterId,
+    submitter_name: s.submitter.name,
+    submitter_email: ctx.isMod ? s.submitter.email : null,
+    submitter_profile_published: s.submitter.profilePublished,
+    title: s.title,
+    description: s.description,
+    status: s.status,
+    created_at: s.createdAt.getTime(),
+    star_count: s._count.stars,
+    starred_by_me: s.stars.length > 0,
+    tags: s.tags.map((t) => t.value),
+    requirements: s.requirements.map((r) => r.value),
+    room_requirements: s.roomRequirements.map((r) => r.value),
+    max_placements: s.maxPlacements,
+    manually_finished: s.manuallyFinished,
+    pre_assigned_room_id: s.preAssignedRoomId,
+    allow_overlapping_placements: s.allowOverlappingPlacements,
+    placement_count: placementCount,
+    is_finished,
+    scheduled_in: s.trackAssignments.map((t) => ({
+      slot_id: t.slotId,
+      starts_at: t.slot.startsAt.getTime(),
+      ends_at: t.slot.endsAt.getTime(),
+      room_id: t.roomId,
+      room_name: t.room.name,
+    })),
+  };
+}
+
+function visibilityWhere(
+  conferenceId: number,
+  isMod: boolean,
+  myIdentityId: number,
+  status: SubmissionStatus | undefined,
+): Prisma.SubmissionWhereInput {
+  return isMod
+    ? {
+        conferenceId,
+        ...(status ? { status } : {}),
+      }
+    : {
+        conferenceId,
+        OR: [
+          { status: "published" as const },
+          { submitterId: myIdentityId },
+        ],
+      };
+}
+
 export const submissionsRouter = {
   list: requireConf("participant").submissions.list.handler(async ({ input, context }) => {
     const isMod = context.principal.role === "owner" || context.principal.role === "moderator";
     const myIdentityId = actorIdentityId(context);
-    // Mods see everything (optionally filtered by status chip). Participants
-    // see published sessions plus their own (any status) so they can find a
-    // session they just submitted and delete it before a mod decides on it.
-    const where: Prisma.SubmissionWhereInput = isMod
-      ? {
-          conferenceId: context.conferenceId,
-          ...(input.status ? { status: input.status } : {}),
-        }
-      : {
-          conferenceId: context.conferenceId,
-          OR: [
-            { status: "published" as const },
-            { submitterId: myIdentityId },
-          ],
-        };
-    const [subs, conf] = await Promise.all([
+    const { offset, limit, q } = parsePageInput(input);
+    // Tag chip filter — AND semantics. Normalize early so the case-folded
+    // form matches what we persist on the join row.
+    const tagFilters = (input.tags ?? [])
+      .map((t) => t.trim().toLowerCase())
+      .filter((t) => t.length > 0);
+
+    const baseWhere = visibilityWhere(
+      context.conferenceId, isMod, myIdentityId, input.status,
+    );
+    const filters: Prisma.SubmissionWhereInput[] = [];
+    if (q) {
+      const orBranches: Prisma.SubmissionWhereInput[] = [
+        { title: { contains: q } },
+        { description: { contains: q } },
+        { submitter: { name: { contains: q } } },
+        { tags: { some: { value: { contains: q } } } },
+      ];
+      // Mods can search by submitter email; for non-mods the email surface
+      // is masked, so matching against it would leak existence by side
+      // channel.
+      if (isMod) {
+        orBranches.push({ submitter: { email: { contains: q } } });
+      }
+      filters.push({ OR: orBranches });
+    }
+    if (tagFilters.length > 0) {
+      filters.push({
+        AND: tagFilters.map((value) => ({ tags: { some: { value } } })),
+      });
+    }
+    if (input.starred_only) {
+      filters.push({ stars: { some: { userId: myIdentityId } } });
+    }
+    const where: Prisma.SubmissionWhereInput = filters.length === 0
+      ? baseWhere
+      : { AND: [baseWhere, ...filters] };
+
+    const [total, subs, conf] = await Promise.all([
+      context.prisma.submission.count({ where }),
       context.prisma.submission.findMany({
         where,
-        include: {
-          submitter: { select: { id: true, email: true, name: true, profilePublished: true } },
-          _count: { select: { stars: true, placements: true, trackAssignments: true } },
-          stars: { where: { userId: myIdentityId }, select: { userId: true } },
-          tags: { select: { value: true }, orderBy: { value: "asc" } },
-          requirements: { select: { value: true }, orderBy: { value: "asc" } },
-          roomRequirements: { select: { value: true }, orderBy: { value: "asc" } },
-          // Path C: every TrackAssignment whose submissionId points at this
-          // sub. The Sessions tab uses this to render the inline "Scheduled
-          // at: 10:00 Hall · 14:00 Hall" hint so users can see, at the
-          // moment they're starring, where the planned schedule will pick
-          // their interest up.
-          trackAssignments: {
-            include: {
-              slot: { select: { startsAt: true, endsAt: true } },
-              room: { select: { id: true, name: true } },
-            },
-            orderBy: { slot: { startsAt: "asc" } },
-          },
-        },
-        orderBy: { createdAt: "desc" },
+        include: submissionInclude(myIdentityId),
+        // Most-starred first (the agenda mod's primary signal), then newest.
+        // Count + page share `where`, so paging totals stay accurate.
+        orderBy: [{ stars: { _count: "desc" } }, { createdAt: "desc" }],
+        skip: offset,
+        take: limit,
       }),
       context.prisma.conference.findUniqueOrThrow({
         where: { id: context.conferenceId },
         select: { submissionMaxPlacementsDefault: true },
       }),
     ]);
+    const rows = subs.map((s) => toSubmissionOut(s, {
+      isMod,
+      submissionMaxPlacementsDefault: conf.submissionMaxPlacementsDefault,
+    }));
+    return pageOf(rows, offset, limit, total);
+  }),
 
-    const rows = subs.map((s) => {
-      const placementCount = s._count.placements + s._count.trackAssignments;
-      const { is_finished } = resolveFinished(
-        { maxPlacements: s.maxPlacements, manuallyFinished: s.manuallyFinished },
-        conf.submissionMaxPlacementsDefault,
-        placementCount,
-      );
-      return {
-        id: s.id,
-        conference_id: s.conferenceId,
-        submitter_id: s.submitterId,
-        submitter_name: s.submitter.name,
-        submitter_email: isMod ? s.submitter.email : null,
-        submitter_profile_published: s.submitter.profilePublished,
-        title: s.title,
-        description: s.description,
-        status: s.status,
-        created_at: s.createdAt.getTime(),
-        star_count: s._count.stars,
-        starred_by_me: s.stars.length > 0,
-        tags: s.tags.map((t) => t.value),
-        requirements: s.requirements.map((r) => r.value),
-        room_requirements: s.roomRequirements.map((r) => r.value),
-        max_placements: s.maxPlacements,
-        manually_finished: s.manuallyFinished,
-        pre_assigned_room_id: s.preAssignedRoomId,
-        allow_overlapping_placements: s.allowOverlappingPlacements,
-        placement_count: placementCount,
-        is_finished,
-        scheduled_in: s.trackAssignments.map((t) => ({
-          slot_id: t.slotId,
-          starts_at: t.slot.startsAt.getTime(),
-          ends_at: t.slot.endsAt.getTime(),
-          room_id: t.roomId,
-          room_name: t.room.name,
-        })),
-      };
-    });
-
-    // Path C: `is_finished` is informational only. Participants still see
-    // every published submission, including fully-scheduled ones, so they
-    // can star (and have planned tracks land on their schedule via the
-    // derivation rule). Mods see the same list (plus their own drafts /
-    // rejected when filtered).
-    return rows.sort((a, b) =>
-      b.star_count !== a.star_count ? b.star_count - a.star_count : b.created_at - a.created_at,
+  listAll: requireConf("participant").submissions.listAll.handler(async ({ input, context }) => {
+    const isMod = context.principal.role === "owner" || context.principal.role === "moderator";
+    const myIdentityId = actorIdentityId(context);
+    const where = visibilityWhere(
+      context.conferenceId, isMod, myIdentityId, input.status,
     );
+    const [subs, conf] = await Promise.all([
+      context.prisma.submission.findMany({
+        where,
+        include: submissionInclude(myIdentityId),
+        orderBy: [{ stars: { _count: "desc" } }, { createdAt: "desc" }],
+      }),
+      context.prisma.conference.findUniqueOrThrow({
+        where: { id: context.conferenceId },
+        select: { submissionMaxPlacementsDefault: true },
+      }),
+    ]);
+    return subs.map((s) => toSubmissionOut(s, {
+      isMod,
+      submissionMaxPlacementsDefault: conf.submissionMaxPlacementsDefault,
+    }));
   }),
 
   create: requireConf("participant").submissions.create.handler(async ({ input, context }) => {

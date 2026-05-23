@@ -1,20 +1,68 @@
 import { ORPCError } from "@orpc/server";
-import { requireConf, normalizeLabels } from "./shared";
+import type { Prisma } from "@prisma/client";
+import {
+  normalizeLabels,
+  pageOf,
+  parsePageInput,
+  requireConf,
+} from "./shared";
 import { LIMITS, assertQuota } from "../lib/limits";
 import { notifyQuotaThreshold } from "../notifications";
 
+function toRoomOut(r: {
+  id: number; name: string; capacity: number;
+  description: string | null;
+  tags: { value: string }[];
+}) {
+  return {
+    id: r.id,
+    name: r.name,
+    capacity: r.capacity,
+    description: r.description,
+    tags: r.tags.map((t) => t.value),
+  };
+}
+
 export const roomsRouter = {
-  list: requireConf("participant").rooms.list.handler(async ({ context }) => {
+  list: requireConf("participant").rooms.list.handler(async ({ input, context }) => {
+    const { offset, limit, q } = parsePageInput(input);
+    // Free-text query matches room name OR description OR any tag value.
+    // SQLite's default LIKE is case-insensitive for ASCII; good enough for
+    // the room corpus (40-char labels, mostly english).
+    const where: Prisma.RoomWhereInput = {
+      conferenceId: context.conferenceId,
+      ...(q
+        ? {
+            OR: [
+              { name: { contains: q } },
+              { description: { contains: q } },
+              { tags: { some: { value: { contains: q } } } },
+            ],
+          }
+        : {}),
+    };
+    const [total, rooms] = await Promise.all([
+      context.prisma.room.count({ where }),
+      context.prisma.room.findMany({
+        where,
+        orderBy: [{ capacity: "desc" }, { name: "asc" }],
+        include: { tags: { select: { value: true }, orderBy: { value: "asc" } } },
+        skip: offset,
+        take: limit,
+      }),
+    ]);
+    return pageOf(rooms.map(toRoomOut), offset, limit, total);
+  }),
+
+  // Unpaginated list. Used by surfaces that have to enumerate every room
+  // (slot pickers, session room-tag picker, expert/agenda views).
+  listAll: requireConf("participant").rooms.listAll.handler(async ({ context }) => {
     const rooms = await context.prisma.room.findMany({
       where: { conferenceId: context.conferenceId },
       orderBy: [{ capacity: "desc" }, { name: "asc" }],
       include: { tags: { select: { value: true }, orderBy: { value: "asc" } } },
     });
-    return rooms.map((r) => ({
-      id: r.id, name: r.name, capacity: r.capacity,
-      description: r.description,
-      tags: r.tags.map((t) => t.value),
-    }));
+    return rooms.map(toRoomOut);
   }),
 
   create: requireConf("moderator").rooms.create.handler(async ({ input, context }) => {
@@ -39,10 +87,7 @@ export const roomsRouter = {
       current: roomCount + 1,
       limit: LIMITS.maxRoomsPerConference,
     });
-    return {
-      id: room.id, name: room.name, capacity: room.capacity,
-      description: room.description, tags: room.tags.map((t) => t.value),
-    };
+    return toRoomOut(room);
   }),
 
   update: requireConf("moderator").rooms.update.handler(async ({ input, context }) => {

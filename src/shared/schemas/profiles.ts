@@ -2,7 +2,7 @@
 // per-route slug-bound variants, avatar deletion).
 
 import * as v from "valibot";
-import { NonEmpty, PosInt } from "./primitives";
+import { NonEmpty, PageInputEntries, PosInt } from "./primitives";
 
 // A single entry on a user's profile. Two categories:
 //   - link   — websites + social profiles. `value` is the handle/URL label,
@@ -47,8 +47,11 @@ export type ProfileUpdateInput = v.InferOutput<typeof ProfileUpdateSchema>;
 
 export const ProfileListQuerySchema = v.object({
   slug: NonEmpty("Slug"),
-  query: v.optional(v.pipe(v.string(), v.maxLength(64))),
+  // Single optional tag chip filter. Free-text matches go through the shared
+  // `q` param defined in PageInputEntries so every paginated list uses the
+  // same name.
   tag: v.optional(v.pipe(v.string(), v.maxLength(48))),
+  ...PageInputEntries,
 });
 
 export const ProfileGetSchema = v.object({

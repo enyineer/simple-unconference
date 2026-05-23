@@ -29,28 +29,64 @@ const vite = spawn(["bunx", "vite"], {
   stdio: ["inherit", "inherit", "inherit"],
 });
 
-// Restart the API on Prisma client regeneration. We watch the package's
-// `index.js` because Prisma rewrites it on every generate; debounce so a
-// generate that touches several files only triggers one restart.
+// Restart the API on:
+//   1. Prisma client regeneration. We watch the package's `index.js` because
+//      Prisma rewrites it on every generate.
+//   2. Changes under src/server/rpc/** or src/shared/contract*.
+//      bun --hot reloads file bodies in place, but the oRPC router is built
+//      once at import time via `implement(contract)` and each
+//      `requireConf(...).foo.list.handler(...)` call captures references to
+//      the contract object then. After that, reshaping the contract or
+//      adding a procedure doesn't propagate to the running router — the API
+//      keeps serving the old wire shape while the SPA recompiles against the
+//      new types, and you get "x.items is undefined"-style mismatches.
+//      Restart is the only reliable fix.
+// All watches share a single debounced timer so a multi-file edit only
+// restarts once.
 let shuttingDown = false;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleApiRestart(reason: string) {
+  if (shuttingDown) return;
+  if (restartTimer) clearTimeout(restartTimer);
+  restartTimer = setTimeout(async () => {
+    console.log(`[dev] ${reason} — restarting API`);
+    api.kill("SIGTERM");
+    await api.exited;
+    api = spawn(apiArgs, {
+      stdio: ["inherit", "inherit", "inherit"],
+      env: apiEnv,
+    });
+  }, 300);
+}
+
 const PRISMA_CLIENT = "node_modules/@prisma/client/index.js";
 try {
-  watch(PRISMA_CLIENT, () => {
-    if (shuttingDown) return;
-    if (restartTimer) clearTimeout(restartTimer);
-    restartTimer = setTimeout(async () => {
-      console.log("[dev] Prisma client changed — restarting API");
-      api.kill("SIGTERM");
-      await api.exited;
-      api = spawn(apiArgs, {
-        stdio: ["inherit", "inherit", "inherit"],
-        env: apiEnv,
-      });
-    }, 300);
-  });
+  watch(PRISMA_CLIENT, () => scheduleApiRestart("Prisma client changed"));
 } catch (e) {
   console.warn(`[dev] could not watch ${PRISMA_CLIENT}:`, e);
+}
+
+// Contract / router surface watcher. `recursive: true` follows nested files
+// in src/server/rpc/**. The shared contract sits in src/shared/contract.ts +
+// src/shared/contract/types.ts; watching the parent src/shared (recursive)
+// catches both without false positives — only contract-adjacent code lives
+// directly under there. We filter on filename inside the callback so edits
+// to unrelated shared modules (schemas, tz, etc) don't trigger a restart.
+const ROUTER_DIR = "src/server/rpc";
+const SHARED_DIR = "src/shared";
+const SHARED_FILE = /^contract(\.ts|\/.*)$/;
+try {
+  watch(ROUTER_DIR, { recursive: true }, (_event, filename) => {
+    if (!filename || !filename.endsWith(".ts")) return;
+    scheduleApiRestart(`router file changed (${filename})`);
+  });
+  watch(SHARED_DIR, { recursive: true }, (_event, filename) => {
+    if (!filename) return;
+    if (!SHARED_FILE.test(filename)) return;
+    scheduleApiRestart(`contract file changed (${filename})`);
+  });
+} catch (e) {
+  console.warn(`[dev] could not watch router/contract sources:`, e);
 }
 
 function shutdown() {

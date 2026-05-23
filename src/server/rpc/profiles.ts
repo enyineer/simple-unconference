@@ -1,6 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import type { PrismaClient, Prisma } from "@prisma/client";
-import { requireConf, actorIdentityId } from "./shared";
+import { requireConf, actorIdentityId, pageOf, parsePageInput } from "./shared";
 // Renamed at import to avoid shadowing the `profiles.deleteAvatar` handler key.
 import { deleteAvatar as deleteAvatarFile } from "../lib/avatars";
 
@@ -191,13 +191,15 @@ export const profilesRouter = {
 
   list: requireConf("participant").profiles.list.handler(async ({ input, context }) => {
     const isMod = context.principal.role === "owner" || context.principal.role === "moderator";
+    const { offset, limit, q } = parsePageInput(input);
     const queryFilters: Prisma.ConferenceIdentityWhereInput[] = [];
-    if (input.query) {
+    if (q) {
       queryFilters.push({
         OR: [
-          { name: { contains: input.query } },
-          { title: { contains: input.query } },
-          { company: { contains: input.query } },
+          { name: { contains: q } },
+          { title: { contains: q } },
+          { company: { contains: q } },
+          { profileTags: { some: { tag: { contains: q } } } },
         ],
       });
     }
@@ -209,15 +211,20 @@ export const profilesRouter = {
       ...(isMod ? {} : { profilePublished: true }),
       ...(queryFilters.length > 0 ? { AND: queryFilters } : {}),
     };
-    const rows = await context.prisma.conferenceIdentity.findMany({
-      where,
-      include: {
-        profileTags: { orderBy: { tag: "asc" } },
-        expertProfile: { select: { id: true } },
-      },
-      orderBy: [{ name: "asc" }, { id: "asc" }],
-    });
-    return rows.map((r) => ({
+    const [total, rows] = await Promise.all([
+      context.prisma.conferenceIdentity.count({ where }),
+      context.prisma.conferenceIdentity.findMany({
+        where,
+        include: {
+          profileTags: { orderBy: { tag: "asc" } },
+          expertProfile: { select: { id: true } },
+        },
+        orderBy: [{ name: "asc" }, { id: "asc" }],
+        skip: offset,
+        take: limit,
+      }),
+    ]);
+    const items = rows.map((r) => ({
       identity_id: r.id,
       name: r.name,
       title: r.title,
@@ -227,6 +234,7 @@ export const profilesRouter = {
       tags: r.profileTags.map((t) => t.tag),
       is_expert: r.expertProfile !== null,
     }));
+    return pageOf(items, offset, limit, total);
   }),
 
   updateMine: requireConf("participant").profiles.updateMine.handler(async ({ input, context }) => {

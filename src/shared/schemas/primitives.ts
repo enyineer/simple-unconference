@@ -71,3 +71,24 @@ export const ExpertBio = v.pipe(
   v.trim(),
   v.maxLength(2000, "Keep the bio under 2000 characters."),
 );
+
+// ----- pagination ---------------------------------------------------------
+
+// Shared paginated-list input. Every server-paginated `list` procedure
+// composes these three fields into its input schema:
+//   - q       : free-text query, max 128 chars. Empty / missing = no filter.
+//   - cursor  : opaque token from the previous page's `next_cursor`. The
+//               server treats it as a numeric offset internally; clients
+//               must not parse it.
+//   - limit   : page size. Server clamps to [1, 100]; default is 25.
+// See `parsePageInput` / `pageOf` on the server for the matching helpers.
+export const PageQ = v.optional(v.pipe(v.string(), v.maxLength(128)));
+export const PageCursor = v.optional(v.pipe(v.string(), v.maxLength(64)));
+export const PageLimit = v.optional(
+  v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(100)),
+);
+export const PageInputEntries = {
+  q: PageQ,
+  cursor: PageCursor,
+  limit: PageLimit,
+} as const;

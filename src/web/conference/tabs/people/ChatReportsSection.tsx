@@ -1,13 +1,20 @@
 // Mod-only chat moderation surface. Lives at the bottom of PeopleTab.
-// Two stacked sections:
+// Two stacked sections, each paginated + searchable:
 //   - Reports: open reports first (review/resolve), then a collapsed view
 //     of resolved ones for audit.
 //   - Bans: currently-banned identities with an Unban action.
 
-import { useCallback, useEffect, useState } from "react";
-import { Badge, Button, Heading, Sheet, Stack, Text, Textarea } from "../../../design-system";
-import { api } from "../../../api";
-import type { MessageReportOut, ChatBanOut } from "../../../../shared/contract";
+import { useState } from "react";
+import { Badge, Button, Heading, Sheet, Spinner, Stack, Text, Textarea, TextInput } from "../../../design-system";
+import { api, errorCode } from "../../../api";
+import type {
+  ChatBanOut,
+  MessageReportOut,
+  MessageReportSummaryOut,
+} from "../../../../shared/contract";
+import { EmptyState } from "../../ui/EmptyState";
+import { Pager } from "../../ui/Pager";
+import { usePaginatedList } from "../../usePaginatedList";
 
 interface ChatReportsSectionProps {
   slug: string;
@@ -16,47 +23,50 @@ interface ChatReportsSectionProps {
 type StatusFilter = "open" | "resolved" | "all";
 
 export function ChatReportsSection({ slug }: ChatReportsSectionProps) {
-  const [reports, setReports] = useState<MessageReportOut[] | null>(null);
-  const [bans, setBans] = useState<ChatBanOut[] | null>(null);
   const [status, setStatus] = useState<StatusFilter>("open");
   const [activeReport, setActiveReport] = useState<MessageReportOut | null>(null);
+  const [openingId, setOpeningId] = useState<number | null>(null);
 
-  const refresh = useCallback(async () => {
+  const reports = usePaginatedList<MessageReportSummaryOut>(
+    (input) => api.moderation.listChatReports({ slug, status, ...input }),
+    { pageSize: 25 },
+  );
+  const bans = usePaginatedList<ChatBanOut>(
+    (input) => api.moderation.listChatBans({ slug, ...input }),
+    { pageSize: 25 },
+  );
+
+  // Status filter sits outside the hook, so refresh manually when it flips.
+  // The hook resets paging when its input dependencies change at fetch time;
+  // because `status` is captured in the closure passed to it, we trigger a
+  // refresh to pick up the new value.
+  function changeStatus(next: StatusFilter) {
+    setStatus(next);
+    // Schedule the refresh after the state update; the hook reads the new
+    // closure on the next render.
+    queueMicrotask(() => reports.refresh());
+  }
+
+  async function openReport(summary: MessageReportSummaryOut) {
+    if (openingId !== null) return;
+    setOpeningId(summary.id);
     try {
-      const [r, b] = await Promise.all([
-        api.moderation.listChatReports({ slug, status }),
-        api.moderation.listChatBans({ slug }),
-      ]);
-      setReports(r);
-      setBans(b);
-    } catch {
-      setReports([]);
-      setBans([]);
-    }
-  }, [slug, status]);
-
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([
-      api.moderation.listChatReports({ slug, status }),
-      api.moderation.listChatBans({ slug }),
-    ])
-      .then(([r, b]) => {
-        if (cancelled) return;
-        setReports(r);
-        setBans(b);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setReports([]);
-        setBans([]);
+      const full = await api.moderation.getChatReport({
+        slug, report_id: summary.id,
       });
-    return () => { cancelled = true; };
-  }, [slug, status]);
+      setActiveReport(full);
+    } catch {
+      // Sheet stays closed; the row keeps its data and the moderator can retry.
+    } finally {
+      setOpeningId(null);
+    }
+  }
 
   async function unban(identityId: number) {
-    await api.moderation.unbanFromChat({ slug, identity_id: identityId }).catch(() => { /* no-op */ });
-    void refresh();
+    try {
+      await api.moderation.unbanFromChat({ slug, identity_id: identityId });
+    } catch { /* no-op */ }
+    bans.refresh();
   }
 
   return (
@@ -69,7 +79,7 @@ export function ChatReportsSection({ slug }: ChatReportsSectionProps) {
               <button
                 key={s}
                 type="button"
-                onClick={() => setStatus(s)}
+                onClick={() => changeStatus(s)}
                 style={{
                   padding: "4px 10px",
                   fontSize: 12,
@@ -90,45 +100,106 @@ export function ChatReportsSection({ slug }: ChatReportsSectionProps) {
             ))}
           </div>
         </Stack>
-        {reports === null && <Text muted>Loading…</Text>}
-        {reports !== null && reports.length === 0 && (
+
+        <TextInput
+          label="Search reports"
+          placeholder="Search by reason, reporter, sender, or message text"
+          value={reports.q}
+          onChange={(e) => reports.setQ(e.target.value)}
+        />
+
+        {reports.loading && reports.items.length === 0 ? (
+          <Spinner label="Loading…" />
+        ) : reports.items.length === 0 ? (
           <Text muted>
-            {status === "open" ? "No open reports." : "Nothing here."}
+            {reports.q.trim()
+              ? `No reports match "${reports.q}".`
+              : status === "open" ? "No open reports." : "Nothing here."}
           </Text>
+        ) : (
+          <Stack gap="condensed">
+            {reports.items.map((r) => (
+              <ReportRow
+                key={r.id}
+                report={r}
+                busy={openingId === r.id}
+                onOpen={() => openReport(r)}
+              />
+            ))}
+          </Stack>
         )}
-        {reports?.map((r) => (
-          <ReportRow key={r.id} report={r} onOpen={() => setActiveReport(r)} />
-        ))}
+
+        <Pager
+          page={reports.page}
+          pageSize={reports.pageSize}
+          total={reports.total}
+          loading={reports.loading}
+          hasPrev={reports.hasPrev}
+          hasNext={reports.hasNext}
+          onPrev={reports.prev}
+          onNext={reports.next}
+          noun="reports"
+        />
       </Stack>
 
       <Stack gap="condensed">
         <Heading level={3}>Banned from chat</Heading>
-        {bans === null && <Text muted>Loading…</Text>}
-        {bans !== null && bans.length === 0 && (
-          <Text muted>No one is currently banned from chat.</Text>
-        )}
-        {bans?.map((b) => (
-          <Stack
-            key={b.identity_id}
-            direction="row"
-            justify="between"
-            align="center"
-            wrap
-          >
-            <div>
-              <strong>{b.name ?? `Identity #${b.identity_id}`}</strong>
-              <div style={{ fontSize: 12, color: "var(--fgColor-muted)" }}>
-                {b.reason ?? "No reason provided"}
-                {b.banned_by ? ` · by ${b.banned_by}` : ""}
-                {" · "}
-                {new Date(b.banned_at).toLocaleDateString()}
-              </div>
-            </div>
-            <Button size="small" onClick={() => unban(b.identity_id)}>
-              Unban
-            </Button>
+
+        <TextInput
+          label="Search bans"
+          placeholder="Search by name, email, or ban reason"
+          value={bans.q}
+          onChange={(e) => bans.setQ(e.target.value)}
+        />
+
+        {bans.loading && bans.items.length === 0 ? (
+          <Spinner label="Loading…" />
+        ) : bans.items.length === 0 ? (
+          <EmptyState
+            message={
+              bans.q.trim()
+                ? `No bans match "${bans.q}".`
+                : "No one is currently banned from chat."
+            }
+          />
+        ) : (
+          <Stack gap="condensed">
+            {bans.items.map((b) => (
+              <Stack
+                key={b.identity_id}
+                direction="row"
+                justify="between"
+                align="center"
+                wrap
+              >
+                <div>
+                  <strong>{b.name ?? `Identity #${b.identity_id}`}</strong>
+                  <div style={{ fontSize: 12, color: "var(--fgColor-muted)" }}>
+                    {b.reason ?? "No reason provided"}
+                    {b.banned_by ? ` · by ${b.banned_by}` : ""}
+                    {" · "}
+                    {new Date(b.banned_at).toLocaleDateString()}
+                  </div>
+                </div>
+                <Button size="small" onClick={() => unban(b.identity_id)}>
+                  Unban
+                </Button>
+              </Stack>
+            ))}
           </Stack>
-        ))}
+        )}
+
+        <Pager
+          page={bans.page}
+          pageSize={bans.pageSize}
+          total={bans.total}
+          loading={bans.loading}
+          hasPrev={bans.hasPrev}
+          hasNext={bans.hasNext}
+          onPrev={bans.prev}
+          onNext={bans.next}
+          noun="bans"
+        />
       </Stack>
 
       {activeReport && (
@@ -136,30 +207,42 @@ export function ChatReportsSection({ slug }: ChatReportsSectionProps) {
           slug={slug}
           report={activeReport}
           onClose={() => setActiveReport(null)}
-          onResolved={() => { setActiveReport(null); void refresh(); }}
+          onResolved={() => {
+            setActiveReport(null);
+            reports.refresh();
+            bans.refresh();
+          }}
         />
       )}
     </Stack>
   );
 }
 
-function ReportRow({ report, onOpen }: { report: MessageReportOut; onOpen: () => void }) {
+function ReportRow({
+  report, busy, onOpen,
+}: {
+  report: MessageReportSummaryOut;
+  busy: boolean;
+  onOpen: () => void;
+}) {
   const muted = "var(--fgColor-muted, #6e7781)";
   return (
     <button
       type="button"
       onClick={onOpen}
+      disabled={busy}
       style={{
         background: "var(--bgColor-default, transparent)",
         border: "1px solid var(--borderColor-muted, #e5e7eb)",
         borderRadius: 8,
         padding: "10px 12px",
         textAlign: "left",
-        cursor: "pointer",
+        cursor: busy ? "wait" : "pointer",
         color: "var(--fgColor-default, inherit)",
         display: "flex",
         flexDirection: "column",
         gap: 4,
+        opacity: busy ? 0.7 : 1,
       }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13 }}>
@@ -175,6 +258,11 @@ function ReportRow({ report, onOpen }: { report: MessageReportOut; onOpen: () =>
       <div style={{ fontSize: 12, color: muted, fontStyle: "italic" }}>
         “{truncate(report.reason, 140)}”
       </div>
+      {report.message_preview && (
+        <div style={{ fontSize: 12, color: muted }}>
+          Message: “{report.message_preview}”
+        </div>
+      )}
       {report.resolved_at !== null && (
         <div style={{ display: "flex", gap: 6 }}>
           <Badge variant="default">resolved</Badge>
@@ -215,6 +303,9 @@ function ReportSheet({
 
   const muted = "var(--fgColor-muted, #6e7781)";
   const resolved = report.resolved_at !== null;
+  // Reserved for a "could not load context" inline error in a future iteration.
+  void slug;
+  void errorCode;
 
   return (
     <Sheet open onClose={onClose} title="Report details">

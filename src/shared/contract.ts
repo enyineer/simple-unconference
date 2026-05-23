@@ -15,6 +15,7 @@ import {
   ChatResolveReportSchema,
   ChatSettingsUpdateSchema,
   MessageBody,
+  PageInputEntries,
   ReportReason,
   BookExpertSchema,
   ConfLoginSchema,
@@ -66,6 +67,8 @@ import {
   type ConversationOut,
   type MessageOut,
   type MessageReportOut,
+  type MessageReportSummaryOut,
+  type Page,
   type AgendaOut,
   type AssignResult,
   type CalendarOut,
@@ -118,7 +121,9 @@ export const contract = {
       .input(v.object({ slug: Slug, ...UpdateConferenceSchema.entries }))
       .output(type<Ok>()),
     delete: oc.input(InConf).output(type<Ok>()),
-    listParticipants: oc.input(InConf).output(type<ParticipantOut[]>()),
+    listParticipants: oc
+      .input(v.object({ slug: Slug, ...PageInputEntries }))
+      .output(type<Page<ParticipantOut>>()),
     removeParticipant: oc
       .input(v.object({ slug: Slug, user_id: Id }))
       .output(type<Ok>()),
@@ -143,7 +148,22 @@ export const contract = {
     importInvites: oc
       .input(v.object({ slug: Slug, ...InviteImportSchema.entries }))
       .output(type<InviteImportOut>()),
-    listInvites: oc.input(InConf).output(type<InviteOut[]>()),
+    listInvites: oc
+      .input(v.object({
+        slug: Slug,
+        status: v.optional(v.picklist(["pending", "claimed", "all"] as const)),
+        ...PageInputEntries,
+      }))
+      .output(type<Page<InviteOut>>()),
+    // Mod-only CSV export of pending invites. Streams every pending row
+    // matching the optional `q` filter (no pagination) so big conferences
+    // can hand the list to an external system without scraping pages.
+    exportInvites: oc
+      .input(v.object({
+        slug: Slug,
+        q: v.optional(v.pipe(v.string(), v.maxLength(128))),
+      }))
+      .output(type<{ invites: InviteOut[] }>()),
     revokeInvite: oc
       .input(v.object({ slug: Slug, id: Id }))
       .output(type<Ok>()),
@@ -182,7 +202,16 @@ export const contract = {
     resetCalendar: oc.input(InConf).output(type<CalendarOut>()),
   },
   rooms: {
-    list: oc.input(InConf).output(type<RoomOut[]>()),
+    // Paginated room list with free-text search across name/description/tags.
+    // The Rooms tab uses this; agenda/sessions/experts/my-assignments pickers
+    // need every room and call `listAll` instead.
+    list: oc
+      .input(v.object({ slug: Slug, ...PageInputEntries }))
+      .output(type<Page<RoomOut>>()),
+    // Unpaginated room list. Used by surfaces that have to enumerate every
+    // room (slot pickers, session room-tag picker, expert/agenda views) and
+    // would silently break if the table-view's pagination clipped the set.
+    listAll: oc.input(InConf).output(type<RoomOut[]>()),
     create: oc.input(v.object({ slug: Slug, ...CreateRoomSchema.entries })).output(type<RoomOut>()),
     update: oc
       .input(v.object({ slug: Slug, id: Id, ...UpdateRoomSchema.entries }))
@@ -190,12 +219,34 @@ export const contract = {
     delete: oc.input(v.object({ slug: Slug, id: Id })).output(type<Ok>()),
   },
   submissions: {
-    list: oc
+    // Unpaginated list used by surfaces that have to enumerate every
+    // visible submission (slot pickers, the schedule view's submission
+    // lookup). Honors the same privacy gate as `list` (mods see all;
+    // participants see published + own). `status` filter is mod-only.
+    listAll: oc
       .input(v.object({
         slug: Slug,
         status: v.optional(v.picklist(["submitted", "published", "rejected"] as const)),
       }))
       .output(type<SubmissionOut[]>()),
+    list: oc
+      .input(v.object({
+        slug: Slug,
+        status: v.optional(v.picklist(["submitted", "published", "rejected"] as const)),
+        // When true, restrict the listing to sessions the viewer has
+        // personally starred. Server-side so paging works correctly even
+        // when the starred set spans multiple pages.
+        starred_only: v.optional(v.boolean()),
+        // Tag chip filter with AND semantics — a session must carry every
+        // listed tag to remain in the result set. Empty / omitted = no tag
+        // constraint. Capped at 20 tags (parity with submission tag limit).
+        tags: v.optional(v.pipe(
+          v.array(v.pipe(v.string(), v.maxLength(48))),
+          v.maxLength(20),
+        )),
+        ...PageInputEntries,
+      }))
+      .output(type<Page<SubmissionOut>>()),
     create: oc
       .input(v.object({ slug: Slug, ...CreateSubmissionSchema.entries }))
       .output(type<SubmissionCreated>()),
@@ -337,7 +388,7 @@ export const contract = {
     get: oc.input(ProfileGetSchema).output(type<ProfileOut>()),
     // Directory listing. Non-mod viewers see only `profilePublished=true`
     // identities; mods see everyone.
-    list: oc.input(ProfileListQuerySchema).output(type<ProfileSummaryOut[]>()),
+    list: oc.input(ProfileListQuerySchema).output(type<Page<ProfileSummaryOut>>()),
     // Self-edit: every identity may update their own profile fields and
     // entries/tags. Full-replacement semantics on entries/tags.
     updateMine: oc.input(ProfileUpdateMineSchema).output(type<ProfileOut>()),
@@ -422,8 +473,15 @@ export const contract = {
       .input(v.object({
         slug: Slug,
         status: v.optional(v.picklist(["open", "resolved", "all"] as const)),
+        ...PageInputEntries,
       }))
-      .output(type<MessageReportOut[]>()),
+      .output(type<Page<MessageReportSummaryOut>>()),
+    // Mod-only full report payload (carries surrounding messages + edit
+    // revisions). Called lazily when the mod opens a single report from the
+    // paginated list so the list payload stays small.
+    getChatReport: oc
+      .input(v.object({ slug: Slug, report_id: Id }))
+      .output(type<MessageReportOut>()),
     resolveChatReport: oc
       .input(v.object({
         slug: Slug,
@@ -431,7 +489,9 @@ export const contract = {
         ...ChatResolveReportSchema.entries,
       }))
       .output(type<Ok>()),
-    listChatBans: oc.input(InConf).output(type<ChatBanOut[]>()),
+    listChatBans: oc
+      .input(v.object({ slug: Slug, ...PageInputEntries }))
+      .output(type<Page<ChatBanOut>>()),
     unbanFromChat: oc
       .input(v.object({ slug: Slug, identity_id: Id }))
       .output(type<Ok>()),

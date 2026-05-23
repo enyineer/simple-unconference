@@ -12,8 +12,10 @@ import { useToast } from "../../design-system/hooks";
 import { api, errorCode } from "../../api";
 import { useRoute } from "../../router";
 import { EmptyState } from "../ui/EmptyState";
+import { Pager } from "../ui/Pager";
 import { ProfileLink } from "../ProfileLink";
 import { ProfileEditor } from "../ProfileEditor";
+import { usePaginatedList } from "../usePaginatedList";
 import type { ProfileOut, ProfileSummaryOut } from "../../../shared/contract";
 import type { ConfMe } from "../../App";
 
@@ -137,60 +139,40 @@ export function DirectoryTab({
   onConfMeRefresh: () => void;
 }) {
   useDirectoryStyles();
-  const [items, setItems] = useState<ProfileSummaryOut[] | null>(null);
-  const [rawQuery, setRawQuery] = useState("");
-  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const toast = useToast();
 
-  // Debounce the search input 200ms so we don't hit profiles.list on every
-  // keystroke. The local input value updates immediately; the network query
-  // catches up shortly after the user stops typing.
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedQuery(rawQuery.trim()), 200);
-    return () => clearTimeout(t);
-  }, [rawQuery]);
+  const profiles = usePaginatedList<ProfileSummaryOut>(
+    (input) => api.profiles.list({
+      slug,
+      tag: activeTag ?? undefined,
+      ...input,
+    }),
+    { pageSize: 25, debounceMs: 200 },
+  );
 
-  // Fetch when the debounced query or active tag changes. The server already
-  // strips unpublished profiles for non-mod viewers; nothing to do client-side.
+  // Surface a toast on transport errors. The hook keeps `error` between
+  // refreshes so we read it whenever it changes identity.
   useEffect(() => {
-    let cancelled = false;
-    api.profiles
-      .list({
-        slug,
-        query: debouncedQuery || undefined,
-        tag: activeTag ?? undefined,
-      })
-      .then((rows) => {
-        if (cancelled) return;
-        setItems(rows);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setItems([]);
-        toast.error(errorCode(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [slug, debouncedQuery, activeTag, toast]);
+    if (profiles.error) toast.error(errorCode(profiles.error));
+  }, [profiles.error, toast]);
 
-  // Tag chip list comes from the loaded result set. When the user is already
-  // filtering by a tag, the loaded set only contains rows with that tag,
-  // so we always include the active tag itself in the chip list (otherwise
-  // the chip would vanish the moment it's selected, hiding the "clear" affordance).
+  // Re-fetch when the tag filter changes so paging counts include the tag
+  // restriction. The hook resets to page 1 when the input shape moves.
+  useEffect(() => {
+    profiles.refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTag]);
+
+  // Tag chip list comes from the loaded page plus the active tag (so the
+  // chip doesn't vanish the moment it's selected and the user loses the
+  // "clear" affordance).
   const tagSet = new Set<string>(activeTag ? [activeTag] : []);
-  for (const r of items ?? []) for (const t of r.tags) tagSet.add(t);
+  for (const r of profiles.items) for (const t of r.tags) tagSet.add(t);
   const tags = Array.from(tagSet).sort();
 
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
-  const hasFilter = Boolean(debouncedQuery || activeTag);
-  const countLabel =
-    items === null
-      ? null
-      : items.length === 1
-        ? "1 profile"
-        : `${items.length} profiles`;
+  const hasFilter = Boolean(profiles.q.trim() || activeTag);
 
   return (
     <Stack gap="spacious">
@@ -203,9 +185,9 @@ export function DirectoryTab({
       />
 
       <DirectorySearch
-        value={rawQuery}
-        onChange={setRawQuery}
-        onClear={() => setRawQuery("")}
+        value={profiles.q}
+        onChange={profiles.setQ}
+        onClear={() => profiles.setQ("")}
       />
 
       {tags.length > 0 && (
@@ -253,16 +235,14 @@ export function DirectoryTab({
         </div>
       )}
 
-      {countLabel && (
-        <div className="uncon-dir-count">
-          {countLabel}
-          {hasFilter ? " match your filters" : ""}
-        </div>
-      )}
+      <div className="uncon-dir-count">
+        {profiles.total === 1 ? "1 profile" : `${profiles.total} profiles`}
+        {hasFilter ? " match your filters" : ""}
+      </div>
 
-      {!items ? (
+      {profiles.loading && profiles.items.length === 0 ? (
         <Spinner label="Loading…" />
-      ) : items.length === 0 ? (
+      ) : profiles.items.length === 0 ? (
         <EmptyState
           message={
             hasFilter
@@ -272,7 +252,7 @@ export function DirectoryTab({
         />
       ) : (
         <Stack gap="condensed">
-          {items.map((p) => (
+          {profiles.items.map((p) => (
             <DirectoryRow
               key={p.identity_id}
               slug={slug}
@@ -283,6 +263,18 @@ export function DirectoryTab({
           ))}
         </Stack>
       )}
+
+      <Pager
+        page={profiles.page}
+        pageSize={profiles.pageSize}
+        total={profiles.total}
+        loading={profiles.loading}
+        hasPrev={profiles.hasPrev}
+        hasNext={profiles.hasNext}
+        onPrev={profiles.prev}
+        onNext={profiles.next}
+        noun="profiles"
+      />
     </Stack>
   );
 }

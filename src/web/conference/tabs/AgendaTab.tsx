@@ -44,8 +44,8 @@ export function AgendaTab({
 
   const fetchAgenda = useCallback(() => Promise.all([
     api.agenda.get({ slug }),
-    api.rooms.list({ slug }),
-    api.submissions.list({ slug, status: "published" }),
+    api.rooms.listAll({ slug }),
+    api.submissions.listAll({ slug, status: "published" }),
   ]), [slug]);
   async function refresh() {
     const [a, r, s] = await fetchAgenda();

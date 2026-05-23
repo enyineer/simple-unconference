@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Button, Form, Heading, Sheet, Spinner, Stack, TextInput, Textarea,
 } from "../../design-system";
@@ -9,11 +9,16 @@ import type { Room } from "../types";
 import { TagInput } from "../../design-system/core/tag-input";
 import { lowercaseTrim } from "../../design-system/core/normalize";
 import { EmptyState } from "../ui/EmptyState";
+import { Pager } from "../ui/Pager";
 import { Pill } from "../ui/Pill";
 import { Tip } from "../ui/Tip";
+import { usePaginatedList } from "../usePaginatedList";
 
 export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
-  const [rooms, setRooms] = useState<Room[] | null>(null);
+  const rooms = usePaginatedList<Room>(
+    (input) => api.rooms.list({ slug, ...input }),
+    { pageSize: 25 },
+  );
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [capacity, setCapacity] = useState("20");
@@ -21,17 +26,6 @@ export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
   const [tags, setTags] = useState<string[]>([]);
   const [editingId, setEditingId] = useState<number | null>(null);
   const toast = useToast();
-
-  async function refresh() {
-    setRooms(await api.rooms.list({ slug }));
-  }
-  useEffect(() => {
-    let cancelled = false;
-    api.rooms.list({ slug })
-      .then((rs) => { if (!cancelled) setRooms(rs); })
-      .catch(() => { if (!cancelled) setRooms([]); });
-    return () => { cancelled = true; };
-  }, [slug]);
 
   async function addRoom(e: React.FormEvent) {
     e.preventDefault();
@@ -44,24 +38,30 @@ export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
       });
       setName(""); setCapacity("20"); setDescription(""); setTags([]);
       setAdding(false);
-      await refresh();
+      rooms.refresh();
       toast.success(`Room "${created.name}" added.`);
     } catch (e) { toast.error(quotaErrorMessage(e) ?? errorCode(e)); }
   }
 
-  async function remove(id: number) {
-    const room = rooms?.find((r) => r.id === id);
-    if (!confirm(`Delete room "${room?.name ?? "?"}"?`)) return;
+  async function remove(room: Room) {
+    if (!confirm(`Delete room "${room.name}"?`)) return;
     try {
-      await api.rooms.delete({ slug, id });
-      await refresh();
-      toast.success(`Deleted ${room?.name ? `"${room.name}"` : "room"}.`);
+      await api.rooms.delete({ slug, id: room.id });
+      rooms.refresh();
+      toast.success(`Deleted "${room.name}".`);
     } catch (e) {
       toast.error(errorCode(e));
     }
   }
 
-  const editingRoom = editingId ? rooms?.find((r) => r.id === editingId) ?? null : null;
+  const editingRoom = editingId
+    ? rooms.items.find((r) => r.id === editingId) ?? null
+    : null;
+
+  const showEmpty =
+    !rooms.loading && rooms.items.length === 0 && rooms.q.trim() === "";
+  const showNoMatches =
+    !rooms.loading && rooms.items.length === 0 && rooms.q.trim() !== "";
 
   return (
     <Stack gap="spacious">
@@ -103,28 +103,52 @@ export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
             slug={slug}
             room={editingRoom}
             onCancel={() => setEditingId(null)}
-            onSaved={async () => { setEditingId(null); await refresh(); }}
+            onSaved={() => { setEditingId(null); rooms.refresh(); }}
           />
         )}
       </Sheet>
 
-      {!rooms ? (
+      <TextInput
+        label="Search"
+        placeholder="Search rooms by name, description, or tag"
+        value={rooms.q}
+        onChange={(e) => rooms.setQ(e.target.value)}
+      />
+
+      {rooms.loading && rooms.items.length === 0 ? (
         <Spinner label="Loading…" />
-      ) : rooms.length === 0 ? (
+      ) : showEmpty ? (
         <EmptyState message="No rooms yet." />
+      ) : showNoMatches ? (
+        <EmptyState
+          message={`No rooms match "${rooms.q}".`}
+          action={<Button size="small" onClick={rooms.reset}>Clear search</Button>}
+        />
       ) : (
         <Stack gap="condensed">
-          {rooms.map((r) => (
+          {rooms.items.map((r) => (
             <RoomRow
               key={r.id}
               room={r}
               isMod={isMod}
               onEdit={() => setEditingId(r.id)}
-              onDelete={() => remove(r.id)}
+              onDelete={() => remove(r)}
             />
           ))}
         </Stack>
       )}
+
+      <Pager
+        page={rooms.page}
+        pageSize={rooms.pageSize}
+        total={rooms.total}
+        loading={rooms.loading}
+        hasPrev={rooms.hasPrev}
+        hasNext={rooms.hasNext}
+        onPrev={rooms.prev}
+        onNext={rooms.next}
+        noun="rooms"
+      />
     </Stack>
   );
 }
@@ -182,7 +206,7 @@ function RoomEditForm({
   slug: string;
   room: Room;
   onCancel: () => void;
-  onSaved: () => Promise<void> | void;
+  onSaved: () => void;
 }) {
   const [name, setName] = useState(room.name);
   const [capacity, setCapacity] = useState(String(room.capacity));
@@ -202,7 +226,7 @@ function RoomEditForm({
         description: description.trim() === "" ? null : description,
         tags,
       });
-      await onSaved();
+      onSaved();
       toast.success(`Room "${name}" updated.`);
     } catch (e) {
       toast.error(errorCode(e));

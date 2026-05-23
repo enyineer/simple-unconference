@@ -11,8 +11,8 @@
 // messages so mods can judge context without manually paging.
 
 import { ORPCError } from "@orpc/server";
-import type { PrismaClient } from "@prisma/client";
-import { requireConf } from "./shared";
+import type { Prisma, PrismaClient } from "@prisma/client";
+import { pageOf, parsePageInput, requireConf } from "./shared";
 import { serializeMessage } from "./chat-helpers";
 import { getBus } from "../realtime/bus";
 import { createNotification } from "../notifications";
@@ -85,19 +85,82 @@ async function buildReportPayload(prisma: PrismaClient, reportId: number) {
 
 export const moderationRouter = {
   // ----- listChatReports ---------------------------------------------------
+  // Returns compact summary rows (no surrounding-message window) so the
+  // paginated list view stays cheap. The mod sheet calls `getChatReport`
+  // to load the full payload (revisions + ±5 surrounding messages) on
+  // demand.
   listChatReports: requireConf("moderator").moderation.listChatReports.handler(async ({ input, context }) => {
     const status = input.status ?? "open";
-    const where: Parameters<typeof context.prisma.messageReport.findMany>[0] = {
-      where: {
-        message: { conversation: { conferenceId: context.conferenceId } },
-        ...(status === "open" ? { resolvedAt: null } : {}),
-        ...(status === "resolved" ? { resolvedAt: { not: null } } : {}),
-      },
-      orderBy: [{ resolvedAt: "asc" }, { createdAt: "desc" }],
+    const { offset, limit, q } = parsePageInput(input);
+    const where: Prisma.MessageReportWhereInput = {
+      message: { conversation: { conferenceId: context.conferenceId } },
+      ...(status === "open" ? { resolvedAt: null } : {}),
+      ...(status === "resolved" ? { resolvedAt: { not: null } } : {}),
+      ...(q
+        ? {
+            OR: [
+              { reason: { contains: q } },
+              { reporter: { name: { contains: q } } },
+              { message: { sender: { name: { contains: q } } } },
+              { message: { body: { contains: q } } },
+            ],
+          }
+        : {}),
     };
-    const reports = await context.prisma.messageReport.findMany(where);
-    const payloads = await Promise.all(reports.map((r) => buildReportPayload(context.prisma, r.id)));
-    return payloads.filter((p): p is NonNullable<typeof p> => p !== null);
+    const [total, reports] = await Promise.all([
+      context.prisma.messageReport.count({ where }),
+      context.prisma.messageReport.findMany({
+        where,
+        include: {
+          reporter: { select: { id: true, name: true } },
+          message: {
+            select: {
+              id: true,
+              body: true,
+              deletedAt: true,
+              conversationId: true,
+              sender: { select: { id: true, name: true } },
+            },
+          },
+        },
+        orderBy: [{ resolvedAt: "asc" }, { createdAt: "desc" }],
+        skip: offset,
+        take: limit,
+      }),
+    ]);
+    const items = reports.map((r) => ({
+      id: r.id,
+      message_id: r.message.id,
+      conversation_id: r.message.conversationId,
+      reason: r.reason,
+      reporter_identity_id: r.reporter.id,
+      reporter_name: r.reporter.name,
+      reported_sender_identity_id: r.message.sender.id,
+      reported_sender_name: r.message.sender.name,
+      message_preview: r.message.deletedAt
+        ? null
+        : truncate(r.message.body ?? "", 120),
+      created_at: r.createdAt.getTime(),
+      resolved_at: r.resolvedAt?.getTime() ?? null,
+      action: (r.action ?? null) as "dismiss" | "warn" | "ban" | null,
+    }));
+    return pageOf(items, offset, limit, total);
+  }),
+
+  // Lazy fetch of the full report payload (revisions + surrounding context).
+  // Called when the moderator opens a single report from the list.
+  getChatReport: requireConf("moderator").moderation.getChatReport.handler(async ({ input, context }) => {
+    const payload = await buildReportPayload(context.prisma, input.report_id);
+    if (!payload) throw new ORPCError("NOT_FOUND");
+    // Cross-conference safety: report must belong to this conference.
+    const report = await context.prisma.messageReport.findUnique({
+      where: { id: input.report_id },
+      select: { message: { select: { conversation: { select: { conferenceId: true } } } } },
+    });
+    if (!report || report.message.conversation.conferenceId !== context.conferenceId) {
+      throw new ORPCError("NOT_FOUND");
+    }
+    return payload;
   }),
 
   // ----- resolveChatReport -------------------------------------------------
@@ -175,25 +238,42 @@ export const moderationRouter = {
   }),
 
   // ----- listChatBans ------------------------------------------------------
-  listChatBans: requireConf("moderator").moderation.listChatBans.handler(async ({ context }) => {
-    const rows = await context.prisma.conferenceIdentity.findMany({
-      where: {
-        conferenceId: context.conferenceId,
-        chatBannedAt: { not: null },
-      },
-      select: {
-        id: true, name: true, chatBannedReason: true, chatBannedAt: true,
-        chatBannedBy: { select: { name: true, email: true } },
-      },
-      orderBy: { chatBannedAt: "desc" },
-    });
-    return rows.map((r) => ({
+  listChatBans: requireConf("moderator").moderation.listChatBans.handler(async ({ input, context }) => {
+    const { offset, limit, q } = parsePageInput(input);
+    const where: Prisma.ConferenceIdentityWhereInput = {
+      conferenceId: context.conferenceId,
+      chatBannedAt: { not: null },
+      ...(q
+        ? {
+            OR: [
+              { name: { contains: q } },
+              { email: { contains: q } },
+              { chatBannedReason: { contains: q } },
+            ],
+          }
+        : {}),
+    };
+    const [total, rows] = await Promise.all([
+      context.prisma.conferenceIdentity.count({ where }),
+      context.prisma.conferenceIdentity.findMany({
+        where,
+        select: {
+          id: true, name: true, chatBannedReason: true, chatBannedAt: true,
+          chatBannedBy: { select: { name: true, email: true } },
+        },
+        orderBy: { chatBannedAt: "desc" },
+        skip: offset,
+        take: limit,
+      }),
+    ]);
+    const items = rows.map((r) => ({
       identity_id: r.id,
       name: r.name,
       reason: r.chatBannedReason,
       banned_at: r.chatBannedAt!.getTime(),
       banned_by: r.chatBannedBy ? (r.chatBannedBy.name ?? r.chatBannedBy.email) : null,
     }));
+    return pageOf(items, offset, limit, total);
   }),
 
   // ----- unbanFromChat -----------------------------------------------------

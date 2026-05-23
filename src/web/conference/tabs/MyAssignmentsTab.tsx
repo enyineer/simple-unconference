@@ -32,8 +32,8 @@ export function MyAssignmentsTab({
   const fetchAll = useCallback(() => Promise.all([
     api.agenda.myAssignments({ slug }),
     api.agenda.get({ slug }),
-    api.rooms.list({ slug }),
-    api.submissions.list({ slug, status: "published" }),
+    api.rooms.listAll({ slug }),
+    api.submissions.listAll({ slug, status: "published" }),
   ]), [slug]);
   async function refresh() {
     const [m, a, r, s] = await fetchAll();

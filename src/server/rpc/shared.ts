@@ -121,6 +121,47 @@ export async function filterToExistingRoomTags(
   return values.filter((v) => valid.has(v));
 }
 
+// ----- pagination helpers --------------------------------------------------
+
+import type { Page } from "../../shared/contract";
+
+export const DEFAULT_PAGE_SIZE = 25;
+export const MAX_PAGE_SIZE = 100;
+
+/**
+ * Parse the shared `{ q?, cursor?, limit? }` page input into normalized
+ * `offset` / `limit` / `q` values. `cursor` is treated as an opaque
+ * offset token (decimal string) — anything else collapses to 0.
+ */
+export function parsePageInput(input: {
+  q?: string;
+  cursor?: string;
+  limit?: number;
+}): { offset: number; limit: number; q: string } {
+  const rawOffset = input.cursor ? parseInt(input.cursor, 10) : 0;
+  const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
+  const limit = Math.min(
+    MAX_PAGE_SIZE,
+    Math.max(1, input.limit ?? DEFAULT_PAGE_SIZE),
+  );
+  const q = (input.q ?? "").trim();
+  return { offset, limit, q };
+}
+
+/** Build a `Page<T>` envelope. `next_cursor` is `null` on the last page. */
+export function pageOf<T>(
+  items: T[],
+  offset: number,
+  limit: number,
+  total: number,
+): Page<T> {
+  const nextOffset = offset + items.length;
+  const next_cursor = nextOffset < total && items.length === limit
+    ? String(nextOffset)
+    : null;
+  return { items, total, next_cursor };
+}
+
 // ----- invite + join-link + calendar helpers -------------------------------
 
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days

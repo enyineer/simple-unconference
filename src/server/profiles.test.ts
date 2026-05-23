@@ -84,7 +84,7 @@ describe("profiles.* smoke", () => {
     await alice.rpc.profiles.updateMine({ slug: conf.slug, profile_published: true });
 
     // Non-mod (Bob) sees only Alice.
-    const bobView = await bob.rpc.profiles.list({ slug: conf.slug });
+    const bobView = (await bob.rpc.profiles.list({ slug: conf.slug })).items;
     const bobIds = bobView.map((p) => p.identity_id);
     expect(bobIds).toContain(aliceId);
     expect(bobView.every((p) => p.identity_id === aliceId || p.title !== undefined)).toBe(true);
@@ -92,7 +92,7 @@ describe("profiles.* smoke", () => {
     expect(bobView).toHaveLength(1);
 
     // Mod (owner) sees everyone in the conference.
-    const ownerView = await owner.rpc.profiles.list({ slug: conf.slug });
+    const ownerView = (await owner.rpc.profiles.list({ slug: conf.slug })).items;
     expect(ownerView.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -220,7 +220,7 @@ describe("profiles.* smoke", () => {
     // profiles.list has no `email` field on the summary at all; assert the
     // serialized payload doesn't contain Alice's address as a defense-in-depth
     // regression guard (e.g. against a future select including `email`).
-    const bobList = await bob.rpc.profiles.list({ slug: conf.slug });
+    const bobList = (await bob.rpc.profiles.list({ slug: conf.slug })).items;
     expect(JSON.stringify(bobList)).not.toContain("alice9@example.com");
   });
 
@@ -309,14 +309,14 @@ describe("profiles.* smoke", () => {
       slug: conf.slug, title: "T", description: "D",
     });
 
-    const beforePublish = await alice.rpc.submissions.list({ slug: conf.slug });
+    const beforePublish = await alice.rpc.submissions.listAll({ slug: conf.slug });
     expect(beforePublish.length).toBeGreaterThan(0);
     expect(beforePublish[0]!.submitter_profile_published).toBe(false);
 
     // After publish, the field flips. The Web SessionCard reads this to
     // decide whether ProfileLink renders as a link or as plain text.
     await alice.rpc.profiles.updateMine({ slug: conf.slug, profile_published: true });
-    const afterPublish = await alice.rpc.submissions.list({ slug: conf.slug });
+    const afterPublish = await alice.rpc.submissions.listAll({ slug: conf.slug });
     expect(afterPublish[0]!.submitter_profile_published).toBe(true);
   });
 

@@ -326,13 +326,13 @@ describe("conferences + roles", () => {
     await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
 
     // Bob reads submissions: submitter_email must be null, submitter_name exposed.
-    const bobList = await bob.rpc.submissions.list({ slug: conf.slug });
+    const bobList = await bob.rpc.submissions.listAll({ slug: conf.slug });
     expect(bobList.length).toBe(1);
     expect(bobList[0]!.submitter_email).toBeNull();
     expect("submitter_name" in bobList[0]!).toBe(true);
     expect(typeof bobList[0]!.submitter_id).toBe("number");
 
-    const ownerList = await owner.rpc.submissions.list({ slug: conf.slug });
+    const ownerList = await owner.rpc.submissions.listAll({ slug: conf.slug });
     expect(ownerList[0]!.submitter_email).toBe("alice-priv@example.com");
 
     await expect(bob.rpc.conferences.listParticipants({ slug: conf.slug }))
@@ -354,7 +354,7 @@ not-an-email
     expect(j.invites.length).toBe(2);
 
     // The invites show up as pending.
-    const pending = await owner.rpc.conferences.listInvites({ slug: conf.slug });
+    const pending = (await owner.rpc.conferences.listInvites({ slug: conf.slug, status: "all" })).items;
     const pendingEmails = new Set(pending.filter((i) => i.claimed_at === null).map((i) => i.email));
     expect(pendingEmails.has("a@e.com")).toBe(true);
     expect(pendingEmails.has("b@e.com")).toBe(true);
@@ -380,7 +380,7 @@ not-an-email
       tags: ["projector"],
     });
 
-    const list = await owner.rpc.rooms.list({ slug: conf.slug });
+    const list = await owner.rpc.rooms.listAll({ slug: conf.slug });
     expect(list[0]!.name).toBe("Main Hall");
     expect(list[0]!.tags).toEqual(["projector"]);
     expect(list[0]!.description).toBe("Ground floor, near the cafe.");
@@ -389,7 +389,7 @@ not-an-email
       slug: conf.slug, id: room.id,
       description: null,
     });
-    const list2 = await owner.rpc.rooms.list({ slug: conf.slug });
+    const list2 = await owner.rpc.rooms.listAll({ slug: conf.slug });
     expect(list2[0]!.description).toBeNull();
   });
 
@@ -412,7 +412,7 @@ not-an-email
       .rejects.toBeInstanceOf(ORPCError);
 
     // Try to remove the owner's identity row: find it via listParticipants.
-    const all = await owner.rpc.conferences.listParticipants({ slug: conf.slug });
+    const all = (await owner.rpc.conferences.listParticipants({ slug: conf.slug })).items;
     const ownerRow = all.find((p) => p.role === "owner");
     expect(ownerRow).toBeTruthy();
     await expect(carol.rpc.conferences.removeParticipant({ slug: conf.slug, user_id: ownerRow!.user_id }))
@@ -497,7 +497,7 @@ describe("submissions + stars + publish", () => {
 
     await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
 
-    const partList = await part.rpc.submissions.list({ slug: conf.slug });
+    const partList = await part.rpc.submissions.listAll({ slug: conf.slug });
     expect(partList.length).toBe(1);
     expect(partList[0]!.tags).toEqual(["discussion", "workshop"]);
     expect(partList[0]!.requirements).toEqual(["github account", "laptop"]);
@@ -508,7 +508,7 @@ describe("submissions + stars + publish", () => {
       tags: ["workshop"],
     });
 
-    const after = await owner.rpc.submissions.list({ slug: conf.slug });
+    const after = await owner.rpc.submissions.listAll({ slug: conf.slug });
     expect(after[0]!.title).toBe("Updated workshop");
     expect(after[0]!.tags).toEqual(["workshop"]);
     expect(after[0]!.requirements).toEqual(["github account", "laptop"]);
@@ -537,14 +537,14 @@ describe("submissions + stars + publish", () => {
 
     const { client: speaker } =
       await inviteAndClaim(ctx.app, owner, conf.slug, "speaker@example.com");
-    const roster = await owner.rpc.conferences.listParticipants({ slug: conf.slug });
+    const roster = (await owner.rpc.conferences.listParticipants({ slug: conf.slug })).items;
     const speakerIdentity = roster.find((p) => p.email === "speaker@example.com")!;
 
     await owner.rpc.submissions.update({
       slug: conf.slug, id: sub.id, submitter_id: speakerIdentity.user_id,
     });
 
-    const after = await owner.rpc.submissions.list({ slug: conf.slug });
+    const after = await owner.rpc.submissions.listAll({ slug: conf.slug });
     expect(after[0]!.submitter_id).toBe(speakerIdentity.user_id);
     expect(after[0]!.submitter_email).toBe("speaker@example.com");
 
@@ -577,7 +577,7 @@ describe("submissions + stars + publish", () => {
 
     const { client: speaker } =
       await inviteAndClaim(ctx.app, owner, conf.slug, "modspeaker@example.com");
-    const roster = await owner.rpc.conferences.listParticipants({ slug: conf.slug });
+    const roster = (await owner.rpc.conferences.listParticipants({ slug: conf.slug })).items;
     const speakerIdentity =
       roster.find((p) => p.email === "modspeaker@example.com")!;
 
@@ -592,7 +592,7 @@ describe("submissions + stars + publish", () => {
       allow_overlapping_placements: true,
     });
 
-    const list = await owner.rpc.submissions.list({ slug: conf.slug });
+    const list = await owner.rpc.submissions.listAll({ slug: conf.slug });
     const created = list[0]!;
     expect(created.submitter_id).toBe(speakerIdentity.user_id);
     expect(created.submitter_email).toBe("modspeaker@example.com");
@@ -611,7 +611,7 @@ describe("submissions + stars + publish", () => {
       max_placements: 99,
       allow_overlapping_placements: true,
     });
-    const after = await owner.rpc.submissions.list({ slug: conf.slug });
+    const after = await owner.rpc.submissions.listAll({ slug: conf.slug });
     const sneaky = after.find((s) => s.title === "Sneaky participant create")!;
     expect(sneaky.pre_assigned_room_id).toBeNull();
     expect(sneaky.max_placements).toBeNull();
@@ -650,7 +650,7 @@ describe("submissions + stars + publish", () => {
     // Participants see their *own* unpublished submissions (so they can
     // delete a draft before a mod decides). Other not-yet-published sessions
     // are still hidden until a mod publishes them.
-    let list = await part.rpc.submissions.list({ slug: conf.slug });
+    let list = await part.rpc.submissions.listAll({ slug: conf.slug });
     expect(list.map((s) => s.id)).toEqual([sub.id]);
     expect(list[0]!.status).toBe("submitted");
 
@@ -658,13 +658,13 @@ describe("submissions + stars + publish", () => {
 
     await part.rpc.submissions.star({ slug: conf.slug, id: sub.id });
 
-    list = await part.rpc.submissions.list({ slug: conf.slug });
+    list = await part.rpc.submissions.listAll({ slug: conf.slug });
     expect(list.length).toBe(1);
     expect(list[0]!.star_count).toBe(1);
     expect(list[0]!.starred_by_me).toBe(true);
 
     await part.rpc.submissions.unstar({ slug: conf.slug, id: sub.id });
-    list = await part.rpc.submissions.list({ slug: conf.slug });
+    list = await part.rpc.submissions.listAll({ slug: conf.slug });
     expect(list[0]!.starred_by_me).toBe(false);
     expect(list[0]!.star_count).toBe(0);
   });
@@ -1366,7 +1366,7 @@ describe("room requirements (tag-based pre-assignment)", () => {
       slug: conf.slug, title: "Test",
       room_requirements: ["projector", "nonexistent_feature"],
     });
-    const list = await owner.rpc.submissions.list({ slug: conf.slug });
+    const list = await owner.rpc.submissions.listAll({ slug: conf.slug });
     const row = list.find((s) => s.id === sub.id)!;
     // "nonexistent_feature" was dropped because no room has it.
     expect(row.room_requirements).toEqual(["projector"]);
@@ -2847,7 +2847,7 @@ describe("per-conference identity isolation", () => {
       .rejects.toBeInstanceOf(ORPCError);
     await expect(aliceA.rpc.conferences.me({ slug: confB.slug }))
       .rejects.toBeInstanceOf(ORPCError);
-    await expect(aliceA.rpc.submissions.list({ slug: confB.slug }))
+    await expect(aliceA.rpc.submissions.listAll({ slug: confB.slug }))
       .rejects.toBeInstanceOf(ORPCError);
   });
 
@@ -3078,14 +3078,14 @@ describe("session max placements (finished sessions)", () => {
     // Path C: `is_finished` is informational only. Participants still see
     // every published submission, including fully-scheduled ones, so they
     // can star and have linked planned tracks land on their schedule.
-    const partList = await p1.rpc.submissions.list({ slug: conf.slug });
+    const partList = await p1.rpc.submissions.listAll({ slug: conf.slug });
     expect(partList.map((s) => s.id).sort()).toEqual([subA.id, subB.id].sort());
     for (const row of partList) {
       expect(row.is_finished).toBe(true);
       expect(row.placement_count).toBe(1);
     }
 
-    const modList = await owner.rpc.submissions.list({ slug: conf.slug });
+    const modList = await owner.rpc.submissions.listAll({ slug: conf.slug });
     expect(modList.map((s) => s.id).sort()).toEqual([subA.id, subB.id].sort());
     for (const row of modList) {
       expect(row.is_finished).toBe(true);
@@ -3177,12 +3177,12 @@ describe("session max placements (finished sessions)", () => {
 
     // Path C: participants still see manually-finished sessions (informational
     // badge only); they're just excluded from the algorithm pool.
-    const partList = await p1.rpc.submissions.list({ slug: conf.slug });
+    const partList = await p1.rpc.submissions.listAll({ slug: conf.slug });
     expect(partList.length).toBe(1);
     expect(partList[0]!.is_finished).toBe(true);
     expect(partList[0]!.manually_finished).toBe(true);
 
-    const modList = await owner.rpc.submissions.list({ slug: conf.slug });
+    const modList = await owner.rpc.submissions.listAll({ slug: conf.slug });
     expect(modList.length).toBe(1);
     expect(modList[0]!.is_finished).toBe(true);
     expect(modList[0]!.manually_finished).toBe(true);
@@ -3210,13 +3210,13 @@ describe("session max placements (finished sessions)", () => {
 
     // After being placed in a static slot, the session is finished and the
     // next unconference assignment must exclude it.
-    const modList = await owner.rpc.submissions.list({ slug: conf.slug });
+    const modList = await owner.rpc.submissions.listAll({ slug: conf.slug });
     expect(modList[0]!.placement_count).toBe(1);
     expect(modList[0]!.is_finished).toBe(true);
 
     // Path C: participant still sees the fully-scheduled session and can
     // star it; the star then derives the planned track onto their schedule.
-    const partList = await p1.rpc.submissions.list({ slug: conf.slug });
+    const partList = await p1.rpc.submissions.listAll({ slug: conf.slug });
     expect(partList.length).toBe(1);
     expect(partList[0]!.is_finished).toBe(true);
 
@@ -3242,13 +3242,13 @@ describe("session max placements (finished sessions)", () => {
     const b = await bob.rpc.submissions.create({ slug: conf.slug, title: "Bob's draft" });
     // Bob publishes nothing yet. Alice sees her own draft on the list (which
     // previously hid all non-published rows from non-mods).
-    const aliceList = await alice.rpc.submissions.list({ slug: conf.slug });
+    const aliceList = await alice.rpc.submissions.listAll({ slug: conf.slug });
     expect(aliceList.map((s) => s.id)).toContain(a.id);
     expect(aliceList.map((s) => s.id)).not.toContain(b.id);
 
     // After Bob's submission is published, Alice sees both.
     await owner.rpc.submissions.publish({ slug: conf.slug, id: b.id });
-    const aliceList2 = await alice.rpc.submissions.list({ slug: conf.slug });
+    const aliceList2 = await alice.rpc.submissions.listAll({ slug: conf.slug });
     expect(aliceList2.map((s) => s.id).sort()).toEqual([a.id, b.id].sort());
   });
 
@@ -3260,7 +3260,7 @@ describe("session max placements (finished sessions)", () => {
 
     const a = await alice.rpc.submissions.create({ slug: conf.slug, title: "Draft" });
     await alice.rpc.submissions.delete({ slug: conf.slug, id: a.id });
-    const after = await alice.rpc.submissions.list({ slug: conf.slug });
+    const after = await alice.rpc.submissions.listAll({ slug: conf.slug });
     expect(after.map((s) => s.id)).not.toContain(a.id);
 
     // Once published, the submitter loses the right to delete (mods still can).
@@ -3270,7 +3270,7 @@ describe("session max placements (finished sessions)", () => {
       .rejects.toBeInstanceOf(ORPCError);
 
     await owner.rpc.submissions.delete({ slug: conf.slug, id: a2.id });
-    const final = await owner.rpc.submissions.list({ slug: conf.slug });
+    const final = await owner.rpc.submissions.listAll({ slug: conf.slug });
     expect(final.map((s) => s.id)).not.toContain(a2.id);
   });
 
@@ -3530,7 +3530,7 @@ describe("public-instance defenses: quotas + lockout", () => {
     for (let i = 0; i < overTheCap; i++) {
       await owner.rpc.submissions.create({ slug: conf.slug, title: `Seed ${i + 1}` });
     }
-    const list = await owner.rpc.submissions.list({ slug: conf.slug });
+    const list = await owner.rpc.submissions.listAll({ slug: conf.slug });
     expect(list.length).toBe(overTheCap);
   });
 
@@ -4535,7 +4535,7 @@ describe("Path C: unified star + planned-schedule derivation", () => {
       slug: conf.slug, slot_id: sB.id, room_id: r2.id, submission_id: sub.id,
     });
 
-    const list = await owner.rpc.submissions.list({ slug: conf.slug });
+    const list = await owner.rpc.submissions.listAll({ slug: conf.slug });
     const row = list.find((s) => s.id === sub.id)!;
     expect(row.scheduled_in).toHaveLength(2);
     // Ordered by starts_at, so sA's entry comes first.
@@ -4646,7 +4646,7 @@ describe("Path C: unified star + planned-schedule derivation", () => {
 
     const { client: part } =
       await inviteAndClaim(ctx.app, owner, conf.slug, "fp@example.com");
-    const list = await part.rpc.submissions.list({ slug: conf.slug });
+    const list = await part.rpc.submissions.listAll({ slug: conf.slug });
     const row = list.find((s) => s.id === sub.id);
     expect(row).toBeTruthy();
     expect(row!.is_finished).toBe(true);

@@ -16,6 +16,19 @@ export const InConf = v.object({ slug: Slug });
 // ----- shared output types ------------------------------------------------
 
 export type Ok = { ok: true };
+
+/**
+ * Generic paginated list envelope returned by every server-paginated
+ * `list` procedure. `next_cursor` is an opaque token to pass back as
+ * `cursor` on the next call; `null` when the current page is the last.
+ * `total` is the count of rows matching the same filters (sans paging)
+ * so the UI can render "Showing X-Y of N" and a numeric page bar.
+ */
+export interface Page<T> {
+  items: T[];
+  total: number;
+  next_cursor: string | null;
+}
 export type ColorMode = "auto" | "light" | "dark";
 
 export interface UserOut {
@@ -661,6 +674,27 @@ export interface MessageOut {
   // chatReadReceiptsEnabled=true. The receiver always sees their own read
   // state locally for unread badging — that's not driven by this field.
   read_at: number | null;
+}
+
+// Compact row for the paginated chat-reports list view. Just enough to
+// render the inbox row + sort/filter; the surrounding-message window and
+// edit revisions live on `MessageReportOut` and are fetched lazily when
+// the moderator opens the report sheet.
+export interface MessageReportSummaryOut {
+  id: number;
+  message_id: number;
+  conversation_id: number;
+  reason: string;
+  reporter_identity_id: number;
+  reporter_name: string | null;
+  reported_sender_identity_id: number;
+  reported_sender_name: string | null;
+  // First ~120 chars of the reported message body, or null when the message
+  // has been soft-deleted (the sheet still loads the original via `getChatReport`).
+  message_preview: string | null;
+  created_at: number;
+  resolved_at: number | null;
+  action: "dismiss" | "warn" | "ban" | null;
 }
 
 // Mod-only report payload. Carries the reported message + its full edit

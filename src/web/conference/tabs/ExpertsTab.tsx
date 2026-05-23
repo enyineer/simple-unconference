@@ -46,17 +46,19 @@ export function ExpertsTab({
     try {
       const [ex, rs] = await Promise.all([
         api.experts.list({ slug }),
-        api.rooms.list({ slug }),
+        api.rooms.listAll({ slug }),
       ]);
       setExperts(ex);
       setRooms(rs);
       if (isMod) {
         const [pp, ps] = await Promise.all([
           api.experts.listPools({ slug }),
-          api.conferences.listParticipants({ slug }),
+          // Promote-expert picker enumerates every participant; ask for a
+          // generous limit since we display them all in one dropdown.
+          api.conferences.listParticipants({ slug, limit: 100 }),
         ]);
         setPools(pp);
-        setPeople(ps);
+        setPeople(ps.items);
       }
     } catch (e) {
       toast.error(errorCode(e));

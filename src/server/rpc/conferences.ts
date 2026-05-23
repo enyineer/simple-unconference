@@ -1,7 +1,9 @@
 import { ORPCError } from "@orpc/server";
+import type { Prisma } from "@prisma/client";
 import {
   base, authed, requireConf, actorIdentityId,
   slugify, INVITE_TTL_MS, newOpaqueToken, joinUrl, calendarFeedPath,
+  pageOf, parsePageInput,
   toInviteOut, toConfMeOut,
 } from "./shared";
 import {
@@ -189,18 +191,36 @@ export const conferenceRouter = {
   // Identities with ownerUserId set are surfaced as role="owner" because the
   // conference owner has authority via Conference.ownerId regardless of the
   // identity row's stored role.
-  listParticipants: requireConf("moderator").conferences.listParticipants.handler(async ({ context }) => {
-    const identities = await context.prisma.conferenceIdentity.findMany({
-      where: { conferenceId: context.conferenceId },
-      select: { id: true, email: true, name: true, role: true, ownerUserId: true },
-      orderBy: { email: "asc" },
-    });
-    return identities.map((i) => ({
+  listParticipants: requireConf("moderator").conferences.listParticipants.handler(async ({ input, context }) => {
+    const { offset, limit, q } = parsePageInput(input);
+    const where: Prisma.ConferenceIdentityWhereInput = {
+      conferenceId: context.conferenceId,
+      ...(q
+        ? {
+            OR: [
+              { email: { contains: q } },
+              { name: { contains: q } },
+            ],
+          }
+        : {}),
+    };
+    const [total, identities] = await Promise.all([
+      context.prisma.conferenceIdentity.count({ where }),
+      context.prisma.conferenceIdentity.findMany({
+        where,
+        select: { id: true, email: true, name: true, role: true, ownerUserId: true },
+        orderBy: { email: "asc" },
+        skip: offset,
+        take: limit,
+      }),
+    ]);
+    const items = identities.map((i) => ({
       user_id: i.id,
       email: i.email,
       name: i.name,
       role: i.ownerUserId !== null ? ("owner" as const) : i.role,
     }));
+    return pageOf(items, offset, limit, total);
   }),
 
   removeParticipant: requireConf("moderator").conferences.removeParticipant.handler(async ({ input, context }) => {
@@ -380,13 +400,49 @@ export const conferenceRouter = {
     return { added, skipped, errors, invites };
   }),
 
-  listInvites: requireConf("moderator").conferences.listInvites.handler(async ({ context }) => {
+  listInvites: requireConf("moderator").conferences.listInvites.handler(async ({ input, context }) => {
+    const { offset, limit, q } = parsePageInput(input);
+    const statusWhere: Prisma.ConferenceInviteWhereInput =
+      input.status === "claimed"
+        ? { claimedAt: { not: null } }
+        : input.status === "all"
+          ? {}
+          : { claimedAt: null };
+    const where: Prisma.ConferenceInviteWhereInput = {
+      conferenceId: context.conferenceId,
+      ...statusWhere,
+      ...(q ? { email: { contains: q } } : {}),
+    };
+    const [total, invites] = await Promise.all([
+      context.prisma.conferenceInvite.count({ where }),
+      context.prisma.conferenceInvite.findMany({
+        where,
+        include: { conference: { select: { slug: true } } },
+        orderBy: { createdAt: "desc" },
+        skip: offset,
+        take: limit,
+      }),
+    ]);
+    return pageOf(invites.map(toInviteOut), offset, limit, total);
+  }),
+
+  exportInvites: requireConf("moderator").conferences.exportInvites.handler(async ({ input, context }) => {
+    // Server-side full enumeration of pending invites matching the same `q`
+    // the table view applied. The CSV download path needs the full set —
+    // looping pages on the client would race against creates/claims and is
+    // 10-100x slower for big rosters.
+    const q = (input.q ?? "").trim();
+    const where: Prisma.ConferenceInviteWhereInput = {
+      conferenceId: context.conferenceId,
+      claimedAt: null,
+      ...(q ? { email: { contains: q } } : {}),
+    };
     const invites = await context.prisma.conferenceInvite.findMany({
-      where: { conferenceId: context.conferenceId },
+      where,
       include: { conference: { select: { slug: true } } },
       orderBy: { createdAt: "desc" },
     });
-    return invites.map(toInviteOut);
+    return { invites: invites.map(toInviteOut) };
   }),
 
   revokeInvite: requireConf("moderator").conferences.revokeInvite.handler(async ({ input, context }) => {

@@ -387,7 +387,7 @@ describe("chat.reportMessage + moderation", () => {
       slug: conf.slug, message_id: m.id, reason: "harassment",
     });
     // Owner-side: report shows in listChatReports.
-    const reports = await owner.rpc.moderation.listChatReports({ slug: conf.slug });
+    const reports = (await owner.rpc.moderation.listChatReports({ slug: conf.slug })).items;
     expect(reports).toHaveLength(1);
     expect(reports[0]!).toMatchObject({
       reason: "harassment",
@@ -411,7 +411,7 @@ describe("chat.reportMessage + moderation", () => {
     const { conf, owner, alice, aliceId, bob, bobId } = await setupTwoPublishedParticipants(ctx, "moderate-ban");
     const m = await alice.rpc.chat.send({ slug: conf.slug, target_identity_id: bobId, body: "abusive" });
     await bob.rpc.chat.reportMessage({ slug: conf.slug, message_id: m.id, reason: "violates code" });
-    const [report] = await owner.rpc.moderation.listChatReports({ slug: conf.slug });
+    const [report] = (await owner.rpc.moderation.listChatReports({ slug: conf.slug })).items;
     await owner.rpc.moderation.resolveChatReport({
       slug: conf.slug, report_id: report!.id, action: "ban", mod_reason: "test ban",
     });
@@ -433,7 +433,7 @@ describe("chat.reportMessage + moderation", () => {
     const { conf, owner, alice, aliceId, bob, bobId } = await setupTwoPublishedParticipants(ctx, "moderate-warn-reason");
     const m = await alice.rpc.chat.send({ slug: conf.slug, target_identity_id: bobId, body: "rude" });
     await bob.rpc.chat.reportMessage({ slug: conf.slug, message_id: m.id, reason: "reporter text" });
-    const [report] = await owner.rpc.moderation.listChatReports({ slug: conf.slug });
+    const [report] = (await owner.rpc.moderation.listChatReports({ slug: conf.slug })).items;
     await owner.rpc.moderation.resolveChatReport({
       slug: conf.slug, report_id: report!.id, action: "warn", mod_reason: "moderator text",
     });
@@ -449,7 +449,7 @@ describe("chat.reportMessage + moderation", () => {
     const { conf, owner, alice, aliceId, bob, bobId } = await setupTwoPublishedParticipants(ctx, "moderate-warn-fallback");
     const m = await alice.rpc.chat.send({ slug: conf.slug, target_identity_id: bobId, body: "rude" });
     await bob.rpc.chat.reportMessage({ slug: conf.slug, message_id: m.id, reason: "reporter fallback" });
-    const [report] = await owner.rpc.moderation.listChatReports({ slug: conf.slug });
+    const [report] = (await owner.rpc.moderation.listChatReports({ slug: conf.slug })).items;
     await owner.rpc.moderation.resolveChatReport({
       slug: conf.slug, report_id: report!.id, action: "warn",
     });
@@ -488,7 +488,7 @@ describe("chat.reportMessage + moderation", () => {
     const { conf, owner, alice, bob, bobId } = await setupTwoPublishedParticipants(ctx, "moderate-doubleresolve");
     const m = await alice.rpc.chat.send({ slug: conf.slug, target_identity_id: bobId, body: "x" });
     await bob.rpc.chat.reportMessage({ slug: conf.slug, message_id: m.id, reason: "x" });
-    const [report] = await owner.rpc.moderation.listChatReports({ slug: conf.slug });
+    const [report] = (await owner.rpc.moderation.listChatReports({ slug: conf.slug })).items;
     await owner.rpc.moderation.resolveChatReport({
       slug: conf.slug, report_id: report!.id, action: "dismiss",
     });
@@ -513,7 +513,7 @@ describe("conferences.delete blocks on open chat reports", () => {
       owner.rpc.conferences.delete({ slug: conf.slug }),
     ).rejects.toMatchObject({ code: "FORBIDDEN", message: "open_chat_reports" });
     // Resolve the report, deletion now succeeds.
-    const [report] = await owner.rpc.moderation.listChatReports({ slug: conf.slug });
+    const [report] = (await owner.rpc.moderation.listChatReports({ slug: conf.slug })).items;
     await owner.rpc.moderation.resolveChatReport({
       slug: conf.slug, report_id: report!.id, action: "dismiss",
     });

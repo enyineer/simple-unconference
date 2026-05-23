@@ -147,7 +147,7 @@ export async function bootstrap(baseUrl: string): Promise<{ rpc: RouterClient<Ap
 
   // Top up sessions so the list endpoint isn't empty. Each session is
   // submitted by the owner and published.
-  const subs = await s.rpc.submissions.list({ slug });
+  const subs = await s.rpc.submissions.listAll({ slug });
   const missing = Math.max(0, TARGET_SESSIONS - subs.length);
   for (let i = subs.length; i < TARGET_SESSIONS; i++) {
     const created = await s.rpc.submissions.create({

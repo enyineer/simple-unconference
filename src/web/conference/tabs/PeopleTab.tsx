@@ -1,27 +1,21 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Badge, Button, Form, Heading, Sheet, Spinner, Stack, TextInput, Textarea, Text,
 } from "../../design-system";
 import { useToast } from "../../design-system/hooks";
 import { api, errorCode } from "../../api";
 import { quotaErrorMessage } from "../../quotaErrors";
+import type { InviteOut, ParticipantOut } from "../../../shared/contract";
 import type { Participant, Role } from "../types";
 import { CopyButton } from "../ui/CopyButton";
 import { EmptyState } from "../ui/EmptyState";
+import { Pager } from "../ui/Pager";
 import { Tip } from "../ui/Tip";
 import { useNow } from "../../useNow";
+import { usePaginatedList } from "../usePaginatedList";
 import { ChatReportsSection } from "./people/ChatReportsSection";
 
-interface PendingInvite {
-  id: number;
-  email: string;
-  token: string;
-  url: string;
-  role: "moderator" | "participant";
-  created_at: number;
-  expires_at: number;
-  claimed_at: number | null;
-}
+type PendingInvite = InviteOut;
 
 function absoluteUrl(relative: string): string {
   // The router is hash-based, so paths live after the `#`. Combine with
@@ -33,34 +27,22 @@ function absoluteUrl(relative: string): string {
 export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
   const isMod = role === "owner" || role === "moderator";
   const isOwner = role === "owner";
+  const toast = useToast();
 
-  const [people, setPeople] = useState<Participant[] | null>(null);
-  const [invites, setInvites] = useState<PendingInvite[] | null>(null);
+  const people = usePaginatedList<ParticipantOut>(
+    (input) => api.conferences.listParticipants({ slug, ...input }),
+    { pageSize: 25 },
+  );
+
+  const invites = usePaginatedList<InviteOut>(
+    (input) => api.conferences.listInvites({ slug, status: "pending", ...input }),
+    { pageSize: 25 },
+  );
 
   const [inviteSheetOpen, setInviteSheetOpen] = useState(false);
   const [singleEmail, setSingleEmail] = useState("");
   const [bulkCsv, setBulkCsv] = useState("");
-  const toast = useToast();
-
-  const fetchAll = useCallback(() => Promise.all([
-    api.conferences.listParticipants({ slug }),
-    api.conferences.listInvites({ slug }).catch(() => [] as PendingInvite[]),
-  ]), [slug]);
-  async function refresh() {
-    const [pp, inv] = await fetchAll();
-    setPeople(pp);
-    setInvites(inv);
-  }
-  useEffect(() => {
-    let cancelled = false;
-    fetchAll()
-      .then(([pp, inv]) => {
-        if (cancelled) return;
-        setPeople(pp); setInvites(inv);
-      })
-      .catch(() => { if (!cancelled) setPeople([]); });
-    return () => { cancelled = true; };
-  }, [fetchAll]);
+  const [exporting, setExporting] = useState(false);
 
   function resetInviteSheet() {
     setSingleEmail("");
@@ -74,7 +56,7 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
       const inv = await api.conferences.createInvite({ slug, email: singleEmail.trim() });
       toast.success(`Invite link ready for ${inv.email}. Copy it from "Pending invites" below.`);
       setSingleEmail("");
-      await refresh();
+      invites.refresh();
     } catch (e) {
       toast.error(quotaErrorMessage(e) ?? humanInviteError(errorCode(e)));
     }
@@ -88,7 +70,7 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
       if (result.skipped > 0) msgs.push(`Skipped ${result.skipped}.`);
       toast.success(msgs.join(" "));
       setBulkCsv("");
-      await refresh();
+      invites.refresh();
     } catch (e) {
       toast.error(quotaErrorMessage(e) ?? humanInviteError(errorCode(e)));
     }
@@ -100,7 +82,7 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
       await api.conferences.revokeInvite({ slug, id });
       toast.success("Invite revoked.");
     } catch (e) { toast.error(errorCode(e)); }
-    await refresh();
+    invites.refresh();
   }
 
   async function setRoleAction(userId: number, action: "promote" | "demote") {
@@ -111,7 +93,7 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
     } catch (e) {
       toast.error(errorCode(e));
     }
-    await refresh();
+    people.refresh();
   }
 
   async function remove(userId: number) {
@@ -120,7 +102,31 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
       await api.conferences.removeParticipant({ slug, user_id: userId });
       toast.success("Participant removed.");
     } catch (e) { toast.error(errorCode(e)); }
-    await refresh();
+    people.refresh();
+  }
+
+  // Server-side CSV export. Streams every pending invite matching the
+  // current search query — paging the client through them would race
+  // against creates / claims.
+  async function downloadCsv() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const { invites: pending } = await api.conferences.exportInvites({
+        slug,
+        q: invites.q.trim() || undefined,
+      });
+      if (pending.length === 0) {
+        toast.error("No pending invites match the current filter.");
+        return;
+      }
+      downloadInvitesCsv(slug, pending);
+      toast.success(`Exported ${pending.length} pending invite${pending.length === 1 ? "" : "s"}.`);
+    } catch (e) {
+      toast.error(errorCode(e));
+    } finally {
+      setExporting(false);
+    }
   }
 
   return (
@@ -177,13 +183,25 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
         </Stack>
       </Sheet>
 
-      {!people ? (
+      <TextInput
+        label="Search people"
+        placeholder="Search by name or email"
+        value={people.q}
+        onChange={(e) => people.setQ(e.target.value)}
+      />
+
+      {people.loading && people.items.length === 0 ? (
         <Spinner label="Loading…" />
-      ) : people.length === 0 ? (
-        <EmptyState message="No members yet." />
+      ) : people.items.length === 0 ? (
+        <EmptyState
+          message={people.q.trim() ? `No members match "${people.q}".` : "No members yet."}
+          action={people.q.trim() ? (
+            <Button size="small" onClick={people.reset}>Clear search</Button>
+          ) : undefined}
+        />
       ) : (
         <Stack gap="condensed">
-          {people.map((p) => (
+          {people.items.map((p) => (
             <MemberRow
               key={p.user_id}
               participant={p}
@@ -196,43 +214,75 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
         </Stack>
       )}
 
+      <Pager
+        page={people.page}
+        pageSize={people.pageSize}
+        total={people.total}
+        loading={people.loading}
+        hasPrev={people.hasPrev}
+        hasNext={people.hasNext}
+        onPrev={people.prev}
+        onNext={people.next}
+        noun="people"
+      />
+
       {isMod && <ChatReportsSection slug={slug} />}
 
       {isMod && (
         <Stack gap="condensed">
           <Stack direction="row" justify="between" align="center" wrap>
             <Heading level={3}>Pending invites</Heading>
-            {invites && invites.some((i) => i.claimed_at === null) && (
-              <Button
-                size="small"
-                onClick={() => {
-                  const pending = invites.filter((i) => i.claimed_at === null);
-                  downloadInvitesCsv(slug, pending);
-                  toast.success(`Exported ${pending.length} pending invite${pending.length === 1 ? "" : "s"}.`);
-                }}
-              >
-                Download CSV
+            {invites.total > 0 && (
+              <Button size="small" onClick={downloadCsv} disabled={exporting}>
+                {exporting ? "Exporting…" : "Download CSV"}
               </Button>
             )}
           </Stack>
-          {!invites ? (
+
+          <TextInput
+            label="Search invites"
+            placeholder="Search invites by email"
+            value={invites.q}
+            onChange={(e) => invites.setQ(e.target.value)}
+          />
+
+          {invites.loading && invites.items.length === 0 ? (
             <Spinner label="Loading…" />
-          ) : invites.filter((i) => i.claimed_at === null).length === 0 ? (
-            <EmptyState message="No pending invites." />
+          ) : invites.items.length === 0 ? (
+            <EmptyState
+              message={
+                invites.q.trim()
+                  ? `No pending invites match "${invites.q}".`
+                  : "No pending invites."
+              }
+              action={invites.q.trim() ? (
+                <Button size="small" onClick={invites.reset}>Clear search</Button>
+              ) : undefined}
+            />
           ) : (
             <Stack gap="condensed">
-              {invites
-                .filter((i) => i.claimed_at === null)
-                .map((inv) => (
-                  <InviteRow
-                    key={inv.id}
-                    invite={inv}
-                    inviteUrl={absoluteUrl(inv.url)}
-                    onRevoke={() => revokeInvite(inv.id)}
-                  />
-                ))}
+              {invites.items.map((inv) => (
+                <InviteRow
+                  key={inv.id}
+                  invite={inv}
+                  inviteUrl={absoluteUrl(inv.url)}
+                  onRevoke={() => revokeInvite(inv.id)}
+                />
+              ))}
             </Stack>
           )}
+
+          <Pager
+            page={invites.page}
+            pageSize={invites.pageSize}
+            total={invites.total}
+            loading={invites.loading}
+            hasPrev={invites.hasPrev}
+            hasNext={invites.hasNext}
+            onPrev={invites.prev}
+            onNext={invites.next}
+            noun="invites"
+          />
         </Stack>
       )}
     </Stack>
