@@ -1,42 +1,41 @@
-// Tiny hash-based router. URLs look like #/conferences/my-conf.
-// Keeps the bundle small and avoids extra dependencies for a small SPA.
+// Thin wrappers over wouter that keep the project's existing import surface
+// stable. URLs use the hash-fragment form (#/conferences/<slug>/...) — single
+// SPA bundle, no server-side routing config, works under any path / domain.
+//
+// New code should prefer wouter's hooks directly; `useRouteMatch` here is an
+// alias kept around so existing callers don't churn. The component (<HashRouter>)
+// lives in ./HashRouter to keep this file hooks-only — that's what makes
+// react-refresh's only-export-components rule pass.
 
-import { useEffect, useState, useCallback } from "react";
+import { useLocation } from "wouter";
+import { useHashLocation as wouterUseHashLocation } from "wouter/use-hash-location";
 
+export { useRoute as useRouteMatch } from "wouter";
+
+// Use this as the outermost <Router hook={useHashLocation}> in App.tsx so
+// every hook reads from the URL hash, not the pathname.
+export const useHashLocation = wouterUseHashLocation;
+
+// Compatibility shim for the project's pre-existing `useRoute()` shape:
+// returns `{ path, navigate }`. New code should prefer `useLocation()` /
+// wouter's `useRoute(pattern)` matcher instead.
 export function useRoute(): { path: string; navigate: (to: string) => void } {
-  const [path, setPath] = useState(() => parseHash());
-  useEffect(() => {
-    const onChange = () => setPath(parseHash());
-    window.addEventListener("hashchange", onChange);
-    return () => window.removeEventListener("hashchange", onChange);
-  }, []);
-  const navigate = useCallback((to: string) => {
-    const normalized = to.startsWith("/") ? to : "/" + to;
-    if (window.location.hash !== "#" + normalized) {
-      window.location.hash = normalized;
-    }
-  }, []);
-  return { path, navigate };
+  const [path, setLocation] = useLocation();
+  return { path, navigate: (to: string) => setLocation(to.startsWith("/") ? to : "/" + to) };
 }
 
-function parseHash(): string {
-  const h = window.location.hash;
-  if (!h || h === "#") return "/";
-  const stripped = h.startsWith("#") ? h.slice(1) : h;
-  // Strip the query string so route matching sees only the path segments.
-  // Pages that need query params (e.g. JoinPage's `?t=<token>`) read them
-  // straight from `window.location.hash`.
-  const qIdx = stripped.indexOf("?");
-  return qIdx === -1 ? stripped : stripped.slice(0, qIdx);
-}
-
-/**
- * Match a route pattern like "/conferences/:slug/agenda" against `path`.
- * Returns { params } on a match, null on miss.
- */
+// Compatibility shim for the project's pre-existing pure `matchRoute(pattern, path)`
+// helper. Pure function — no router context required, safe to call outside
+// React. Kept verbatim because callers (App.tsx) still use it for legacy
+// route resolution; new routing should use wouter's <Route> / useRouteMatch.
 export function matchRoute(pattern: string, path: string): Record<string, string> | null {
+  // wouter's useHashLocation returns the full hash payload, including any
+  // `?query` / `#fragment` tail (e.g. `/c/foo/join?t=...`). Strip those before
+  // segment matching so the last path segment doesn't carry the query string.
+  const queryIdx = path.search(/[?#]/);
+  const cleanPath = queryIdx === -1 ? path : path.slice(0, queryIdx);
   const pParts = pattern.split("/").filter(Boolean);
-  const aParts = path.split("/").filter(Boolean);
+  const aParts = cleanPath.split("/").filter(Boolean);
   if (pParts.length !== aParts.length) return null;
   const params: Record<string, string> = {};
   for (let i = 0; i < pParts.length; i++) {

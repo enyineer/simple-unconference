@@ -3,7 +3,7 @@ import type { PrismaClient } from "@prisma/client";
 import { requireConf, actorIdentityId } from "./shared";
 import { clipToMinute } from "../../shared/tz";
 import { deriveSlots, pickAvailableRoom } from "../experts";
-import { notifyMany } from "../notifications";
+import { createNotification, createNotifications } from "../notifications";
 
 // Returns the candidate room id list for an expert: pool members if poolId is
 // set, otherwise the explicit ExpertRoom set. Either may be empty.
@@ -314,7 +314,7 @@ export const expertsRouter = {
   // --- bookings -------------------------------------------------------
   book: requireConf("participant").experts.book.handler(async ({ input, context }) => {
     const myId = actorIdentityId(context);
-    return context.prisma.$transaction(async (tx) => {
+    const result = await context.prisma.$transaction(async (tx) => {
       const expert = await tx.expert.findFirst({
         where: { id: input.expert_id, conferenceId: context.conferenceId },
         select: { id: true, poolId: true, identityId: true },
@@ -395,29 +395,38 @@ export const expertsRouter = {
           endsAt: new Date(slotEnd),
         },
       });
-      // Notify the expert that they were just booked. The booker doesn't get
-      // their own notification — they performed the action and see the success
-      // state in the booking UI directly.
       const booker = await tx.conferenceIdentity.findUniqueOrThrow({
         where: { id: myId }, select: { name: true, email: true },
-      });
-      await tx.notification.create({
-        data: {
-          identityId: expert.identityId,
-          kind: "expert_booked",
-          title: "You were booked",
-          body: `${booker.name ?? booker.email} reserved a slot with you.`,
-          ctaLabel: "Open schedule",
-          ctaHref: "tab:me",
-        },
       });
       return {
         booking_id: booking.id,
         room_id: booking.roomId,
         starts_at: booking.startsAt.getTime(),
         ends_at: booking.endsAt.getTime(),
+        // Carried out of the tx so we can fire the bell notification (and
+        // its SSE event) after commit. The booker doesn't get their own
+        // notification — they performed the action and see the success
+        // state in the booking UI directly.
+        notify_expert: {
+          expertIdentityId: expert.identityId,
+          bookerName: booker.name ?? booker.email,
+        },
       };
     });
+    await createNotification(context.prisma, {
+      identityId: result.notify_expert.expertIdentityId,
+      kind: "expert_booked",
+      title: "You were booked",
+      body: `${result.notify_expert.bookerName} reserved a slot with you.`,
+      ctaLabel: "Open schedule",
+      ctaHref: "tab:me",
+    });
+    return {
+      booking_id: result.booking_id,
+      room_id: result.room_id,
+      starts_at: result.starts_at,
+      ends_at: result.ends_at,
+    };
   }),
 
   cancelBooking: requireConf("participant").experts.cancelBooking.handler(async ({ input, context }) => {
@@ -447,7 +456,7 @@ export const expertsRouter = {
     } else if (isExpert) {
       recipients.push(booking.bookerId);
     }
-    await notifyMany(context.prisma, recipients.map((identityId) => ({
+    await createNotifications(context.prisma, recipients.map((identityId) => ({
       identityId,
       kind: "expert_booking_cancelled" as const,
       title: "An expert booking was cancelled",

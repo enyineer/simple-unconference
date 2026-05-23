@@ -36,3 +36,26 @@ export function dayKeyInTz(ms: number, timeZone: string): string {
     year: "numeric", month: "2-digit", day: "2-digit",
   });
 }
+
+/** True when the given instants fall on more than one conference-local day. */
+export function spansMultipleDays(times: number[], timeZone: string): boolean {
+  if (times.length < 2) return false;
+  let first: string | undefined;
+  for (const ms of times) {
+    const key = dayKeyInTz(ms, timeZone);
+    if (first === undefined) first = key;
+    else if (key !== first) return true;
+  }
+  return false;
+}
+
+/** Format an instant as "HH:MM", optionally prefixed with a short day label. */
+export function fmtTimeMaybeDay(
+  ms: number,
+  timeZone: string,
+  withDay: boolean,
+): string {
+  return withDay
+    ? `${fmtDayShort(ms, timeZone)} ${fmtTimeShort(ms, timeZone)}`
+    : fmtTimeShort(ms, timeZone);
+}

@@ -1,6 +1,10 @@
 import { Badge, Button } from "../../../design-system";
 import type { Submission } from "../../types";
-import { fmtTimeShort, submitterLabel } from "../../helpers";
+import {
+  fmtTimeMaybeDay,
+  spansMultipleDays,
+  submitterLabel,
+} from "../../helpers";
 import { ProfileLink } from "../../ProfileLink";
 import { Pill } from "../../ui/Pill";
 
@@ -97,31 +101,42 @@ export function SessionCard({
         )}
       </div>
 
-      {s.scheduled_in.length > 0 && (
+      {s.scheduled_in.length > 0 && (() => {
         // Path C cause-and-effect surface: "you star this session, it
         // shows up on your schedule at these times." Listing every linked
         // TrackAssignment with its time + room makes the connection
         // explicit at the moment the user is deciding whether to star.
-        <div
-          style={{
-            gridColumn: "1 / -1",
-            gridRow: 4,
-            fontSize: 12,
-            color: muted,
-          }}
-        >
-          Scheduled at:{" "}
-          {s.scheduled_in.map((sch, i) => (
-            <span key={sch.slot_id}>
-              {i > 0 ? " · " : ""}
-              <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 500 }}>
-                {fmtTimeShort(sch.starts_at, timeZone)}
-              </span>{" "}
-              <span>{sch.room_name}</span>
-            </span>
-          ))}
-        </div>
-      )}
+        //
+        // When the scheduled offerings span more than one conference-local
+        // day, prefix every time with the short day so users can tell
+        // "20:07" tomorrow from "20:07" today — same rule the My schedule
+        // tab uses for repeat-offering alternates.
+        const multiDay = spansMultipleDays(
+          s.scheduled_in.map((sch) => sch.starts_at),
+          timeZone,
+        );
+        return (
+          <div
+            style={{
+              gridColumn: "1 / -1",
+              gridRow: 4,
+              fontSize: 12,
+              color: muted,
+            }}
+          >
+            Scheduled at:{" "}
+            {s.scheduled_in.map((sch, i) => (
+              <span key={sch.slot_id}>
+                {i > 0 ? " · " : ""}
+                <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 500 }}>
+                  {fmtTimeMaybeDay(sch.starts_at, timeZone, multiDay)}
+                </span>{" "}
+                <span>{sch.room_name}</span>
+              </span>
+            ))}
+          </div>
+        );
+      })()}
 
       <div
         style={{

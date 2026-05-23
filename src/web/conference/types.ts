@@ -5,6 +5,19 @@
 
 export type Role = "owner" | "moderator" | "participant";
 
+export type Tab =
+  | "people" | "rooms" | "sessions" | "agenda" | "experts"
+  | "directory" | "chat" | "me" | "settings";
+
+const ALL_TABS: ReadonlySet<Tab> = new Set<Tab>([
+  "people", "rooms", "sessions", "agenda", "experts",
+  "directory", "chat", "me", "settings",
+]);
+
+export function isTab(value: string | undefined): value is Tab {
+  return value !== undefined && ALL_TABS.has(value as Tab);
+}
+
 export interface ConferenceUsage {
   participants:    { current: number; limit: number | null };
   pending_invites: { current: number; limit: number | null };

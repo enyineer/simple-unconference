@@ -126,12 +126,17 @@ turnstile:
   siteKey: ""    # TURNSTILE_SITE_KEY (sent to clients; safe to expose)
   secretKey: ""  # TURNSTILE_SECRET_KEY (used server-side to verify tokens)
 
-# Prometheus-compatible /api/metrics endpoint. Open by default (intended for
-# in-cluster scraping where the Service is not exposed via Ingress); set
-# `token` to require `Authorization: Bearer <token>` if you're scraping
-# across a less-trusted network. Enable serviceMonitor when you run the
-# prometheus-operator and want a chart-managed ServiceMonitor object.
+# Prometheus-compatible /metrics endpoint. Served on a DEDICATED port
+# (metrics.port, default 9090) — never on the main API port — so the chart's
+# main Service can stay public-only while metrics scraping stays in-cluster.
+# A separate headless ClusterIP Service (<release>-metrics) is created to
+# expose this port to Prometheus / ServiceMonitor.
+#
+# Auth is open by default; set `token` to require `Authorization: Bearer <token>`
+# if your scrape path crosses a less-trusted network.
 metrics:
+  enabled: true          # set false to disable metrics entirely (omits the port + Service)
+  port: 9090             # METRICS_PORT — internal container port, not exposed on the main Service
   token: ""              # METRICS_TOKEN (empty = open endpoint)
   serviceMonitor:
     enabled: false       # set true only if prometheus-operator is installed

@@ -1,9 +1,11 @@
 import { useEffect, useState, useCallback, lazy, Suspense } from "react";
 import { DesignSystemProvider, ToastProvider } from "./design-system";
+import { RealtimeProvider } from "./realtime/RealtimeProvider";
 import { DEFAULT_PLUGIN_ID } from "./design-system/core/registry";
 import type { ColorMode } from "./design-system/core/contract";
 import { api, ApiError } from "./api";
 import { useRoute, matchRoute } from "./router";
+import type { Tab } from "./conference/types";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
 // Lazy-load each page in its own chunk.
@@ -203,10 +205,17 @@ export function App() {
   const confLoginMatch = matchRoute("/c/:slug/login", path);
   const confMatch = matchRoute("/conferences/:slug", path);
   const profileMatch = matchRoute("/conferences/:slug/p/:identityId", path);
-  // Either /conferences/:slug or its profile sub-route shares the same
-  // per-conference identity + design-system state, so pick the slug from
-  // whichever matched.
-  const confSlug = confMatch?.slug ?? profileMatch?.slug;
+  // Per-tab routes. ConferencePage reads the tab segment to decide which
+  // panel to render, so deep links + the back/forward buttons line up
+  // with the visible tab. Sub-paths (e.g. chat conversations) match the
+  // 3-segment variants.
+  const tabMatch =
+    matchRoute("/conferences/:slug/:tab", path)
+    ?? matchRoute("/conferences/:slug/:tab/:rest", path);
+  // Either /conferences/:slug, its profile sub-route, or one of its
+  // tab sub-routes shares the same per-conference identity + design-system
+  // state, so pick the slug from whichever matched.
+  const confSlug = confMatch?.slug ?? profileMatch?.slug ?? tabMatch?.slug;
 
   // Two independent auth states. They can be active simultaneously — the
   // owner cookie + any number of per-conference identity cookies coexist.
@@ -356,22 +365,38 @@ export function App() {
         queueMicrotask(() => navigate(`/c/${profileSlug}/login`));
         return <MinimalLoading />;
       }
-      return <ProfilePage slug={profileSlug} identityId={identityIdNum} />;
+      const profileSlugForRefresh = profileSlug;
+      return (
+        <ProfilePage
+          slug={profileSlug}
+          identityId={identityIdNum}
+          onConfMeRefresh={() => {
+            api.conferences
+              .me({ slug: profileSlugForRefresh })
+              .then((m) => setConfMe(m))
+              .catch(() => { /* keep current view */ });
+          }}
+        />
+      );
     }
 
     // ----- per-conference (requires identity) -----
-    if (confMatch && confMatch.slug) {
+    // Both /conferences/:slug and /conferences/:slug/:tab[/...] render the
+    // same shell — ConferencePage reads `routeTab` and switches its inner
+    // panel. We resolve to a single render path so tab navigation doesn't
+    // remount the page (which would refetch everything).
+    const slugForConf = confMatch?.slug ?? tabMatch?.slug;
+    const routeTab = (tabMatch?.tab as Tab | undefined);
+    if (slugForConf) {
       if (confMe === undefined) return <MinimalLoading />;
       if (confMe === null) {
-        // Bounce to the per-conference login. Use a microtask so the redirect
-        // happens after render completes (avoids navigation-during-render).
-        queueMicrotask(() => navigate(`/c/${confMatch.slug}/login`));
+        queueMicrotask(() => navigate(`/c/${slugForConf}/login`));
         return <MinimalLoading />;
       }
-      const slugForRefresh = confMatch.slug;
+      const slugForRefresh = slugForConf;
       return (
         <ConferencePage
-          slug={confMatch.slug}
+          slug={slugForConf}
           confMe={confMe}
           onBack={() => navigate("/")}
           onDesignSystemChange={(id) => setConfDs(id)}
@@ -379,7 +404,7 @@ export function App() {
           onColorModeChange={setColorMode}
           onLoggedOut={() => {
             setConfMe(null);
-            navigate(`/c/${confMatch.slug}/login`);
+            navigate(`/c/${slugForConf}/login`);
           }}
           onConfMeRefresh={() => {
             api.conferences
@@ -387,6 +412,7 @@ export function App() {
               .then((m) => setConfMe(m))
               .catch(() => { /* keep current view */ });
           }}
+          routeTab={routeTab}
         />
       );
     }
@@ -413,7 +439,20 @@ export function App() {
     >
       <ToastProvider>
         <ErrorBoundary resetKey={path}>
-          <Suspense fallback={<MinimalLoading />}>{renderPage()}</Suspense>
+          {/* Single tab-wide SSE stream. Mounted once the initial
+              loadOwner call has settled (owner is no longer `undefined`)
+              so we don't open a transient connection during startup.
+              When the user is unauthenticated the server returns 401 and
+              EventSource backs off to 30s — minimal cost on the login
+              screen. Mounted ABOVE the route subtree so navigation doesn't
+              churn the connection. */}
+          {owner === undefined ? (
+            <Suspense fallback={<MinimalLoading />}>{renderPage()}</Suspense>
+          ) : (
+            <RealtimeProvider>
+              <Suspense fallback={<MinimalLoading />}>{renderPage()}</Suspense>
+            </RealtimeProvider>
+          )}
         </ErrorBoundary>
         <Footer />
       </ToastProvider>

@@ -12,7 +12,14 @@ import { spawn, type Subprocess } from "bun";
 import { watch } from "node:fs";
 
 const apiArgs = ["bun", "--hot", "src/server/index.ts"];
-const apiEnv = { ...process.env, SERVE_STATIC: "0" };
+const apiEnv = {
+  ...process.env,
+  SERVE_STATIC: "0",
+  // Default the metrics server on in dev so /metrics is reachable at
+  // http://localhost:9090/metrics without extra env wiring. Respect an
+  // explicit override if the developer set one.
+  METRICS_PORT: process.env.METRICS_PORT ?? "9090",
+};
 
 let api: Subprocess = spawn(apiArgs, {
   stdio: ["inherit", "inherit", "inherit"],

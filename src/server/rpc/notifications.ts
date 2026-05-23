@@ -21,13 +21,17 @@ export const notificationsRouter = {
         kind: n.kind as
           | "submission_published" | "submission_rejected" | "submission_received"
           | "unconf_assigned" | "mixer_assigned"
-          | "expert_booked" | "expert_booking_cancelled",
+          | "expert_booked" | "expert_booking_cancelled"
+          | "quota_threshold"
+          | "chat_message" | "chat_report" | "chat_warning",
         title: n.title,
         body: n.body,
         cta_label: n.ctaLabel,
         cta_href: n.ctaHref,
         read_at: n.readAt ? n.readAt.getTime() : null,
         created_at: n.createdAt.getTime(),
+        unread_count: n.unreadCount,
+        dedupe_key: n.dedupeKey,
       })),
       unread_count: unread,
     };
@@ -37,9 +41,11 @@ export const notificationsRouter = {
     const identityId = actorIdentityId(context);
     // updateMany so a stale id (already deleted, or owned by another identity)
     // is a silent no-op instead of throwing.
+    // dedupeKey is nulled out so the @@unique([identityId, dedupeKey]) index
+    // doesn't block the next coalesced notification (e.g. "report:<conf>").
     await context.prisma.notification.updateMany({
       where: { id: input.id, identityId, readAt: null },
-      data: { readAt: new Date() },
+      data: { readAt: new Date(), dedupeKey: null },
     });
     return { ok: true as const };
   }),
@@ -48,7 +54,7 @@ export const notificationsRouter = {
     const identityId = actorIdentityId(context);
     await context.prisma.notification.updateMany({
       where: { identityId, readAt: null },
-      data: { readAt: new Date() },
+      data: { readAt: new Date(), dedupeKey: null },
     });
     return { ok: true as const };
   }),

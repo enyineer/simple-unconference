@@ -19,6 +19,8 @@ import { agendaRouter } from "./rpc/agenda";
 import { expertsRouter } from "./rpc/experts";
 import { notificationsRouter } from "./rpc/notifications";
 import { profilesRouter } from "./rpc/profiles";
+import { chatRouter } from "./rpc/chat";
+import { moderationRouter } from "./rpc/moderation";
 
 export function buildRouter() {
   return base.router({
@@ -31,6 +33,8 @@ export function buildRouter() {
     experts: expertsRouter,
     notifications: notificationsRouter,
     profiles: profilesRouter,
+    chat: chatRouter,
+    moderation: moderationRouter,
   });
 }
 
@@ -42,7 +46,26 @@ export async function handleRpc(
   prisma: PrismaClient,
   req: Request,
 ): Promise<Response | null> {
-  const handler = new RPCHandler(buildRouter());
+  const handler = new RPCHandler(buildRouter(), {
+    // Log any unexpected errors thrown by procedures (Prisma constraint
+    // failures, missing imports, raw bugs). ORPCError throws are intentional
+    // and bubble through to the client with status/code — we don't log them
+    // here to avoid noise from validation failures.
+    interceptors: [
+      async (opts) => {
+        try {
+          return await opts.next();
+        } catch (e) {
+          const isOrpc = typeof e === "object" && e !== null
+            && (e as { name?: unknown }).name === "ORPCError";
+          if (!isOrpc) {
+            console.error(`[rpc] procedure threw`, e);
+          }
+          throw e;
+        }
+      },
+    ],
+  });
   const responseHeaders = new Headers();
   const { matched, response } = await handler.handle(req, {
     prefix: "/api",

@@ -17,6 +17,14 @@
 // an un-migrated DB. Do not move migrations into the workers.
 
 import { readFileSync } from "node:fs";
+import { isBusMessage } from "./realtime/bus";
+import { isMetricsSnapshotMessage } from "./metrics/types";
+import type { StoredSnapshot } from "./metrics/aggregate";
+import {
+  renderFromStore,
+  resolveMetricsPort,
+  startMetricsServer,
+} from "./metrics/server";
 
 const HARD_CAP = 8;
 const PER_WORKER_MIB = 192;
@@ -167,7 +175,22 @@ interface SupervisedWorker {
   id: number;
   proc: ReturnType<typeof Bun.spawn>;
   restartTimestamps: number[];
+  // Number of bus events currently in-flight to this worker (incremented
+  // before proc.send, decremented after). Used as a coarse backpressure
+  // signal so a stalled worker can't make the launcher OOM.
+  pendingSends: number;
+  // Count of bus events dropped because pendingSends >= BUS_QUEUE_LIMIT.
+  // Logged periodically by maybeLogBusDrops; reset to 0 after each log.
+  droppedCount: number;
 }
+
+// Per-worker upper bound on in-flight IPC bus events. Beyond this we drop
+// rather than queue further. Client SSE reconnect + Last-Event-ID replay
+// recovers any losses.
+const BUS_QUEUE_LIMIT = 1000;
+// How often (ms) to flush per-worker drop counters to stdout. 60s avoids
+// spam while still surfacing chronic backpressure.
+const BUS_DROP_LOG_INTERVAL_MS = 60_000;
 
 // Sink that pipeLinesWithPrefix writes prefixed lines into. Matches the
 // shape of `process.stdout` / `process.stderr` minimally for testability.
@@ -217,6 +240,13 @@ async function runCluster(count: number): Promise<void> {
   let bailout = false;
   let graceTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Per-worker metrics snapshots received via IPC. Aggregated and rendered on
+  // demand by the metrics server below. Crashed-and-respawned workers
+  // overwrite their old entry as soon as the new process pushes; in between,
+  // the stale entry ages out naturally via the renderer's threshold.
+  const metricsStore = new Map<number, StoredSnapshot>();
+  const launcherStartedAt = Date.now();
+
   // Exit the launcher process as soon as every worker has exited during
   // shutdown. The grace timer below is the upper bound; this is the
   // fast path for the common case where workers honor SIGTERM promptly.
@@ -226,12 +256,47 @@ async function runCluster(count: number): Promise<void> {
     process.exit(bailout ? 1 : 0);
   }
 
+  // Broker: forward a {type:"bus", event} message from one worker to every
+  // OTHER worker. Drops if a target worker's queue is full. Exported via
+  // closure so spawnWorker can wire it as the per-worker `ipc` callback.
+  function broadcastBusMessage(senderId: number, message: unknown): void {
+    if (!isBusMessage(message)) return;
+    for (const [otherId, w] of workers) {
+      if (otherId === senderId) continue;
+      if (w.pendingSends >= BUS_QUEUE_LIMIT) {
+        w.droppedCount++;
+        continue;
+      }
+      w.pendingSends++;
+      try {
+        w.proc.send(message);
+      } catch {
+        // Worker exiting; onExit will remove it from `workers`.
+      } finally {
+        w.pendingSends--;
+      }
+    }
+  }
+
   function spawnWorker(id: number, prevRestarts: number[] = []): SupervisedWorker {
     const prefix = `[w${id}] `;
     const proc = Bun.spawn({
       cmd: ["bun", "src/server/index.ts"],
       stdio: ["inherit", "pipe", "pipe"],
       env: { ...process.env, WORKER_ID: String(id) },
+      ipc(message) {
+        // Demultiplex by message shape: workers send both bus events (to be
+        // mirrored to other workers) and metrics snapshots (to be stored
+        // for the metrics server). Unknown messages are ignored.
+        if (isMetricsSnapshotMessage(message)) {
+          metricsStore.set(message.payload.workerId, {
+            snapshot: message.payload,
+            receivedAt: Date.now(),
+          });
+          return;
+        }
+        broadcastBusMessage(id, message);
+      },
       onExit: (_proc, exitCode, signalCode) => {
         const w = workers.get(id);
         if (!w) return;
@@ -271,12 +336,42 @@ async function runCluster(count: number): Promise<void> {
       process.stderr,
       prefix,
     );
-    return { id, proc, restartTimestamps: prevRestarts };
+    return { id, proc, restartTimestamps: prevRestarts, pendingSends: 0, droppedCount: 0 };
+  }
+
+  // Periodically log per-worker bus drop counters and reset them. Quiet when
+  // everything is healthy; surfaces chronic backpressure without log spam.
+  const busDropLogger = setInterval(() => {
+    for (const w of workers.values()) {
+      if (w.droppedCount > 0) {
+        console.warn(`[cluster] worker ${w.id} dropped ${w.droppedCount} bus event(s) (queue full)`);
+        w.droppedCount = 0;
+      }
+    }
+  }, BUS_DROP_LOG_INTERVAL_MS);
+  // Don't keep the launcher alive on the timer alone.
+  if (typeof busDropLogger.unref === "function") busDropLogger.unref();
+
+  // Metrics server: dedicated port, internal-only. Bound here so the
+  // launcher owns aggregation regardless of which worker a scrape would
+  // have hit. Without METRICS_PORT set, metrics are disabled — operators
+  // opt in by setting it (the Helm chart sets it by default).
+  const metricsPort = resolveMetricsPort(process.env.METRICS_PORT);
+  const metricsServer = metricsPort !== null
+    ? startMetricsServer({
+        port: metricsPort,
+        render: async () => renderFromStore(metricsStore, launcherStartedAt),
+      })
+    : null;
+  if (metricsServer === null) {
+    console.log(`[cluster] METRICS_PORT not set; metrics endpoint disabled`);
   }
 
   function shutdown(signal: "SIGTERM" | "SIGINT") {
     if (shuttingDown) return;
     shuttingDown = true;
+    clearInterval(busDropLogger);
+    metricsServer?.stop();
     console.log(`[cluster] received ${signal}; stopping ${workers.size} worker(s)`);
     for (const { proc } of workers.values()) {
       try { proc.kill(signal); } catch { /* already dead */ }

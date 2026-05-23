@@ -10,6 +10,7 @@ import { CopyButton } from "../ui/CopyButton";
 import { EmptyState } from "../ui/EmptyState";
 import { Tip } from "../ui/Tip";
 import { useNow } from "../../useNow";
+import { ChatReportsSection } from "./people/ChatReportsSection";
 
 interface PendingInvite {
   id: number;
@@ -194,6 +195,8 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
           ))}
         </Stack>
       )}
+
+      {isMod && <ChatReportsSection slug={slug} />}
 
       {isMod && (
         <Stack gap="condensed">

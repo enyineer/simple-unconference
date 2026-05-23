@@ -23,6 +23,8 @@ model User {
   sessions             Session[]
   ownedConferences     Conference[]         @relation("ConferenceOwner")
   conferenceIdentities ConferenceIdentity[]
+  chatBansIssued       ConferenceIdentity[] @relation("ChatBans")
+  chatReportsResolved  MessageReport[]
 
   @@map("users")
 }
@@ -74,15 +76,16 @@ model Conference {
   participantSubmissionsEnabled Boolean @default(true) @map("participant_submissions_enabled")
   createdAt     DateTime @default(now()) @map("created_at")
 
-  identities   ConferenceIdentity[]
-  invites      ConferenceInvite[]
-  joinLink     ConferenceJoinLink?
-  rooms        Room[]
-  submissions  Submission[]
-  agendaSlots  AgendaSlot[]
-  slotSeries   SlotSeries[]
-  expertPools  ExpertRoomPool[]
-  experts      Expert[]
+  identities    ConferenceIdentity[]
+  invites       ConferenceInvite[]
+  joinLink      ConferenceJoinLink?
+  rooms         Room[]
+  submissions   Submission[]
+  agendaSlots   AgendaSlot[]
+  slotSeries    SlotSeries[]
+  expertPools   ExpertRoomPool[]
+  experts       Expert[]
+  conversations Conversation[]
 
   @@map("conferences")
 }
@@ -133,20 +136,33 @@ model ConferenceIdentity {
   // Cleared along with avatarPath on deleteAvatar.
   avatarHash                 String?   @map("avatar_hash")
   profileCompletionDismissed Boolean   @default(false) @map("profile_completion_dismissed")
+  // Per-identity chat preferences and ban state. See plans/chat.md Phase 1.
+  chatEnabled                Boolean   @default(true)  @map("chat_enabled")
+  chatReadReceiptsEnabled    Boolean   @default(true)  @map("chat_read_receipts_enabled")
+  chatBannedAt               DateTime? @map("chat_banned_at")
+  chatBannedReason           String?   @map("chat_banned_reason")
+  chatBannedByUserId         Int?      @map("chat_banned_by_user_id")
 
-  conference Conference @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
-  ownerUser  User?      @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+  conference   Conference @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
+  ownerUser    User?      @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+  chatBannedBy User?      @relation("ChatBans", fields: [chatBannedByUserId], references: [id], onDelete: SetNull)
 
-  sessions        Session[]
-  submissions     Submission[]
-  stars           Star[]
-  userAssignments UserAssignment[]
-  claimedInvites  ConferenceInvite[] @relation("ClaimedInvite")
-  expertProfile   Expert?
-  expertBookings  ExpertBooking[]    @relation("ExpertBookingBooker")
-  notifications   Notification[]
-  profileEntries  ProfileEntry[]
-  profileTags     ProfileTag[]
+  sessions             Session[]
+  submissions          Submission[]
+  stars                Star[]
+  userAssignments      UserAssignment[]
+  claimedInvites       ConferenceInvite[] @relation("ClaimedInvite")
+  expertProfile        Expert?
+  expertBookings       ExpertBooking[]    @relation("ExpertBookingBooker")
+  notifications        Notification[]
+  profileEntries       ProfileEntry[]
+  profileTags          ProfileTag[]
+  conversationsAsLow   Conversation[]     @relation("ConversationLow")
+  conversationsAsHigh  Conversation[]     @relation("ConversationHigh")
+  sentMessages         Message[]
+  filedReports         MessageReport[]    @relation("MessageReportsFiled")
+  chatBlocksMade       ChatBlock[]        @relation("ChatBlockBlocker")
+  chatBlocksReceived   ChatBlock[]        @relation("ChatBlockBlocked")
 
   @@unique([conferenceId, email])
   @@index([conferenceId])
@@ -749,7 +765,8 @@ model Notification {
   // Discriminator for icon/styling on the client.
   // Known kinds: "submission_published", "submission_rejected",
   // "submission_received" (mod-side), "unconf_assigned", "mixer_assigned",
-  // "expert_booked", "expert_booking_cancelled".
+  // "expert_booked", "expert_booking_cancelled", "chat_message", "chat_report",
+  // "chat_warning".
   kind       String
   title      String
   body       String?
@@ -757,9 +774,16 @@ model Notification {
   ctaHref    String?   @map("cta_href")
   readAt     DateTime? @map("read_at")
   createdAt  DateTime  @default(now()) @map("created_at")
+  // Coalescing key for kinds that should collapse multiple events into a
+  // single bell row (e.g. many chat messages from the same conversation
+  // share dedupeKey="conv:<id>"). NULL means "don't coalesce" — SQLite
+  // treats multiple NULLs in a unique column as distinct.
+  dedupeKey   String? @map("dedupe_key")
+  unreadCount Int     @default(1) @map("unread_count")
 
   identity ConferenceIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
 
+  @@unique([identityId, dedupeKey], map: "notifications_identity_dedupe_uniq")
   @@index([identityId, readAt])
   @@index([identityId, createdAt])
   @@map("notifications")
@@ -801,4 +825,127 @@ model ProfileTag {
   @@id([identityId, tag])
   @@index([identityId])
   @@map("profile_tags")
+}
+
+// ===========================================================================
+// CHAT
+//
+// 1-on-1 messaging within a conference. A Conversation is uniquely identified
+// by (conferenceId, identityIdLow, identityIdHigh) — the pair is always sorted
+// low<high so the unique index works regardless of who initiates.
+//
+// Privacy + lifecycle rules (see plans/chat.md Phase 0):
+//   - canChatWith requires both sides to be profilePublished + chatEnabled,
+//     neither banned, no ChatBlock either direction. Mods+ bypass the
+//     published check but still respect ban/block.
+//   - Messages are soft-deleted (deletedAt + deletedReason) so reports remain
+//     reviewable. Hard-delete only at conference purge time, and only when no
+//     unresolved reports reference the message (MessageReport.onDelete:Restrict
+//     blocks conference deletion until reports are resolved).
+//   - Read receipts: receiver's chatReadReceiptsEnabled toggles whether
+//     Message.readAt is returned to the sender. Receiver always sees their
+//     own read state locally for unread badging.
+// ===========================================================================
+model Conversation {
+  id             Int       @id @default(autoincrement())
+  conferenceId   Int       @map("conference_id")
+  // Sorted pair: always identityIdLow < identityIdHigh. Enforced by the
+  // findOrCreateConversation helper, not the DB.
+  identityIdLow  Int       @map("identity_id_low")
+  identityIdHigh Int       @map("identity_id_high")
+  // Message-request state: starts false on first message from a stranger.
+  // Flipped true when the receiver replies OR explicitly accepts. Until then
+  // the conversation only shows up in the receiver's "Requests" bucket and
+  // the sender can't send further messages on it.
+  accepted       Boolean   @default(false)
+  acceptedAt     DateTime? @map("accepted_at")
+  lastMessageAt  DateTime? @map("last_message_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  conference Conference         @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
+  low        ConferenceIdentity @relation("ConversationLow", fields: [identityIdLow], references: [id], onDelete: Cascade)
+  high       ConferenceIdentity @relation("ConversationHigh", fields: [identityIdHigh], references: [id], onDelete: Cascade)
+  messages   Message[]
+
+  @@unique([conferenceId, identityIdLow, identityIdHigh])
+  @@index([conferenceId, lastMessageAt])
+  @@index([identityIdLow, lastMessageAt])
+  @@index([identityIdHigh, lastMessageAt])
+  @@map("conversations")
+}
+
+model Message {
+  id               Int       @id @default(autoincrement())
+  conversationId   Int       @map("conversation_id")
+  senderIdentityId Int       @map("sender_identity_id")
+  body             String
+  createdAt        DateTime  @default(now()) @map("created_at")
+  editedAt         DateTime? @map("edited_at")
+  // Soft-delete: when set, body is hidden from clients but row stays so
+  // reports remain reviewable. deletedReason is "user" | "moderator"
+  // | "account_deleted" | "conference_deleted".
+  deletedAt        DateTime? @map("deleted_at")
+  deletedReason    String?   @map("deleted_reason")
+  // When the OTHER participant read this message. Stripped from sender's
+  // MessageOut if the receiver has chatReadReceiptsEnabled=false.
+  readAt           DateTime? @map("read_at")
+
+  conversation Conversation       @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       ConferenceIdentity @relation(fields: [senderIdentityId], references: [id], onDelete: Cascade)
+  revisions    MessageRevision[]
+  reports      MessageReport[]
+
+  @@index([conversationId, id])
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+// Snapshot of a Message body BEFORE an edit. Written eagerly by chat.edit so
+// moderators reviewing a reported message see the full revision chain.
+model MessageRevision {
+  id        Int      @id @default(autoincrement())
+  messageId Int      @map("message_id")
+  body      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId, createdAt])
+  @@map("message_revisions")
+}
+
+model MessageReport {
+  id                 Int       @id @default(autoincrement())
+  messageId          Int       @map("message_id")
+  reporterIdentityId Int       @map("reporter_identity_id")
+  reason             String
+  createdAt          DateTime  @default(now()) @map("created_at")
+  resolvedAt         DateTime? @map("resolved_at")
+  resolvedByUserId   Int?      @map("resolved_by_user_id")
+  // Action taken by the resolving moderator: "dismiss" | "warn" | "ban".
+  action             String?
+
+  // Restrict so that hard-deleting a Message is impossible while reports
+  // reference it. Soft-delete is always available via deletedAt + reason.
+  message    Message            @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  reporter   ConferenceIdentity @relation("MessageReportsFiled", fields: [reporterIdentityId], references: [id], onDelete: Cascade)
+  resolvedBy User?              @relation(fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([resolvedAt, createdAt])
+  @@map("message_reports")
+}
+
+// Per-user block. Hides the conversation in both directions and prevents new
+// conversations between the pair. Separate from the global chatEnabled toggle.
+model ChatBlock {
+  blockerIdentityId Int      @map("blocker_identity_id")
+  blockedIdentityId Int      @map("blocked_identity_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  blocker ConferenceIdentity @relation("ChatBlockBlocker", fields: [blockerIdentityId], references: [id], onDelete: Cascade)
+  blocked ConferenceIdentity @relation("ChatBlockBlocked", fields: [blockedIdentityId], references: [id], onDelete: Cascade)
+
+  @@id([blockerIdentityId, blockedIdentityId])
+  @@index([blockedIdentityId])
+  @@map("chat_blocks")
 }

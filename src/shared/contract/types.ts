@@ -515,7 +515,10 @@ export type NotificationKind =
   | "mixer_assigned"
   | "expert_booked"
   | "expert_booking_cancelled"
-  | "quota_threshold";
+  | "quota_threshold"
+  | "chat_message"
+  | "chat_report"
+  | "chat_warning";
 
 export interface NotificationOut {
   id: number;
@@ -526,6 +529,13 @@ export interface NotificationOut {
   cta_href: string | null;
   read_at: number | null;
   created_at: number;
+  // Number of underlying events represented by this row. > 1 means it has
+  // been coalesced (e.g. via dedupeKey="conv:<id>" for chat messages).
+  // Always >= 1 for unread rows; 0 once marked read.
+  unread_count: number;
+  // Coalescing key, NULL for one-shot notifications. UI can use this to
+  // route clicks (e.g. "conv:42" -> open conversation 42).
+  dedupe_key: string | null;
 }
 
 export interface NotificationListOut {
@@ -608,4 +618,87 @@ export interface PublicConfigOut {
   // Sessions tab can show "X of N submitted" before the user tries to add
   // their (N+1)th one.
   max_sessions_per_user_per_conference: number | null;
+}
+
+// ----- chat (see plans/chat.md) ------------------------------------------
+
+// One conversation row in the user's inbox. `accepted=false` means the row
+// belongs in the "Requests" bucket (first message from a stranger; receiver
+// hasn't replied or explicitly accepted). The `i_blocked` / `they_blocked`
+// flags drive the conversation-header affordances (Unblock vs disabled
+// composer with reason).
+export interface ConversationOut {
+  id: number;
+  conference_id: number;
+  other_identity_id: number;
+  other_name: string | null;
+  other_profile_published: boolean;
+  accepted: boolean;
+  last_message_at: number | null;
+  // First ~80 chars of the latest message body. `null` when the latest
+  // message has been soft-deleted (any deleted_reason). Lets the inbox
+  // render a "[message removed]" placeholder without a second fetch.
+  last_message_preview: string | null;
+  unread_count: number;
+  i_blocked: boolean;
+  they_blocked: boolean;
+  created_at: number;
+}
+
+export interface MessageOut {
+  id: number;
+  conversation_id: number;
+  sender_identity_id: number;
+  // null when deleted_at is set (the sender / receiver still sees a placeholder
+  // in their UI; mods see the original via the report-review payload).
+  body: string | null;
+  created_at: number;
+  edited_at: number | null;
+  deleted_at: number | null;
+  // "user" | "moderator" | "account_deleted" | "conference_deleted"
+  deleted_reason: string | null;
+  // Present on the SENDER's view only when the RECEIVER has
+  // chatReadReceiptsEnabled=true. The receiver always sees their own read
+  // state locally for unread badging — that's not driven by this field.
+  read_at: number | null;
+}
+
+// Mod-only report payload. Carries the reported message + its full edit
+// history + a small surrounding window so the moderator can judge intent
+// without paging through the conversation manually.
+export interface MessageReportOut {
+  id: number;
+  message_id: number;
+  conversation_id: number;
+  reason: string;
+  reporter_identity_id: number;
+  reporter_name: string | null;
+  reported_sender_identity_id: number;
+  reported_sender_name: string | null;
+  created_at: number;
+  resolved_at: number | null;
+  resolved_by_user_id: number | null;
+  action: "dismiss" | "warn" | "ban" | null;
+  message: MessageOut;
+  revisions: Array<{ body: string; created_at: number }>;
+  surrounding_messages: MessageOut[];
+}
+
+// Banned-identity row for the mod surface. `banned_by` resolves to a
+// display name (owner User name or email fallback).
+export interface ChatBanOut {
+  identity_id: number;
+  name: string | null;
+  reason: string | null;
+  banned_at: number;
+  banned_by: string | null;
+}
+
+// Self chat settings. Returned by chat.settings.get so the editor doesn't
+// need to derive them from a profile fetch.
+export interface ChatSettingsOut {
+  chat_enabled: boolean;
+  read_receipts_enabled: boolean;
+  chat_banned: boolean;
+  chat_ban_reason: string | null;
 }

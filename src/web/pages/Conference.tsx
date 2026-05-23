@@ -3,14 +3,16 @@
 // thin strip with just breadcrumb + tabs + avatar so navigation stays in
 // reach on long pages.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Banner, Button, Heading, PageLayout, Spinner,
 } from "../design-system";
 import type { ColorMode } from "../design-system/core/contract";
 import { api, ApiError, errorCode } from "../api";
+import { useRoute } from "../router";
 
-import type { ConferenceDetail, Role } from "../conference/types";
+import type { ConferenceDetail, Role, Tab } from "../conference/types";
+import { isTab } from "../conference/types";
 import { TabBar } from "../conference/ui/TabBar";
 import { AccountMenu } from "../components/AccountMenu";
 import { NotificationBell } from "../components/NotificationBell";
@@ -22,9 +24,8 @@ import { PeopleTab } from "../conference/tabs/PeopleTab";
 import { RoomsTab } from "../conference/tabs/RoomsTab";
 import { SessionsTab } from "../conference/tabs/SessionsTab";
 import { SettingsTab } from "../conference/tabs/SettingsTab";
+import { ChatTab } from "../conference/tabs/ChatTab";
 import type { ConfMe } from "../App";
-
-type Tab = "people" | "rooms" | "sessions" | "agenda" | "experts" | "directory" | "me" | "settings";
 
 interface ConferencePageProps {
   slug: string;
@@ -44,15 +45,35 @@ interface ConferencePageProps {
   /** Ask the App to refetch `conferences.me`. The Me tab uses this after a
    *  profile save/dismiss so the first-login nudge state stays accurate. */
   onConfMeRefresh: () => void;
+  /** Tab segment from the URL (e.g. `/conferences/<slug>/chat` → "chat").
+   *  Drives which inner panel renders. Switching tabs navigates the URL
+   *  rather than mutating local state, so back/forward and deep links
+   *  always agree with the rendered tab. */
+  routeTab?: Tab;
 }
 
 export function ConferencePage({
   slug, confMe, onBack, onDesignSystemChange,
   colorMode, onColorModeChange, onLoggedOut, onConfMeRefresh,
+  routeTab,
 }: ConferencePageProps) {
   const [fetchedConf, setFetchedConf] = useState<ConferenceDetail | null>(null);
   const [fetchedError, setFetchedError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("sessions");
+
+  // Tab is driven by the URL — App.tsx parses it from /:tab segment and
+  // hands it down. Default to "sessions" for the bare /conferences/<slug>
+  // URL. Unknown values (typos in the URL) fall back to the default rather
+  // than rendering nothing.
+  const tab: Tab = isTab(routeTab) ? routeTab : "sessions";
+  const { navigate } = useRoute();
+  const setTab = useCallback((next: Tab) => {
+    if (next === "sessions") {
+      navigate(`/conferences/${encodeURIComponent(slug)}`);
+    } else {
+      navigate(`/conferences/${encodeURIComponent(slug)}/${next}`);
+    }
+  }, [navigate, slug]);
+
   // Track which slug `fetchedConf` / `fetchedError` were last set for.
   // Deriving `conf` / `error` from this lets us reset on slug change without
   // a synchronous setState in the effect.
@@ -113,7 +134,7 @@ export function ConferencePage({
   // the room roster, which we don't surface to attendees. Directory is the
   // members-visible counterpart to People: profiles, no admin actions, no
   // emails. Order keeps user-facing tabs first, admin extras after.
-  const tabs: Tab[] = ["sessions", "agenda", "experts", "directory", "me"];
+  const tabs: Tab[] = ["sessions", "agenda", "experts", "directory", "chat", "me"];
   if (isMod) tabs.push("people", "rooms");
   if (isOwner) tabs.push("settings");
 
@@ -157,6 +178,14 @@ export function ConferencePage({
             slug={slug}
             confMe={confMe}
             onConfMeRefresh={onConfMeRefresh}
+          />
+        )}
+        {tab === "chat" && (
+          <ChatTab
+            slug={slug}
+            confMe={confMe}
+            isMod={isMod}
+            onBrowseDirectory={() => setTab("directory")}
           />
         )}
         {tab === "me"       && (
@@ -514,6 +543,7 @@ function tabLabel(t: Tab): string {
   return ({
     people: "People", rooms: "Rooms", sessions: "Sessions",
     agenda: "Agenda", experts: "Experts", directory: "Directory",
+    chat: "Chat",
     me: "My schedule", settings: "Settings",
   } as Record<Tab, string>)[t];
 }

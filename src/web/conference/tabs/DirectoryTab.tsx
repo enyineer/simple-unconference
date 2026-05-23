@@ -273,7 +273,13 @@ export function DirectoryTab({
       ) : (
         <Stack gap="condensed">
           {items.map((p) => (
-            <DirectoryRow key={p.identity_id} slug={slug} profile={p} muted={muted} />
+            <DirectoryRow
+              key={p.identity_id}
+              slug={slug}
+              profile={p}
+              muted={muted}
+              isMe={p.identity_id === confMe.id}
+            />
           ))}
         </Stack>
       )}
@@ -371,16 +377,24 @@ function DirectoryRow({
   slug,
   profile,
   muted,
+  isMe,
 }: {
   slug: string;
   profile: ProfileSummaryOut;
   muted: string;
+  isMe: boolean;
 }) {
   const label = profile.name && profile.name.trim() ? profile.name : "Unnamed";
   const initial = label.trim().charAt(0).toUpperCase() || "?";
+  // The Message button must NOT live inside the ProfileLink <a>. A parent
+  // <a>'s text-decoration underline paints across inline descendants no
+  // matter what text-decoration: none they set on themselves. Restructured
+  // so the row's grid container is the outer div; ProfileLink uses
+  // display:contents to hand its children directly to the grid; the action
+  // zone is a sibling outside the link.
   return (
-    <ProfileLink slug={slug} identityId={profile.identity_id} linkable={true}>
-      <div className="uncon-dir-row">
+    <div className="uncon-dir-row">
+      <ProfileLink slug={slug} identityId={profile.identity_id} linkable={true} asContents>
         <img
           src={avatarUrl(slug, profile.identity_id, profile.avatar_hash)}
           alt=""
@@ -429,9 +443,27 @@ function DirectoryRow({
             </div>
           )}
         </div>
-        <div className="uncon-dir-row__actions" />
+      </ProfileLink>
+      <div className="uncon-dir-row__actions">
+        {!isMe && (
+          <a
+            href={`#/conferences/${encodeURIComponent(slug)}/chat/new?to=${profile.identity_id}`}
+            style={{
+              fontSize: 13,
+              padding: "4px 10px",
+              borderRadius: 6,
+              background: "var(--bgColor-muted, rgba(0,0,0,0.06))",
+              color: "var(--fgColor-default, inherit)",
+              textDecoration: "none",
+              whiteSpace: "nowrap",
+            }}
+            aria-label={`Message ${label}`}
+          >
+            Message
+          </a>
+        )}
       </div>
-    </ProfileLink>
+    </div>
   );
 }
 

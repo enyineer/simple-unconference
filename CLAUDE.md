@@ -44,6 +44,35 @@ something the next session would need to know.
   that lands on "Profile not found." Mods always link (server lets them
   see unpublished profiles). Anywhere a name is rendered with
   `ProfileLink`, pass `linkable={isMod || target.profile_published}`.
+- **Chat eligibility.** `canChatWith` in
+  [src/server/lib/permissions.ts](src/server/lib/permissions.ts) is the
+  single source of truth: both sides must be `profilePublished=true` AND
+  `chatEnabled=true`, neither banned, no `ChatBlock` either way. Mods
+  bypass the published check (for moderation outreach) but still respect
+  ban/block. Map reasons: `self` → `BAD_REQUEST`, `not_published` →
+  `NOT_FOUND` (never `FORBIDDEN` — would leak existence), everything else →
+  `FORBIDDEN`. Any new chat-adjacent endpoint goes through this helper.
+- **Chat email rule.** Chat responses NEVER include either participant's
+  canonical email. Names + identity IDs only, matching the wider profile
+  privacy contract.
+- **Read receipts.** `Message.readAt` is stripped from the *sender's*
+  serialization when the *recipient* has `chatReadReceiptsEnabled=false`.
+  Receiver always sees their own read state locally (they need it for the
+  unread badge). All chat serialization goes through `serializeMessage()`
+  in [src/server/rpc/chat-helpers.ts](src/server/rpc/chat-helpers.ts) so
+  the rule can't drift between procedures.
+- **Chat bans must be enforced at the router level**, not the UI. The
+  `chatBannedAt`/`chatBannedReason` fields on `ConferenceIdentity` are
+  surfaced via `chat.getSettings`; the actual block happens inside
+  `canChatWith`. The UI's only job is to render the disabled composer
+  with the reason.
+- **Soft-delete cascade.** Don't hard-delete chat messages on identity or
+  conference removal directly. `Message.deletedAt` + `deletedReason`
+  (`"user"`, `"moderator"`, `"account_deleted"`, `"conference_deleted"`)
+  is the audit-friendly path. `MessageReport.messageId` is
+  `onDelete: Restrict`, so conference deletion is blocked by open
+  reports (`conferences.delete` checks first and returns
+  `open_chat_reports` error if any).
 
 ## UI conventions
 
@@ -73,6 +102,57 @@ something the next session would need to know.
   `data-color-mode` / `data-light-theme` / `data-dark-theme` attributes onto
   `<html>` via `useEffect` so CSS vars cascade from the root and resolve
   inside the portal. If you swap plugins again, do the same.
+
+## Realtime (SSE + EventBus)
+
+- **One global SSE connection per browser tab** at `GET /api/realtime/stream`.
+  Mounted in [src/web/App.tsx](src/web/App.tsx) via `<RealtimeProvider>`
+  inside `<ToastProvider>` and above `<ErrorBoundary>`. Components NEVER
+  open their own `EventSource` — browsers cap HTTP/1.1 at 6 connections
+  per origin and SSE counts. Subscribe via `realtimeBus.on(kind, handler)`
+  in [src/web/realtime/realtimeBus.ts](src/web/realtime/realtimeBus.ts).
+- **Server-side fan-out goes through `getBus().publish(...)`** from
+  [src/server/realtime/bus.ts](src/server/realtime/bus.ts) — never call
+  the SSE handler or local `EventEmitter` directly from a route. Two
+  implementations behind the same interface: `InProcessBus` (single
+  worker) and `ClusterBus` (multi-worker via Bun IPC). Picked at boot.
+- **`Bun.serve` needs `idleTimeout: 0`** for the API server — the default
+  ~10s closes SSE before the 20s heartbeat lands. See
+  [src/server/index.ts](src/server/index.ts).
+- **Multi-worker IPC** is handled by [src/server/cluster.ts](src/server/cluster.ts):
+  each worker's `Bun.spawn` has an `ipc(message)` callback; the launcher
+  is a dumb mirror that forwards `{type:"bus", event}` to every other
+  worker. Backpressure: per-worker bounded queue (1000), drops are logged
+  periodically. Client `Last-Event-ID` replay heals any losses.
+- **Bus events carry IDs only** (`messageId`, `notificationId`,
+  `conversationId`), never full row payloads. SSE delivery fetches the
+  current row from Prisma and applies the per-recipient privacy filter
+  before writing. Keeps wire payloads small AND avoids stale-data hazards.
+- **Client filter on `conversationId`**: every `message.*` BusEvent
+  carries the `conversationId` so per-conversation subscribers can filter
+  cheaply. Drop a payload without it and ConversationView will silently
+  ignore the event.
+
+## Notifications (single entrypoint)
+
+- **NEVER call `prisma.notification.create()` directly.** All notification
+  writes go through `createNotification` / `createNotifications` in
+  [src/server/notifications.ts](src/server/notifications.ts). The helper is
+  the single place that (a) publishes the `notification.upserted` bus event
+  for realtime SSE delivery, and (b) handles dedupe-key coalescing safely
+  (read OR unread existing rows are reused, never collide with P2002).
+  Notifications are realtime-critical; the central helper makes that
+  guarantee impossible to forget.
+- **Use `dedupeKey` when multiple events should collapse into one bell
+  row** (e.g. `conv:<id>` for chat messages, `report:<conf>` for reports).
+  Omit it for one-shot events that should always produce a distinct row
+  (warnings, bookings, quota crossings).
+- **If creating notifications from inside `prisma.$transaction`**, capture
+  the data needed for the notification inside the tx and call
+  `createNotification` AFTER the tx commits — that way the SSE event
+  references row state that's actually visible to other readers, and a
+  rollback won't leave a phantom bell entry. See `experts.book` for the
+  pattern.
 
 ## Architecture choices that look weird unless you know them
 

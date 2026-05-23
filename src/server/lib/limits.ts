@@ -41,6 +41,11 @@ export interface Limits {
 
   // Per-account write rate (0 disables)
   writesPerHourPerUser: number;
+
+  // Chat-specific (per-identity, 0 disables)
+  chatNewConversationsPerHour: number;
+  chatMessagesPerMinute: number;
+  chatMessageMaxBytes: number;
 }
 
 // Defaults are public-instance friendly and assume events up to ~2000
@@ -58,6 +63,10 @@ export const LIMITS: Limits = Object.freeze({
   loginLockoutMs: num("LOGIN_LOCKOUT_MIN", 15) * 60_000,
 
   writesPerHourPerUser: num("WRITES_PER_HOUR_PER_USER", 600),
+
+  chatNewConversationsPerHour: num("CHAT_NEW_CONVERSATIONS_PER_HOUR", 10),
+  chatMessagesPerMinute: num("CHAT_MESSAGES_PER_MINUTE", 30),
+  chatMessageMaxBytes: num("CHAT_MESSAGE_MAX_BYTES", 4096),
 });
 
 // Throw `quota_exceeded` if `current` is at/over `limit`. limit=0 means
@@ -144,6 +153,8 @@ export function recordLoginSuccess(email: string): void {
 export function __resetLimitsState(): void {
   loginFails.clear();
   writeAttempts.clear();
+  chatNewConvAttempts.clear();
+  chatMessageAttempts.clear();
 }
 
 // ----- per-account write rate (sliding 1-hour window) ----------------------
@@ -172,4 +183,52 @@ export function recordWrite(userId: number): void {
   }
   recent.push(now);
   writeAttempts.set(userId, recent);
+}
+
+// ----- chat-specific rate limits ------------------------------------------
+
+// Sliding window of new-conversation initiations per identity. Separate from
+// writesPerHourPerUser because chat is opt-out per identity (different
+// principal kind) and the window is finer-grained (per-minute for messages).
+const chatNewConvAttempts = new Map<number, number[]>();
+const chatMessageAttempts = new Map<number, number[]>();
+
+export function assertChatNewConversationAllowed(identityId: number): void {
+  if (LIMITS.chatNewConversationsPerHour === 0) return;
+  const now = Date.now();
+  const cutoff = now - 60 * 60_000;
+  const recent = (chatNewConvAttempts.get(identityId) ?? []).filter((t) => t >= cutoff);
+  if (recent.length >= LIMITS.chatNewConversationsPerHour) {
+    throw new ORPCError("TOO_MANY_REQUESTS", {
+      message: "rate_limited",
+      data: {
+        resource: "chat_new_conversations",
+        limit: LIMITS.chatNewConversationsPerHour,
+        window_ms: 60 * 60_000,
+        retry_at: recent[0]! + 60 * 60_000,
+      },
+    });
+  }
+  recent.push(now);
+  chatNewConvAttempts.set(identityId, recent);
+}
+
+export function assertChatMessageAllowed(identityId: number): void {
+  if (LIMITS.chatMessagesPerMinute === 0) return;
+  const now = Date.now();
+  const cutoff = now - 60_000;
+  const recent = (chatMessageAttempts.get(identityId) ?? []).filter((t) => t >= cutoff);
+  if (recent.length >= LIMITS.chatMessagesPerMinute) {
+    throw new ORPCError("TOO_MANY_REQUESTS", {
+      message: "rate_limited",
+      data: {
+        resource: "chat_messages",
+        limit: LIMITS.chatMessagesPerMinute,
+        window_ms: 60_000,
+        retry_at: recent[0]! + 60_000,
+      },
+    });
+  }
+  recent.push(now);
+  chatMessageAttempts.set(identityId, recent);
 }

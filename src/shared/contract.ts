@@ -12,6 +12,10 @@
 import { oc, type } from "@orpc/contract";
 import * as v from "valibot";
 import {
+  ChatResolveReportSchema,
+  ChatSettingsUpdateSchema,
+  MessageBody,
+  ReportReason,
   BookExpertSchema,
   ConfLoginSchema,
   CreateConferenceSchema,
@@ -57,6 +61,11 @@ import {
   Id,
   InConf,
   Slug,
+  type ChatBanOut,
+  type ChatSettingsOut,
+  type ConversationOut,
+  type MessageOut,
+  type MessageReportOut,
   type AgendaOut,
   type AssignResult,
   type CalendarOut,
@@ -339,6 +348,93 @@ export const contract = {
     // identity in the conference). Phase 2 only nulls the DB column; the
     // on-disk file is cleaned up in Phase 3 via the avatar pipeline.
     deleteAvatar: oc.input(ProfileDeleteAvatarSchema).output(type<Ok>()),
+  },
+  // 1-on-1 conversations within a conference. See plans/chat.md for the
+  // full privacy + eligibility rules. All procedures require at least a
+  // participant role on the conference.
+  chat: {
+    // Inbox: every conversation the viewer is part of (including unaccepted
+    // requests). Sorted by lastMessageAt desc; nulls (empty conversations)
+    // last. Carries last-message preview + unread counts so the list view
+    // doesn't need a follow-up fetch per row.
+    listConversations: oc.input(InConf).output(type<ConversationOut[]>()),
+    // Paginated upward: pass `before_id` to fetch older messages. Newest
+    // first within each page so the UI can prepend on scroll-up.
+    listMessages: oc
+      .input(v.object({
+        slug: Slug,
+        conversation_id: Id,
+        before_id: v.optional(Id),
+        limit: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(100))),
+      }))
+      .output(type<MessageOut[]>()),
+    // Create a message. Auto-creates the Conversation row on first send.
+    // Returns NOT_FOUND for unpublished targets to non-mods (mirrors
+    // profiles.get) and FORBIDDEN otherwise. Rate-limited: see
+    // src/server/lib/limits.ts chatMessagesPerMinute / chatNewConversationsPerHour.
+    send: oc
+      .input(v.object({
+        slug: Slug,
+        target_identity_id: Id,
+        body: MessageBody,
+      }))
+      .output(type<MessageOut>()),
+    edit: oc
+      .input(v.object({ slug: Slug, message_id: Id, body: MessageBody }))
+      .output(type<MessageOut>()),
+    // Soft-deletes (sets deletedAt + deletedReason="user"). Body is null in
+    // the returned MessageOut. Reports referencing this message still see
+    // the original via the mod report payload.
+    delete: oc
+      .input(v.object({ slug: Slug, message_id: Id }))
+      .output(type<MessageOut>()),
+    markRead: oc
+      .input(v.object({ slug: Slug, conversation_id: Id }))
+      .output(type<Ok>()),
+    acceptConversation: oc
+      .input(v.object({ slug: Slug, conversation_id: Id }))
+      .output(type<Ok>()),
+    // Decline implies block: prevents the sender from re-initiating. The
+    // receiver can clear the block later via unblockUser if they change
+    // their mind.
+    declineConversation: oc
+      .input(v.object({ slug: Slug, conversation_id: Id }))
+      .output(type<Ok>()),
+    blockUser: oc
+      .input(v.object({ slug: Slug, target_identity_id: Id }))
+      .output(type<Ok>()),
+    unblockUser: oc
+      .input(v.object({ slug: Slug, target_identity_id: Id }))
+      .output(type<Ok>()),
+    reportMessage: oc
+      .input(v.object({ slug: Slug, message_id: Id, reason: ReportReason }))
+      .output(type<Ok>()),
+    // Self chat settings. Toggles only — viewer can't set their own ban.
+    getSettings: oc.input(InConf).output(type<ChatSettingsOut>()),
+    updateSettings: oc
+      .input(v.object({ slug: Slug, ...ChatSettingsUpdateSchema.entries }))
+      .output(type<ChatSettingsOut>()),
+  },
+  // Moderation surface for chat reports + bans. All procedures require
+  // moderator role on the conference.
+  moderation: {
+    listChatReports: oc
+      .input(v.object({
+        slug: Slug,
+        status: v.optional(v.picklist(["open", "resolved", "all"] as const)),
+      }))
+      .output(type<MessageReportOut[]>()),
+    resolveChatReport: oc
+      .input(v.object({
+        slug: Slug,
+        report_id: Id,
+        ...ChatResolveReportSchema.entries,
+      }))
+      .output(type<Ok>()),
+    listChatBans: oc.input(InConf).output(type<ChatBanOut[]>()),
+    unbanFromChat: oc
+      .input(v.object({ slug: Slug, identity_id: Id }))
+      .output(type<Ok>()),
   },
 };
 

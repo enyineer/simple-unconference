@@ -5,7 +5,7 @@ import {
   normalizeLabels, filterToExistingRoomTags,
   resolveFinished,
 } from "./shared";
-import { notify, notifyMany, modIdentityIds } from "../notifications";
+import { createNotification, createNotifications, modIdentityIds } from "../notifications";
 import { LIMITS, assertQuota, recordWrite } from "../lib/limits";
 
 async function setStatus(prisma: PrismaClient, confId: number, id: number, status: SubmissionStatus) {
@@ -207,7 +207,7 @@ export const submissionsRouter = {
     const myId = actorIdentityId(context);
     const modIds = (await modIdentityIds(context.prisma, context.conferenceId))
       .filter((id) => id !== myId);
-    await notifyMany(context.prisma, modIds.map((identityId) => ({
+    await createNotifications(context.prisma, modIds.map((identityId) => ({
       identityId,
       kind: "submission_received" as const,
       title: "New session submission",
@@ -338,7 +338,7 @@ export const submissionsRouter = {
     const sub = await context.prisma.submission.findUniqueOrThrow({
       where: { id: input.id }, select: { submitterId: true, title: true },
     });
-    await notify(context.prisma, {
+    await createNotification(context.prisma, {
       identityId: sub.submitterId,
       kind: "submission_published",
       title: "Your session was published",
@@ -357,7 +357,7 @@ export const submissionsRouter = {
     const sub = await context.prisma.submission.findUniqueOrThrow({
       where: { id: input.id }, select: { submitterId: true, title: true },
     });
-    await notify(context.prisma, {
+    await createNotification(context.prisma, {
       identityId: sub.submitterId,
       kind: "submission_rejected",
       title: "Your session was not accepted",

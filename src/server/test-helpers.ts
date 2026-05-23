@@ -9,10 +9,44 @@ import { RPCLink } from "@orpc/client/fetch";
 import type { RouterClient } from "@orpc/server";
 import type { AppRouter } from "./rpc";
 import { __resetLimitsState } from "./lib/limits";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, copyFileSync, readFileSync, mkdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+
+// Template DB cache: `prisma db push` costs ~0.6s per invocation (bun + prisma
+// CLI startup dominates the actual schema apply). The schema is identical for
+// every test, so we push it once into a template file and copy it for each
+// `setupTestApp()` call. The template path is keyed by a hash of the schema
+// file so the cache survives across `bun test` invocations and across the
+// per-file worker processes Bun spawns within a single run.
+let cachedTemplatePath: string | null = null;
+function getTemplateDbPath(): string {
+  if (cachedTemplatePath && existsSync(cachedTemplatePath)) return cachedTemplatePath;
+  const schemaPath = join(import.meta.dir, "../../prisma/schema.prisma");
+  const schemaHash = createHash("sha256")
+    .update(readFileSync(schemaPath))
+    .digest("hex")
+    .slice(0, 16);
+  const dir = join(tmpdir(), "uncon-test-template");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `template-${schemaHash}.sqlite`);
+  if (existsSync(path) && statSync(path).size > 0) {
+    cachedTemplatePath = path;
+    return path;
+  }
+  const result = spawnSync(
+    "bunx",
+    ["prisma", "db", "push", "--url", `file:${path}`],
+    { encoding: "utf8" },
+  );
+  if (result.status !== 0) {
+    throw new Error(`prisma db push (template) failed: ${result.stderr || result.stdout}`);
+  }
+  cachedTemplatePath = path;
+  return path;
+}
 
 export interface TestApp {
   app: ReturnType<typeof buildApp>;
@@ -29,16 +63,9 @@ export function setupTestApp(): TestApp {
   const dbPath = join(dir, "test.sqlite");
   const url = `file:${dbPath}`;
 
-  // Apply schema via `prisma db push` to a temp DB. Prisma 7 reads the URL
-  // from prisma.config.ts unless we override with --url.
-  const result = spawnSync(
-    "bunx",
-    ["prisma", "db", "push", "--url", url],
-    { encoding: "utf8" },
-  );
-  if (result.status !== 0) {
-    throw new Error(`prisma db push failed: ${result.stderr || result.stdout}`);
-  }
+  // Copy the pre-built template DB instead of re-running `prisma db push`.
+  // Schema is invariant within a `bun test` run; see getTemplateDbPath above.
+  copyFileSync(getTemplateDbPath(), dbPath);
 
   const adapter = new PrismaLibSql({ url });
   const prisma = new PrismaClient({ adapter });

@@ -9,6 +9,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { realtimeBus } from "../realtime/realtimeBus";
+import { useRoute } from "../router";
 
 type NotificationKind =
   | "submission_published"
@@ -18,7 +20,10 @@ type NotificationKind =
   | "mixer_assigned"
   | "expert_booked"
   | "expert_booking_cancelled"
-  | "quota_threshold";
+  | "quota_threshold"
+  | "chat_message"
+  | "chat_report"
+  | "chat_warning";
 
 interface NotificationItem {
   id: number;
@@ -29,6 +34,8 @@ interface NotificationItem {
   cta_href: string | null;
   read_at: number | null;
   created_at: number;
+  unread_count: number;
+  dedupe_key: string | null;
 }
 
 interface NotificationBellProps {
@@ -48,6 +55,7 @@ export function NotificationBell({
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [unread, setUnread] = useState(0);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const { navigate } = useRoute();
 
   useEffect(() => {
     let cancelled = false;
@@ -63,10 +71,31 @@ export function NotificationBell({
         .catch(() => {});
     };
     tick();
+    // Long-interval poll as a fallback for cases where the SSE stream is down
+    // (proxy misconfig, dev without server, etc). The primary refresh path
+    // is the realtimeBus subscription below.
     const id = setInterval(tick, POLL_INTERVAL_MS);
+    // Push refresh: any notification upsert or read event triggers an
+    // immediate refetch. Debounce to one refetch per ~250ms so a flurry of
+    // events (e.g. a moderator dismissing many reports) doesn't hammer
+    // the server.
+    let refetchTimer: ReturnType<typeof setTimeout> | null = null;
+    const queueRefetch = () => {
+      if (refetchTimer) return;
+      refetchTimer = setTimeout(() => {
+        refetchTimer = null;
+        tick();
+      }, 250);
+    };
+    const offs = [
+      realtimeBus.on("notification.upserted", queueRefetch),
+      realtimeBus.on("notification.read", queueRefetch),
+    ];
     return () => {
       cancelled = true;
       clearInterval(id);
+      if (refetchTimer) clearTimeout(refetchTimer);
+      for (const off of offs) off();
     };
   }, [slug]);
 
@@ -100,8 +129,17 @@ export function NotificationBell({
         /* swallow — next poll reconciles */
       }
     }
-    if (item.cta_href && item.cta_href.startsWith("tab:")) {
-      onNavigateTab(item.cta_href.slice("tab:".length));
+    if (item.cta_href) {
+      if (item.cta_href.startsWith("tab:")) {
+        onNavigateTab(item.cta_href.slice("tab:".length));
+      } else if (item.cta_href.startsWith("/")) {
+        // Hash-route navigation for deep links into the SPA (chat
+        // notifications use `/conferences/<slug>/chat/<id>` so clicking
+        // the row jumps straight to the conversation).
+        navigate(item.cta_href);
+      } else if (item.cta_href.startsWith("#")) {
+        navigate(item.cta_href.slice(1));
+      }
       setOpen(false);
     }
   }
@@ -401,6 +439,9 @@ function KindIcon({ kind }: { kind: NotificationKind }) {
     expert_booking_cancelled:
       "var(--bgColor-danger-muted, rgba(207,34,46,0.14))",
     quota_threshold: "var(--bgColor-attention-muted, rgba(187,128,9,0.16))",
+    chat_message: "var(--bgColor-accent-muted, rgba(64,132,246,0.16))",
+    chat_report: "var(--bgColor-attention-muted, rgba(187,128,9,0.16))",
+    chat_warning: "var(--bgColor-danger-muted, rgba(207,34,46,0.14))",
   };
   const fgByKind: Record<NotificationKind, string> = {
     submission_published: "var(--fgColor-success, #1f883d)",
@@ -411,6 +452,9 @@ function KindIcon({ kind }: { kind: NotificationKind }) {
     expert_booked: "var(--fgColor-success, #1f883d)",
     expert_booking_cancelled: "var(--fgColor-danger, #cf222e)",
     quota_threshold: "var(--fgColor-attention, #9a6700)",
+    chat_message: "var(--fgColor-accent, #2563eb)",
+    chat_report: "var(--fgColor-attention, #9a6700)",
+    chat_warning: "var(--fgColor-danger, #cf222e)",
   };
   const glyph: Record<NotificationKind, string> = {
     submission_published: "✓",
@@ -421,6 +465,9 @@ function KindIcon({ kind }: { kind: NotificationKind }) {
     expert_booked: "★",
     expert_booking_cancelled: "×",
     quota_threshold: "%",
+    chat_message: "✉",
+    chat_report: "⚑",
+    chat_warning: "!",
   };
   return (
     <span

@@ -17,10 +17,15 @@ interface ProfileLinkProps {
   /** True iff the viewer can actually load the target profile —
    *  computed by the caller as `viewerIsMod || target.profile_published`. */
   linkable: boolean;
+  /** When true, the <a> uses `display: contents` so its children participate
+   *  directly in the parent's layout (grid, flex). Use when the link wraps
+   *  multiple grid cells AND the row also has sibling content (e.g. action
+   *  buttons) that must stay outside the link's hover/decoration scope. */
+  asContents?: boolean;
   children: React.ReactNode;
 }
 
-export function ProfileLink({ slug, identityId, linkable, children }: ProfileLinkProps) {
+export function ProfileLink({ slug, identityId, linkable, asContents, children }: ProfileLinkProps) {
   const [hover, setHover] = useState(false);
   if (identityId == null || !linkable) return <>{children}</>;
   return (
@@ -30,9 +35,14 @@ export function ProfileLink({ slug, identityId, linkable, children }: ProfileLin
         color: "inherit",
         textDecoration: hover ? "underline" : "none",
         cursor: "pointer",
+        // display:contents lets the <a> hand its children directly to the
+        // parent grid/flex, so siblings (e.g. action buttons) can live
+        // outside the link's hover scope. Hover state is still tracked via
+        // mouseover on the children (events bubble up to the <a>).
+        ...(asContents ? { display: "contents" } : null),
       }}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
+      onMouseOver={() => setHover(true)}
+      onMouseOut={() => setHover(false)}
     >
       {children}
     </a>

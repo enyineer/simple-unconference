@@ -28,6 +28,10 @@ import type { ProfileOut, ProfileEntryOut } from "../../shared/contract";
 interface ProfilePageProps {
   slug: string;
   identityId: number;
+  /** Ask the App to refetch `conferences.me` so any cached profile state
+   *  (e.g. profile_published, name) propagates to other tabs after the
+   *  viewer edits their own profile. Optional — only invoked on self-edit. */
+  onConfMeRefresh?: () => void;
 }
 
 function avatarUrl(slug: string, identityId: number, hash: string | null): string {
@@ -129,7 +133,7 @@ function useProfileStyles() {
   }, []);
 }
 
-export function ProfilePage({ slug, identityId }: ProfilePageProps) {
+export function ProfilePage({ slug, identityId, onConfMeRefresh }: ProfilePageProps) {
   useProfileStyles();
   const { navigate } = useRoute();
   const [profile, setProfile] = useState<ProfileOut | null | undefined>(undefined);
@@ -225,11 +229,22 @@ export function ProfilePage({ slug, identityId }: ProfilePageProps) {
           <Button onClick={() => navigate(`/conferences/${slug}`)}>
             ← Back to conference
           </Button>
-          {profile.can_edit && (
-            <Button variant="primary" onClick={() => setEditorOpen(true)}>
-              Edit profile
-            </Button>
-          )}
+          <Stack direction="row" gap="condensed" align="center">
+            {!profile.is_me && (
+              <Button
+                onClick={() =>
+                  navigate(`/conferences/${slug}/chat/new?to=${profile.identity_id}`)
+                }
+              >
+                Message
+              </Button>
+            )}
+            {profile.can_edit && (
+              <Button variant="primary" onClick={() => setEditorOpen(true)}>
+                Edit profile
+              </Button>
+            )}
+          </Stack>
         </Stack>
 
         {!profile.profile_published && (
@@ -362,6 +377,11 @@ export function ProfilePage({ slug, identityId }: ProfilePageProps) {
             load().catch(() => {
               /* keep current view */
             });
+            // Propagate to App-level confMe so other tabs (e.g. the Chat
+            // publish gate) reflect the new profile_published state without
+            // requiring a full page reload. Self-edit only — moderators
+            // editing someone else's profile don't change their own me row.
+            if (profile?.is_me) onConfMeRefresh?.();
           }}
         />
       )}

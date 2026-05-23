@@ -1,4 +1,4 @@
-{{- if and .Values.metrics .Values.metrics.serviceMonitor .Values.metrics.serviceMonitor.enabled -}}
+{{- if and .Values.metrics .Values.metrics.enabled .Values.metrics.serviceMonitor .Values.metrics.serviceMonitor.enabled -}}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -9,12 +9,15 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
+  # Match the dedicated metrics Service (see service-metrics.yaml). The main
+  # app Service no longer exposes a metrics port.
   selector:
     matchLabels:
       {{- include "simple-unconference.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: metrics
   endpoints:
-    - port: http
-      path: /api/metrics
+    - port: metrics
+      path: /metrics
       interval: {{ .Values.metrics.serviceMonitor.interval | default "30s" }}
       scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout | default "10s" }}
       {{- if .Values.metrics.token }}

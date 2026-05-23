@@ -1,0 +1,22 @@
+{{- if and .Values.metrics .Values.metrics.enabled -}}
+# Dedicated ClusterIP Service for the /metrics endpoint. Kept separate from
+# the main app Service so the metrics port is never reachable via the same
+# DNS name (or Ingress) that serves user traffic. NetworkPolicy authors can
+# pin scrape access to this Service alone.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "simple-unconference.fullname" . }}-metrics
+  labels:
+    {{- include "simple-unconference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "simple-unconference.selectorLabels" . | nindent 4 }}
+{{- end }}

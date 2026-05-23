@@ -56,10 +56,72 @@ export async function resolveConferencePrincipal(
   return null;
 }
 
+// Eligibility result for chat between two identities in a conference. See
+// plans/chat.md Phase 0 for the full rule set. Reasons are ordered from
+// least to most "exists"-revealing — non-mod callers should map `not_published`
+// and `self` to NOT_FOUND (so an unpublished target can't be probed for
+// existence) and `chat_disabled` / `banned` / `blocked` to FORBIDDEN.
+export type ChatEligibility =
+  | { ok: true }
+  | { ok: false; reason: "self" | "not_published" | "chat_disabled" | "banned" | "blocked" };
+
+export async function canChatWith(args: {
+  prisma: PrismaClient;
+  viewer: ResolvedPrincipal;
+  targetIdentityId: number;
+  conferenceId: number;
+}): Promise<ChatEligibility> {
+  const { prisma, viewer, targetIdentityId, conferenceId } = args;
+  if (viewer.identity.id === targetIdentityId) return { ok: false, reason: "self" };
+
+  const target = await prisma.conferenceIdentity.findFirst({
+    where: { id: targetIdentityId, conferenceId },
+    select: {
+      id: true,
+      profilePublished: true,
+      chatEnabled: true,
+      chatBannedAt: true,
+    },
+  });
+  // Target missing or in a different conference — caller decides whether to
+  // surface as NOT_FOUND vs FORBIDDEN. We just report "not_published" so the
+  // status code never distinguishes "doesn't exist" from "exists but hidden".
+  if (!target) return { ok: false, reason: "not_published" };
+
+  const isMod = viewer.role === "owner" || viewer.role === "moderator";
+
+  // Viewer side: own ban or chat-disabled blocks even mods (you can't send
+  // while banned). The own-chat-disabled check is symmetric — disabling chat
+  // disables both directions.
+  if (viewer.identity.chatBannedAt) return { ok: false, reason: "banned" };
+  if (!viewer.identity.chatEnabled) return { ok: false, reason: "chat_disabled" };
+
+  // Target side. Mods bypass the published check so they can DM unpublished
+  // users for moderation outreach. Bans + the target's own chat-disabled
+  // toggle still apply.
+  if (!isMod && !target.profilePublished) return { ok: false, reason: "not_published" };
+  if (target.chatBannedAt) return { ok: false, reason: "banned" };
+  if (!target.chatEnabled) return { ok: false, reason: "chat_disabled" };
+
+  // Blocks: either direction kills it. Use composite-PK lookup.
+  const block = await prisma.chatBlock.findFirst({
+    where: {
+      OR: [
+        { blockerIdentityId: viewer.identity.id, blockedIdentityId: target.id },
+        { blockerIdentityId: target.id, blockedIdentityId: viewer.identity.id },
+      ],
+    },
+    select: { blockerIdentityId: true },
+  });
+  if (block) return { ok: false, reason: "blocked" };
+
+  return { ok: true };
+}
+
 // Idempotent: returns the existing owner-linked identity row, or creates one.
 // Role on the row is participant; the owner's effective role comes from the
 // Conference.ownerId check, not from this field.
-async function ensureOwnerIdentity(
+export async function ensureOwnerIdentity(
   prisma: PrismaClient,
   conferenceId: number,
   user: User,

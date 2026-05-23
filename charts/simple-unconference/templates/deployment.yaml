@@ -46,6 +46,11 @@ spec:
             - name: http
               containerPort: {{ .Values.service.targetPort }}
               protocol: TCP
+            {{- if and .Values.metrics .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: PORT
               value: {{ .Values.service.targetPort | quote }}
@@ -89,6 +94,10 @@ spec:
             {{- if and .Values.turnstile .Values.turnstile.secretKey }}
             - name: TURNSTILE_SECRET_KEY
               value: {{ .Values.turnstile.secretKey | quote }}
+            {{- end }}
+            {{- if and .Values.metrics .Values.metrics.enabled }}
+            - name: METRICS_PORT
+              value: {{ .Values.metrics.port | quote }}
             {{- end }}
             {{- if and .Values.metrics .Values.metrics.token }}
             - name: METRICS_TOKEN

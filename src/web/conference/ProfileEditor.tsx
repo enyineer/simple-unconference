@@ -8,7 +8,7 @@
 // separate delete RPC). The avatar URL the preview uses is built from the
 // content hash returned by the upload so cache busts come for free.
 
-import { useState, useMemo, type ChangeEvent } from "react";
+import { useState, useEffect, useMemo, type ChangeEvent } from "react";
 import {
   Button,
   Form,
@@ -433,6 +433,8 @@ export function ProfileEditor({
             ))}
           </datalist>
 
+          {isSelf && <ChatSettingsBlock slug={slug} />}
+
           <Stack direction="row" gap="condensed">
             <Button type="submit" variant="primary" disabled={busy || avatarBusy}>
               Save
@@ -733,5 +735,72 @@ function humanUploadError(code: string): string {
     too_large: "That image is too large. Keep it under 5 MB.",
     unauthorized: "Sign in first.",
   } as Record<string, string>)[code] ?? code;
+}
+
+// Self-only chat settings block. Loads from chat.getSettings on mount and
+// saves each toggle on change via chat.updateSettings. Lives here (not in
+// the profile form) because chat settings aren't part of the ProfileUpdate
+// schema and saving is intentionally per-toggle so the user gets instant
+// feedback without needing to hit the Save button.
+function ChatSettingsBlock({ slug }: { slug: string }) {
+  const [loaded, setLoaded] = useState(false);
+  const [chatEnabled, setChatEnabled] = useState(true);
+  const [readReceiptsEnabled, setReadReceiptsEnabled] = useState(true);
+  const [bannedReason, setBannedReason] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.chat.getSettings({ slug })
+      .then((s) => {
+        if (cancelled) return;
+        setChatEnabled(s.chat_enabled);
+        setReadReceiptsEnabled(s.read_receipts_enabled);
+        setBannedReason(s.chat_banned ? (s.chat_ban_reason ?? "Reason not provided") : null);
+        setLoaded(true);
+      })
+      .catch(() => { if (!cancelled) setLoaded(true); });
+    return () => { cancelled = true; };
+  }, [slug]);
+
+  async function persist(patch: { chat_enabled?: boolean; read_receipts_enabled?: boolean }) {
+    setSaving(true);
+    try {
+      const s = await api.chat.updateSettings({ slug, ...patch });
+      setChatEnabled(s.chat_enabled);
+      setReadReceiptsEnabled(s.read_receipts_enabled);
+    } catch {
+      // No toast here — the block is non-critical; the next reload reconciles.
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!loaded) return null;
+
+  return (
+    <Stack gap="condensed">
+      <Heading level={3}>Chat</Heading>
+      {bannedReason !== null && (
+        <Tip>
+          You&apos;re currently banned from chatting in this conference.
+          {" "}Reason: {bannedReason}
+        </Tip>
+      )}
+      <ToggleRow
+        checked={chatEnabled}
+        onChange={(v) => { setChatEnabled(v); void persist({ chat_enabled: v }); }}
+        label="Allow direct messages"
+        hint="Other published members can send you 1-on-1 messages."
+      />
+      <ToggleRow
+        checked={readReceiptsEnabled}
+        onChange={(v) => { setReadReceiptsEnabled(v); void persist({ read_receipts_enabled: v }); }}
+        label="Send read receipts"
+        hint="Senders see when you've read their messages."
+      />
+      {saving && <div style={{ fontSize: 11, color: "var(--fgColor-muted)" }}>Saving…</div>}
+    </Stack>
+  );
 }
 

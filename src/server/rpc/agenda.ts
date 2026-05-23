@@ -7,7 +7,7 @@ import {
 import { clipToMinute } from "../../shared/tz";
 import { assignUnconferenceSlot, assignMixerSlot, pairKey, type AssignmentInput } from "../assignment";
 import { effectiveSlotConfig, SLOT_CONFIG_INCLUDE } from "../lib/slot-config";
-import { notifyMany } from "../notifications";
+import { createNotifications } from "../notifications";
 
 // Shapes of pre-assignment conflicts surfaced by `runAssignmentForSlot`.
 // Mirrors the `PreAssignmentConflict` union in the API contract.
@@ -1912,7 +1912,7 @@ export const agendaRouter = {
           select: { id: true, title: true },
         })).map((s) => [s.id, s.title]),
       );
-      await notifyMany(context.prisma, r.user_assignments.map((a) => ({
+      await createNotifications(context.prisma, r.user_assignments.map((a) => ({
         identityId: a.user_id,
         kind: "unconf_assigned" as const,
         title: "You were assigned to a session",
@@ -1930,7 +1930,7 @@ export const agendaRouter = {
           select: { id: true, name: true },
         })).map((rm) => [rm.id, rm.name]),
       );
-      await notifyMany(context.prisma, r.room_assignments.map((a) => ({
+      await createNotifications(context.prisma, r.room_assignments.map((a) => ({
         identityId: a.user_id,
         kind: "mixer_assigned" as const,
         title: "You were placed for a mixer",

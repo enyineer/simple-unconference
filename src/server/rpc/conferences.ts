@@ -155,6 +155,30 @@ export const conferenceRouter = {
   // untouched. After this call succeeds the client must navigate away —
   // any further request scoped to this slug will 404.
   delete: requireConf("owner").conferences.delete.handler(async ({ context }) => {
+    // Chat retention rule (plans/chat.md Phase 9): block conference deletion
+    // when there are any unresolved chat reports for messages in this
+    // conference. MessageReport.messageId is onDelete:Restrict, so without
+    // this check the cascade chain would fail mid-delete with a
+    // foreign-key error — friendlier to surface it up-front so the owner
+    // can resolve the reports first.
+    const openReports = await context.prisma.messageReport.count({
+      where: {
+        resolvedAt: null,
+        message: { conversation: { conferenceId: context.conferenceId } },
+      },
+    });
+    if (openReports > 0) {
+      throw new ORPCError("FORBIDDEN", {
+        message: "open_chat_reports",
+        data: { count: openReports },
+      });
+    }
+    // Already-resolved reports still block via the same Restrict rule, so
+    // hard-delete them first. They're stored audit trails — once resolved,
+    // they're not needed once the conference itself is gone.
+    await context.prisma.messageReport.deleteMany({
+      where: { message: { conversation: { conferenceId: context.conferenceId } } },
+    });
     await context.prisma.conference.delete({
       where: { id: context.conferenceId },
     });
@@ -191,6 +215,15 @@ export const conferenceRouter = {
     if (target.role === "moderator" && context.principal.role !== "owner") {
       throw new ORPCError("FORBIDDEN");
     }
+    // Chat retention (plans/chat.md Phase 9): a removed identity's sent
+    // messages would cascade-delete via Message.senderIdentityId → Cascade.
+    // But MessageReport.messageId is onDelete:Restrict so any report
+    // referencing those messages would block the cascade. Pre-resolve by
+    // hard-deleting reports filed against this user's messages — the user
+    // is being removed entirely, so the audit trail is closing with them.
+    await context.prisma.messageReport.deleteMany({
+      where: { message: { senderIdentityId: target.id } },
+    });
     await context.prisma.conferenceIdentity.delete({ where: { id: target.id } });
     return { ok: true as const };
   }),

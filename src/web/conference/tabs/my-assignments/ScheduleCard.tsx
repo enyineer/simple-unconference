@@ -1,4 +1,8 @@
-import { dayKeyInTz, fmtDayShort, fmtTimeShort } from "../../helpers";
+import {
+  fmtTimeMaybeDay,
+  fmtTimeShort,
+  spansMultipleDays,
+} from "../../helpers";
 import type { Room } from "../../types";
 import { Pill } from "../../ui/Pill";
 import { SOURCE_LABEL, type ScheduleSource } from "./types";
@@ -136,9 +140,9 @@ export function ScheduleCard({
           // this row, prefix every alternate with the short day so the user
           // can tell "20:07" tomorrow from "20:07" today.
           const sortedAlts = [...alternates].sort((a, b) => a.starts_at - b.starts_at);
-          const thisDay = dayKeyInTz(startsAt, timeZone);
-          const multiDay = sortedAlts.some(
-            (alt) => dayKeyInTz(alt.starts_at, timeZone) !== thisDay,
+          const multiDay = spansMultipleDays(
+            [startsAt, ...sortedAlts.map((a) => a.starts_at)],
+            timeZone,
           );
           return (
             <div style={{ fontSize: 12, color: muted }}>
@@ -146,9 +150,7 @@ export function ScheduleCard({
               {sortedAlts.map((alt, i) => (
                 <span key={i} style={{ fontVariantNumeric: "tabular-nums" }}>
                   {i > 0 ? ", " : ""}
-                  {multiDay
-                    ? `${fmtDayShort(alt.starts_at, timeZone)} ${fmtTimeShort(alt.starts_at, timeZone)}`
-                    : fmtTimeShort(alt.starts_at, timeZone)}
+                  {fmtTimeMaybeDay(alt.starts_at, timeZone, multiDay)}
                 </span>
               ))}
             </div>

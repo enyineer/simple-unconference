@@ -298,12 +298,24 @@ Server and client share valibot schemas in [`src/shared/schemas.ts`](src/shared/
 | Edit own profile (bio, links, contacts, tags, avatar) | ✓ | ✓ | ✓ |
 | View unpublished profiles, see members' canonical emails | | ✓ | ✓ |
 | Edit any member's profile / upload avatar on their behalf | | ✓ | ✓ |
+| 1-on-1 chat (send / edit / delete own messages, block, report) | ✓ | ✓ | ✓ |
+| DM unpublished members (e.g. moderation outreach) | | ✓ | ✓ |
+| Review chat reports + ban / unban identities from chat | | ✓ | ✓ |
 
 Profile entries (links / contacts) have a per-row `is_public` flag: non-mods
 only see entries marked public; mods + the profile owner see all. The
 `/api/avatars/:slug/:identityId` endpoint mirrors `profiles.get` visibility
 and falls back to an initials SVG (never 404) so the existence of an
 unpublished profile can't be probed via status code.
+
+Chat eligibility (`canChatWith` in
+[src/server/lib/permissions.ts](src/server/lib/permissions.ts)) requires both
+identities to be published, both to have chat enabled, neither banned, and no
+block in either direction. Mods bypass only the *published* check (so they
+can DM unpublished members for moderation outreach); every other gate
+still applies. Rate limits: 10 new conversations/hour and 30 messages/minute
+per identity; messages capped at 4096 bytes (`CHAT_NEW_CONVERSATIONS_PER_HOUR`,
+`CHAT_MESSAGES_PER_MINUTE`, `CHAT_MESSAGE_MAX_BYTES` env vars).
 
 The table mirrors [`src/server/lib/permissions.ts`](src/server/lib/permissions.ts) — keep them in sync.
 
@@ -389,24 +401,27 @@ Every individual layer can be disabled by setting its env var to `0` (or leaving
 
 ## Metrics (Prometheus)
 
-`GET /api/metrics` exposes a Prometheus-compatible text-format snapshot of the instance. Cheap to scrape (a handful of indexed counts + one `statfs` call), computed on demand — no background goroutine. By default the endpoint is **open** (intended for in-cluster scraping where the Service is not reachable via Ingress); set `METRICS_TOKEN` to require `Authorization: Bearer <token>` if you're scraping across a less trusted network.
+Metrics live on a **dedicated port** (`METRICS_PORT`, default `9090`) at `GET /metrics` — **not** on the main API port. The Helm chart provisions a separate `ClusterIP` Service (`<release>-simple-unconference-metrics`) so the scrape path stays in-cluster regardless of whether the app's main Service is exposed via Ingress. Set `METRICS_TOKEN` to require `Authorization: Bearer <token>` if your scrape network is not fully trusted.
+
+When `WORKERS > 1`, the cluster launcher aggregates per-worker snapshots received over IPC: every worker pushes its in-memory counters every 5 s, worker 0 additionally pushes DB + storage counts, and the launcher serves the merged result on every scrape. This avoids the Prometheus "oscillating values" problem you'd get from `SO_REUSEPORT` plus per-worker counters, and keeps the active gauges (`realtime_sse_active_connections`, `bus_active_subscriptions`) honest as `sum(metric)` in PromQL.
 
 Exposed metrics:
 
 | Metric | Description |
 | --- | --- |
-| `app_uptime_seconds` | Seconds since this worker started. |
-| `app_worker_id` | Worker index within the cluster (0 in single-process mode). |
-| `users_total` | Global owner accounts on the instance. |
-| `conferences_total` | Conferences on the instance. |
-| `conference_identities_total` | Per-conference identities (participants + moderators + auto-minted owners). |
-| `submissions_total` | All submissions, every status. |
-| `submissions_by_status_total{status="…"}` | Per-status breakdown (`submitted`, `published`, `rejected`). |
-| `stars_total` | Sum of stars across all sessions. |
-| `notifications_total` | Stored notifications across all identities. |
-| `rooms_total` | Rooms across all conferences. |
-| `invites_total` / `invites_unclaimed_total` | Conference invites (all / pending). |
-| `experts_total` / `expert_bookings_total` | Expert roster and 1:1 bookings. |
+| `app_uptime_seconds` | Seconds since the metrics server started (launcher in cluster mode, app in single-worker). |
+| `app_workers_total` | Workers that have reported a fresh snapshot within the staleness threshold. |
+| `app_workers_stale_total` | Workers known to the launcher but with snapshots older than the threshold — non-zero = the worker is wedged. |
+| `app_metrics_global_stale` | 1 when the global counts come from a stale snapshot, 0 otherwise. |
+| `worker_uptime_seconds{worker="N"}` | Per-worker uptime as reported in its latest snapshot. |
+| `realtime_sse_active_connections{worker="N"}` | Open SSE connections served by worker N. Aggregate with `sum()`. |
+| `realtime_sse_total_connections{worker="N"}` | Lifetime SSE connections accepted by worker N. |
+| `realtime_sse_replay_message_events_total{worker="N"}` / `realtime_sse_replay_notification_events_total{worker="N"}` | Events emitted via Last-Event-ID replay on reconnect. |
+| `bus_active_subscriptions{worker="N"}` | Active EventBus subscriptions on worker N (one per SSE connection per identity). |
+| `bus_ipc_sent_total{worker="N"}` / `bus_ipc_received_total{worker="N"}` | IPC bus message counters per worker. |
+| `bus_published_total{worker="N",kind="…"}` / `bus_delivered_total{worker="N",kind="…"}` | Publish + handler-invocation counts split by event kind. |
+| `users_total`, `conferences_total`, `conference_identities_total`, `submissions_total`, `submissions_by_status_total{status="…"}`, `stars_total`, `notifications_total`, `rooms_total`, `invites_total`, `invites_unclaimed_total`, `experts_total`, `expert_bookings_total` | Instance-wide row counts. |
+| `chat_conversations_total`, `chat_conversations_accepted_total`, `chat_messages_total`, `chat_messages_deleted_total`, `chat_reports_total`, `chat_reports_open_total`, `chat_blocks_total`, `chat_banned_identities_total`, `chat_disabled_identities_total` | Chat row counts. |
 | `storage_pvc_total_bytes` / `storage_pvc_free_bytes` / `storage_pvc_used_bytes` | Data volume from `statfs`. |
 | `storage_db_file_bytes` | SQLite file size on disk (WAL/SHM excluded). |
 
@@ -414,6 +429,8 @@ The chart's `metrics:` block configures this:
 
 ```yaml
 metrics:
+  enabled: true          # set false to disable the port + Service
+  port: 9090             # METRICS_PORT (container port; not exposed on the main Service)
   token: ""              # METRICS_TOKEN — empty = open endpoint
   serviceMonitor:
     enabled: true        # render a ServiceMonitor for prometheus-operator
@@ -425,21 +442,21 @@ metrics:
 
 When `metrics.token` is set, the chart also renders a `Secret` named `<release>-simple-unconference-metrics` carrying the token, and the ServiceMonitor references it via `spec.endpoints[].authorization` — no manual Secret wiring required.
 
-For non-operator Prometheus setups, scrape manually:
+For non-operator Prometheus setups, scrape the dedicated Service:
 
 ```yaml
 scrape_configs:
   - job_name: simple-unconference
-    metrics_path: /api/metrics
+    metrics_path: /metrics
     static_configs:
-      - targets: ["unconf-simple-unconference.unconference.svc:80"]
+      - targets: ["unconf-simple-unconference-metrics.unconference.svc:9090"]
     # optional, when METRICS_TOKEN is set:
     authorization:
       type: Bearer
       credentials: "<your-token>"
 ```
 
-The endpoint also resolves a sensible `DATA_DIR` for local development — falling back to `./data` (and then CWD) when `/app/data` isn't mounted — and logs a startup warning when it does so, so the zeros in `storage_*` gauges never mystify someone running `bun dev`.
+For local development, set `METRICS_PORT=9090` before `bun run dev` to expose the endpoint at `http://localhost:9090/metrics`. Without `METRICS_PORT`, metrics are disabled. The collector resolves a sensible `DATA_DIR` and logs a startup warning when it falls back to `./data` (or CWD), so the zeros in `storage_*` gauges never mystify someone running `bun dev`.
 
 ## Adding a design system
 
