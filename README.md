@@ -438,9 +438,46 @@ metrics:
     scrapeTimeout: 10s
     labels:
       release: kube-prometheus-stack
+  prometheusRule:
+    enabled: true        # render a PrometheusRule with starter alerts
+    labels:
+      release: kube-prometheus-stack
+    chatReportsBacklogThreshold: 10
+  dashboard:
+    enabled: true        # render a ConfigMap that Grafana's dashboards-sidecar imports
+    folder: "Apps"       # Grafana folder name (empty = General)
 ```
 
 When `metrics.token` is set, the chart also renders a `Secret` named `<release>-simple-unconference-metrics` carrying the token, and the ServiceMonitor references it via `spec.endpoints[].authorization` — no manual Secret wiring required.
+
+### Alerts (PrometheusRule)
+
+With `metrics.prometheusRule.enabled: true`, the chart ships a [`PrometheusRule`](charts/simple-unconference/templates/prometheusrule.yaml) with seven starter alerts grouped by concern, all scoped to `{service="<release>-metrics"}` so multiple releases of the chart in one Prometheus stay isolated:
+
+| Group | Alert | Fires when |
+| --- | --- | --- |
+| health | `SimpleUnconferenceScrapeDown` | `up == 0` for 2 m |
+| health | `SimpleUnconferenceNoWorkers` | `app_workers_total == 0` for 2 m |
+| health | `SimpleUnconferenceWorkerStale` | `app_workers_stale_total > 0` for 5 m |
+| health | `SimpleUnconferenceGlobalMetricsStale` | `app_metrics_global_stale == 1` for 10 m |
+| storage | `SimpleUnconferenceStorageLow` | data volume <15% free for 10 m |
+| storage | `SimpleUnconferenceStorageCritical` | data volume <5% free for 5 m |
+| moderation | `SimpleUnconferenceChatReportsBacklog` | `chat_reports_open_total > threshold` for 1 h |
+
+The chat-reports threshold defaults to `10` and is tunable via `metrics.prometheusRule.chatReportsBacklogThreshold`. No Alertmanager receivers are configured by the chart — wire your own Slack / email / PagerDuty routes in your `kube-prometheus-stack` values.
+
+### Grafana dashboard
+
+With `metrics.dashboard.enabled: true`, the chart renders a `ConfigMap` carrying [`dashboards/simple-unconference.json`](charts/simple-unconference/dashboards/simple-unconference.json), labeled `grafana_dashboard: "1"` so the standard Grafana dashboards-sidecar (default in `kube-prometheus-stack`) auto-imports it within ~10 s. The dashboard has 11 panels across four rows:
+
+- **Health** — fresh workers, stale workers, global-metrics-stale indicator, uptime.
+- **Realtime** — SSE active connections (total + per worker), bus events published rate by event kind.
+- **Storage** — data volume % used gauge, SQLite file size over time, submissions-by-status donut.
+- **Content & Chat** — users, conferences, identities, chat messages, open chat reports, expert bookings.
+
+The dashboard uses a `${datasource}` template variable rather than hard-coding a Prometheus datasource, so it works under any Grafana install that has at least one Prometheus datasource registered. Stable URL: `…/d/simple-unconference`.
+
+If your Grafana's dashboards-sidecar is namespace-scoped (not the kube-prometheus-stack default), set `metrics.dashboard.namespace` to the Grafana namespace so the ConfigMap lands where the sidecar looks. Non-default sidecar label keys/values can be configured via `metrics.dashboard.label` / `labelValue`.
 
 For non-operator Prometheus setups, scrape the dedicated Service:
 
