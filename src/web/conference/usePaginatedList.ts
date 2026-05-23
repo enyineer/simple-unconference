@@ -63,13 +63,20 @@ export function usePaginatedList<T>(
   const [pageIdx, setPageIdx] = useState(0);
   const [q, setQRaw] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
-  const [page, setPage] = useState<Page<T>>({
-    items: [],
-    total: 0,
-    next_cursor: null,
+  // Page, error, and the inputs they were loaded for live in one object so
+  // a single setResult() inside the fetch callback flips everything atomically.
+  // `loading` is derived from (result.key !== currentKey) below, which is why
+  // the fetch effect never has to call setState synchronously — react-hooks/
+  // set-state-in-effect would otherwise flag it as a cascading-render hazard.
+  const [result, setResult] = useState<{
+    key: string;
+    page: Page<T>;
+    error: unknown;
+  }>({
+    key: "",
+    page: { items: [], total: 0, next_cursor: null },
+    error: null,
   });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<unknown>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
   // Debounce `q` -> `debouncedQ`. Reset paging when query changes.
@@ -88,21 +95,20 @@ export function usePaginatedList<T>(
   const fetchSeqRef = useRef(0);
 
   const cursor = cursorStack[pageIdx];
+  const currentKey = `${debouncedQ}|${cursor ?? ""}|${pageSize}|${refreshTick}`;
+  const loading = result.key !== currentKey;
 
   useEffect(() => {
     const seq = ++fetchSeqRef.current;
-    setLoading(true);
-    setError(null);
+    const key = `${debouncedQ}|${cursor ?? ""}|${pageSize}|${refreshTick}`;
     fetcher({ q: debouncedQ, cursor, limit: pageSize })
-      .then((result) => {
+      .then((page) => {
         if (fetchSeqRef.current !== seq) return;
-        setPage(result);
-        setLoading(false);
+        setResult({ key, page, error: null });
       })
       .catch((err) => {
         if (fetchSeqRef.current !== seq) return;
-        setError(err);
-        setLoading(false);
+        setResult((prev) => ({ key, page: prev.page, error: err }));
       });
     // `fetcher` is intentionally omitted: callers commonly inline an arrow
     // function, and we don't want every render to re-fetch. Effect identity
@@ -117,12 +123,13 @@ export function usePaginatedList<T>(
   }, []);
 
   const next = useCallback(() => {
-    if (page.next_cursor === null) return;
+    const nextCursor = result.page.next_cursor;
+    if (nextCursor === null) return;
     setCursorStack((stack) =>
-      stack.length > pageIdx + 1 ? stack : [...stack, page.next_cursor!],
+      stack.length > pageIdx + 1 ? stack : [...stack, nextCursor],
     );
     setPageIdx((idx) => idx + 1);
-  }, [page.next_cursor, pageIdx]);
+  }, [result.page.next_cursor, pageIdx]);
 
   const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
   const reset = useCallback(() => {
@@ -134,16 +141,16 @@ export function usePaginatedList<T>(
   }, []);
 
   return {
-    items: page.items,
-    total: page.total,
+    items: result.page.items,
+    total: result.page.total,
     page: pageIdx + 1,
     pageSize,
     loading,
-    error,
+    error: result.error,
     q,
     setQ,
     hasPrev: pageIdx > 0,
-    hasNext: page.next_cursor !== null,
+    hasNext: result.page.next_cursor !== null,
     prev,
     next,
     refresh,
