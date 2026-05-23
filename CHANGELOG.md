@@ -1,5 +1,46 @@
 # simple-unconference
 
+## 0.9.0
+
+### Minor Changes
+
+- [`e3c800d`](https://github.com/enyineer/simple-unconference/commit/e3c800d9f415375d2cf9143fbe5267df46c3c277) Thanks [@enyineer](https://github.com/enyineer)! - Ship a starter Grafana dashboard with the Helm chart, auto-imported via the standard Grafana dashboards-sidecar pattern.
+
+  **Why**
+
+  kube-prometheus-stack's bundled dashboards cover the cluster but know nothing about this app's metric names. Operators were left to either query in Explore or build a dashboard from scratch — and rebuild it whenever the app's metric taxonomy changes. Shipping the dashboard from the chart keeps it in lockstep with the metric definitions in [src/server/metrics/aggregate.ts](src/server/metrics/aggregate.ts) and survives Grafana PVC loss.
+
+  **What changed**
+
+  - New file `dashboards/simple-unconference.json` — 11 panels in 4 rows:
+    - **Health**: fresh workers, stale workers, global-metrics-stale indicator, uptime.
+    - **Realtime**: SSE active connections (total + per worker), bus events published rate by kind.
+    - **Storage**: data volume % used gauge, SQLite file size over time, submissions by status donut.
+    - **Content & Chat**: users, conferences, identities, chat messages, open chat reports, expert bookings.
+  - New template `templates/dashboard.yaml` wrapping the JSON in a ConfigMap labeled `grafana_dashboard: "1"` so kube-prometheus-stack's Grafana sidecar imports it automatically.
+  - New `metrics.dashboard.*` values:
+    - `enabled` (default `false`) toggle.
+    - `namespace` override for when the sidecar is namespace-scoped to Grafana's namespace.
+    - `label` / `labelValue` / `extraLabels` for non-default sidecar configurations.
+    - `folder` to land the dashboard in a specific Grafana folder.
+  - Dashboard uses a `${datasource}` variable rather than hard-coding the Prometheus datasource, so it works under any Grafana install that has at least one Prometheus datasource registered.
+
+- [`e3c800d`](https://github.com/enyineer/simple-unconference/commit/e3c800d9f415375d2cf9143fbe5267df46c3c277) Thanks [@enyineer](https://github.com/enyineer)! - Ship a starter `PrometheusRule` with the Helm chart for instance health, storage capacity, and moderation backlog alerts.
+
+  **Why**
+
+  The chart already wires Prometheus to the dedicated metrics Service via `ServiceMonitor`, but operators were left to write their own alerting rules against series like `app_workers_stale_total` and `storage_pvc_free_bytes`. The aggregation contract for those metrics lives in the app, not the consumer — shipping the rules alongside the chart keeps them in sync as metric names evolve.
+
+  **What changed**
+
+  - New template `templates/prometheusrule.yaml`, gated by `metrics.prometheusRule.enabled` (default `false`). Requires the prometheus-operator CRDs — same prerequisite as `metrics.serviceMonitor.enabled`.
+  - Three rule groups:
+    - **simple-unconference.health**: `SimpleUnconferenceScrapeDown`, `SimpleUnconferenceNoWorkers`, `SimpleUnconferenceWorkerStale`, `SimpleUnconferenceGlobalMetricsStale`.
+    - **simple-unconference.storage**: `SimpleUnconferenceStorageLow` (<15% free), `SimpleUnconferenceStorageCritical` (<5% free).
+    - **simple-unconference.moderation**: `SimpleUnconferenceChatReportsBacklog`, threshold tunable via `metrics.prometheusRule.chatReportsBacklogThreshold` (default `10`).
+  - All rules scope to the dedicated metrics Service with `{service="<release>-metrics"}` so multiple releases of the chart in one Prometheus stay isolated.
+  - Optional `metrics.prometheusRule.labels` lets operators add the discovery label their Prometheus expects (e.g. `release: kube-prometheus-stack`).
+
 ## 0.8.0
 
 ### Minor Changes
