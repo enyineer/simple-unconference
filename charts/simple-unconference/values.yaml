@@ -143,6 +143,29 @@ metrics:
     interval: 30s
     scrapeTimeout: 10s
     labels: {}           # extra labels for the ServiceMonitor (e.g. release: kube-prometheus-stack)
+  # Starter PrometheusRule with health, storage, and moderation alerts.
+  # Requires prometheus-operator CRDs (same prerequisite as serviceMonitor).
+  # Operators tune `chatReportsBacklogThreshold` to their moderation team's
+  # capacity; everything else is derived from absolute health signals.
+  prometheusRule:
+    enabled: false
+    labels: {}           # extra labels (e.g. release: kube-prometheus-stack) so Prometheus picks the rule up
+    chatReportsBacklogThreshold: 10
+  # Starter Grafana dashboard shipped as a ConfigMap. Requires a Grafana
+  # instance running the dashboards sidecar (kube-prometheus-stack does this
+  # by default). The sidecar watches all namespaces for ConfigMaps carrying
+  # `grafana_dashboard: "1"` and imports their JSON automatically.
+  #
+  # If your Grafana lives in a different namespace AND the sidecar is scoped
+  # to a single namespace, set `namespace:` to the Grafana namespace so the
+  # ConfigMap lands where the sidecar looks.
+  dashboard:
+    enabled: false
+    namespace: ""         # leave empty to install alongside the app; set to Grafana's namespace if sidecar is namespace-scoped
+    label: grafana_dashboard
+    labelValue: "1"
+    extraLabels: {}       # e.g. { app: kube-prometheus-stack }
+    folder: ""            # Grafana folder name (becomes the `grafana_folder` annotation); empty = General
 
 # Extra env vars appended to the container.
 # Example: [{ name: SERVE_STATIC, value: "1" }]

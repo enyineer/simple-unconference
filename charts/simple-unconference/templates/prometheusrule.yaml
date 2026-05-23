@@ -1,0 +1,86 @@
+{{- if and .Values.metrics .Values.metrics.enabled .Values.metrics.prometheusRule .Values.metrics.prometheusRule.enabled -}}
+{{- $svc := printf "%s-metrics" (include "simple-unconference.fullname" .) -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "simple-unconference.fullname" . }}
+  labels:
+    {{- include "simple-unconference.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: simple-unconference.health
+      rules:
+        - alert: SimpleUnconferenceScrapeDown
+          expr: up{service="{{ $svc }}"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "simple-unconference /metrics is unreachable"
+            description: "Prometheus has failed to scrape {{ $svc }} for >2m. The app may be down or the metrics port is unreachable."
+
+        - alert: SimpleUnconferenceNoWorkers
+          expr: app_workers_total{service="{{ $svc }}"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "simple-unconference has zero healthy workers"
+            description: "/metrics is responding but no worker has sent a fresh snapshot in the past stale-threshold window. The app is up but not serving."
+
+        - alert: SimpleUnconferenceWorkerStale
+          expr: app_workers_stale_total{service="{{ $svc }}"} > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "simple-unconference has {{`{{ $value }}`}} stale worker(s)"
+            description: "A worker process reported in the past but stopped pushing snapshots — likely wedged or crashed without the launcher restarting it."
+
+        - alert: SimpleUnconferenceGlobalMetricsStale
+          expr: app_metrics_global_stale{service="{{ $svc }}"} == 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "simple-unconference global metrics are stale"
+            description: "DB-derived counts (users, conferences, chat, storage) are coming from a stale worker snapshot. Dashboards built on these series are showing outdated numbers."
+
+    - name: simple-unconference.storage
+      rules:
+        - alert: SimpleUnconferenceStorageLow
+          expr: |
+            (storage_pvc_free_bytes{service="{{ $svc }}"}
+              / storage_pvc_total_bytes{service="{{ $svc }}"}) < 0.15
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "simple-unconference data volume <15% free"
+            description: "{{`{{ $value | humanizePercentage }}`}} free on the data PVC. Plan to expand the PVC before it fills."
+
+        - alert: SimpleUnconferenceStorageCritical
+          expr: |
+            (storage_pvc_free_bytes{service="{{ $svc }}"}
+              / storage_pvc_total_bytes{service="{{ $svc }}"}) < 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "simple-unconference data volume <5% free"
+            description: "{{`{{ $value | humanizePercentage }}`}} free on the data PVC. SQLite writes will start failing once the volume fills."
+
+    - name: simple-unconference.moderation
+      rules:
+        - alert: SimpleUnconferenceChatReportsBacklog
+          expr: chat_reports_open_total{service="{{ $svc }}"} > {{ .Values.metrics.prometheusRule.chatReportsBacklogThreshold | default 10 }}
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "simple-unconference has {{`{{ $value }}`}} unresolved chat reports"
+            description: "Chat reports have been sitting unresolved for >1h. Moderation queue may need attention."
+{{- end }}

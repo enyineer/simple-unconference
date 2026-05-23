@@ -1,0 +1,22 @@
+{{- if and .Values.metrics .Values.metrics.enabled .Values.metrics.dashboard .Values.metrics.dashboard.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "simple-unconference.fullname" . }}-dashboard
+  {{- with .Values.metrics.dashboard.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "simple-unconference.labels" . | nindent 4 }}
+    {{ .Values.metrics.dashboard.label | default "grafana_dashboard" }}: {{ .Values.metrics.dashboard.labelValue | default "1" | quote }}
+    {{- with .Values.metrics.dashboard.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.metrics.dashboard.folder }}
+  annotations:
+    grafana_folder: {{ . | quote }}
+  {{- end }}
+data:
+  simple-unconference.json: |-
+{{ .Files.Get "dashboards/simple-unconference.json" | indent 4 }}
+{{- end }}
