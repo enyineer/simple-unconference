@@ -36,13 +36,13 @@ export function StaticBody({
   const unassignedRooms = rooms.filter((r) => !trackByRoomId.has(r.id));
 
   if (rooms.length === 0) {
-    return <Text muted>Add a room before assigning tracks.</Text>;
+    return <Text muted>Add a room before scheduling sessions.</Text>;
   }
 
   return (
     <Stack gap="condensed">
       {assignedRooms.length === 0 && !isMod && (
-        <Text muted>No tracks scheduled yet.</Text>
+        <Text muted>No sessions scheduled yet.</Text>
       )}
       {assignedRooms.map((r) => (
         <TrackEditor
@@ -140,11 +140,11 @@ export function AddTrackPicker({
         fontSize: 13,
       }}
     >
-      <span style={{ fontWeight: 500 }}>+ Add track</span>
+      <span style={{ fontWeight: 500 }}>+ Schedule a session</span>
       <Button size="small" variant="primary" onClick={() => setAutoMode(true)}>
         Auto-assign room
       </Button>
-      <span style={{ opacity: 0.7 }}>or pin to room:</span>
+      <span style={{ opacity: 0.7 }}>or reserve a room:</span>
       {unassignedRooms.map((r) => (
         <Button key={r.id} size="small" onClick={() => setPickedRoomId(r.id)}>
           {r.name}
@@ -193,12 +193,12 @@ export function AutoRoomPicker({
         switch (r.reason) {
           case "pin_room_taken":
             toast.error(
-              `${title} is pinned to ${r.pinned_room?.name ?? "a room"}, but that room is already in use here.`,
+              `${title} is reserved for ${r.pinned_room?.name ?? "a room"}, but that room is already in use here.`,
             );
             break;
           case "pin_room_out_of_scope":
             toast.error(
-              `${title} is pinned to ${r.pinned_room?.name ?? "a room"}, which is not in this slot's room set.`,
+              `${title} is reserved for ${r.pinned_room?.name ?? "a room"}, which is not in this slot's room set.`,
             );
             break;
           case "unsatisfiable_requirements": {
@@ -216,7 +216,7 @@ export function AutoRoomPicker({
           }
           case "no_free_room":
             toast.error(
-              `Every room in this slot is already taken. Clear a track first to free one up.`,
+              `Every room in this slot is already taken. Remove a session from a room first to free one up.`,
             );
             break;
         }
@@ -235,9 +235,9 @@ export function AutoRoomPicker({
     <Card title="Auto-assign room">
       <Stack gap="condensed">
         <Text muted>
-          Pick the session; the server places it in the best available room
-          (the session&apos;s pinned room if set, otherwise the largest free
-          room whose tags match the session&apos;s requirements).
+          Pick the session; the app places it in the best available room
+          (the session&apos;s reserved room if it has one, otherwise the
+          largest free room whose tags match the session&apos;s requirements).
         </Text>
         <SearchableSelect
           label="Session"
@@ -352,7 +352,7 @@ export function TrackEditor({
       });
       setEditing(false);
       await onChange();
-      toast.success(track ? `Updated track in ${room.name}.` : `Set track in ${room.name}.`);
+      toast.success(track ? `Updated the session in ${room.name}.` : `Scheduled a session in ${room.name}.`);
     } catch (e) {
       toast.error(errorCode(e));
     } finally {
@@ -361,10 +361,10 @@ export function TrackEditor({
   }
 
   async function clear() {
-    if (!confirm(`Clear track in ${room.name}?`)) return;
+    if (!confirm(`Remove this session from ${room.name}?`)) return;
     try {
       await api.agenda.clearTrack({ slug, slot_id: slot.id, room_id: room.id });
-      toast.success(`Cleared track in ${room.name}.`);
+      toast.success(`Removed the session from ${room.name}.`);
     } catch (e) {
       toast.error(errorCode(e));
       return;
@@ -379,7 +379,7 @@ export function TrackEditor({
     return (
       <>
         {requirementsConfirm.modal}
-        <Card title={`Edit track — ${room.name}`}>
+        <Card title={`Edit this talk — ${room.name}`}>
           <Stack gap="condensed">
             <SearchableSelect
               label="Session"
@@ -446,7 +446,7 @@ export function TrackEditor({
               </Button>
               {track && (
                 <Button variant="danger" onClick={clear} disabled={busy}>
-                  Clear
+                  Remove from room
                 </Button>
               )}
             </Stack>
@@ -585,7 +585,7 @@ export function TrackEditor({
                 setEditing(true);
               }}
             >
-              {track ? "Edit" : "Set track"}
+              {track ? "Edit this talk" : "Schedule a session"}
             </Button>
           )}
         </div>
@@ -619,7 +619,7 @@ export function TrackEditor({
                 color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
               }}
             >
-              No track scheduled
+              No session scheduled
             </div>
           )}
           {track?.speakers && (

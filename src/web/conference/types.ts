@@ -107,6 +107,9 @@ export interface AgendaData {
     attendee_count: number;
     star_count: number;
     room_capacity: number;
+    /** True when a moderator placed this session by hand; false when the
+     *  per-slot star-ranked auto-fill created it. */
+    manual: boolean;
   }[];
   /** For mixer slots: per-room headcount after assignment. Privacy-safe
    * aggregate (no user identities). */

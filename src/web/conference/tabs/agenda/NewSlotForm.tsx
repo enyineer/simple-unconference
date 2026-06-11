@@ -10,7 +10,10 @@ import {
 import { useToast } from "../../../design-system/hooks";
 import { api, errorCode } from "../../../api";
 import { Tip } from "../../ui/Tip";
-import { SLOT_KIND_TIP, type SlotKind } from "./types";
+import { AssignmentRulesTrigger } from "../../ui/AssignmentRulesModal";
+import { SLOT_TYPE_DETAIL } from "../../ui/agendaGuide";
+import { SlotTypeChooser } from "./SlotTypeChooser";
+import { type SlotKind } from "./types";
 
 export function NewSlotForm({
   slug,
@@ -25,7 +28,7 @@ export function NewSlotForm({
   onCancel: () => void;
   onCreated: () => Promise<void>;
 }) {
-  const [type, setType] = useState<SlotKind>("unconference");
+  const [type, setType] = useState<SlotKind>("normal");
   const [title, setTitle] = useState("");
   const [startsAt, setStartsAt] = useState<number>(
     () => Date.now() + 60 * 60 * 1000,
@@ -68,25 +71,32 @@ export function NewSlotForm({
   return (
     <Stack gap="condensed">
       <Form onSubmit={submit}>
-        <Select
-          label="Type"
-          value={type}
-          onChange={(e) => setType(e.target.value as SlotKind)}
-          options={[
-            {
-              value: "normal",
-              label: "Planned (keynote, talks — admin picks tracks)",
-            },
-            {
-              value: "unconference",
-              label: "Unconference (auto-assigned by stars)",
-            },
-            { value: "mixer", label: "Mixer (everyone split across rooms)" },
-          ]}
-        />
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            flexWrap: "wrap",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <span
+            style={{
+              fontSize: 13,
+              fontWeight: 600,
+              color: "var(--fgColor-default, var(--uncon-fg, inherit))",
+            }}
+          >
+            What kind of slot is this?
+          </span>
+          <AssignmentRulesTrigger isMod label="How do slot types work?" />
+        </div>
+        {/* Selectable cards (one per slot type) replace the bare <Select> so a
+            non-technical mod can pick by reading "what it is" + "use it when".*/}
+        <SlotTypeChooser value={type} onChange={setType} />
         {/* Type-specific guidance — explains how the chosen slot kind will
             behave once it's created, without burying it three lines deep. */}
-        <Tip>{SLOT_KIND_TIP[type]}</Tip>
+        <Tip>{SLOT_TYPE_DETAIL[type]}</Tip>
         {type === "mixer" && (
           <Select
             label="Mixing mode"

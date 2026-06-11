@@ -2,9 +2,17 @@
 // AssignmentRulesModal
 //
 // Single source of truth for the plain-language explanation of how the
-// unconference / mixer assignment algorithm works. Surfaced via a "?" link
-// next to "Run assignment" in the slot detail, and via a "How assignment
-// works" link in the Agenda tab header.
+// unconference / mixer assignment algorithm works. Surfaced via a help link
+// next to "Auto-fill this slot from stars" in the slot detail, and via a
+// "How it works" link in the Agenda tab header.
+//
+// LAYOUT: The modal leads with a non-technical "Start here" summary (the 4
+// BUILD_STEPS + the two-step ASSIGN_STEPS framing, imported from
+// `agendaGuide.ts`). Everything below it is the deep mechanics, tucked into
+// collapsible `<Disclosure>` sections so power users keep every rule but a
+// first-time moderator isn't buried. A `<Glossary>` disclosure sits at the
+// end. The plain-language copy (BUILD_STEPS / ASSIGN_STEPS / GLOSSARY) lives
+// in `agendaGuide.ts` — never duplicate those strings here.
 //
 // MAINTENANCE: This component MUST stay in sync with the actual algorithm.
 // When you change anything in:
@@ -13,12 +21,17 @@
 //                                 the route layer applies pin/tag matching,
 //                                 overlap rules, cascade analysis, finished
 //                                 filter, manual picks)
-// ...update the matching section below. Each `<Rule>` is grouped under the
+// ...update the matching disclosure below. Each `<Rule>` is grouped under the
 // stage it belongs to so the document mirrors the algorithm's structure.
+// Disclosure order (mirrors the algorithm): star meaning → which sessions get
+// a room (01) → which room (02) → placing people (03) → overlap (04) →
+// repeats (05) → planned tracks → what blocks a run (06, mod) → mixers (07) →
+// authoring (mod) → whole-agenda assign → re-running → glossary.
 // =============================================================================
 
 import { useState } from "react";
-import { Badge, Button, Sheet, Stack, Text } from "../../design-system";
+import { Badge, Button, Sheet, Text } from "../../design-system";
+import { ASSIGN_STEPS, BUILD_STEPS, GLOSSARY } from "./agendaGuide";
 
 export function AssignmentRulesModal({
   open, onClose, isMod,
@@ -41,12 +54,17 @@ export function AssignmentRulesModal({
           paddingTop: 4,
         }}
       >
-        <Text muted>
-          When a moderator runs an unconference or mixer slot, the system
-          decides which sessions go where and which participants attend
-          which session. Here&apos;s exactly what it does, in order.
-        </Text>
+        <StartHere />
 
+        <div style={{ fontSize: 13 }}>
+          <Text muted>
+            The rest is the detail. Open a section when you want to know exactly
+            what the app does, in order — you don&apos;t need to read it to get
+            started.
+          </Text>
+        </div>
+
+        <Disclosure summary="What does “star” mean?" defaultOpen>
         <Section title="What does “star” mean?">
           <Rule>
             <strong>Star = “I want this on my schedule.”</strong> One
@@ -80,7 +98,9 @@ export function AssignmentRulesModal({
             <em>which</em> sessions <em>you</em> personally starred.
           </Rule>
         </Section>
+        </Disclosure>
 
+        <Disclosure summary="Which sessions get a room">
         <Section index={1} title="Which sessions get a room">
           <Rule>
             Sessions are ranked by <strong>star count</strong> — how many
@@ -102,7 +122,9 @@ export function AssignmentRulesModal({
             available rooms in this slot&apos;s scope.
           </Rule>
         </Section>
+        </Disclosure>
 
+        <Disclosure summary="Which room each session gets">
         <Section index={2} title="Which room each session gets">
           <Rule>
             <strong>By default</strong>, the most-starred session takes
@@ -118,17 +140,20 @@ export function AssignmentRulesModal({
           </Rule>
           {isMod && (
             <Rule modOnly>
-              <strong>Pins</strong> override everything else. A mod can
-              pin a session to a specific room from the Sessions tab; the
-              pinned room is reserved regardless of stars or features.
+              <strong>Reserving a room</strong> overrides everything else. A
+              mod can reserve a specific room for a session from the Sessions
+              tab (also called pinning); that room is held for it regardless
+              of stars or features.
             </Rule>
           )}
           <Rule>
-            Pins beat required features. Required features beat default
-            star ranking.
+            A reserved room beats required features. Required features beat
+            default star ranking.
           </Rule>
         </Section>
+        </Disclosure>
 
+        <Disclosure summary="How participants are placed">
         <Section index={3} title="How participants are placed">
           <Rule>
             Each participant is assigned to one of <strong>their starred
@@ -152,7 +177,9 @@ export function AssignmentRulesModal({
             listed as <em>unplaced</em> until you pick one.
           </Rule>
         </Section>
+        </Disclosure>
 
+        <Disclosure summary="Avoiding double-bookings">
         <Section index={4} title="Avoiding double-bookings">
           <Rule>
             <strong>Same room:</strong> a room booked by an overlapping
@@ -184,7 +211,9 @@ export function AssignmentRulesModal({
             the algorithm correctly worked around.
           </Rule>
         </Section>
+        </Disclosure>
 
+        <Disclosure summary="Avoiding repeated sessions">
         <Section index={5} title="Avoiding repeated sessions">
           <Rule>
             When a slot has <em>avoid repeats</em> enabled, the system
@@ -196,7 +225,9 @@ export function AssignmentRulesModal({
             always wins.
           </Rule>
         </Section>
+        </Disclosure>
 
+        <Disclosure summary="Planned tracks &amp; soft capacity">
         <Section title="Planned tracks &amp; soft capacity">
           <Rule>
             Planned tracks come from the moderator-built schedule rather
@@ -230,8 +261,10 @@ export function AssignmentRulesModal({
             </Rule>
           )}
         </Section>
+        </Disclosure>
 
         {isMod && (
+          <Disclosure summary="What blocks a run" modOnly>
           <Section index={6} title="What blocks a run" modOnly>
             <Rule modOnly>
               <strong>Two pinned sessions for the same room.</strong> One
@@ -259,8 +292,10 @@ export function AssignmentRulesModal({
               conflicts, you can also move or clear the pin in place.
             </Rule>
           </Section>
+          </Disclosure>
         )}
 
+        <Disclosure summary="Mixer slots">
         <Section index={7} title="Mixer slots">
           <Rule>
             Mixers have no sessions — every participant is shuffled into
@@ -275,7 +310,55 @@ export function AssignmentRulesModal({
             taken by an overlapping slot is excluded.
           </Rule>
         </Section>
+        </Disclosure>
 
+        {isMod && (
+          <Disclosure summary="Authoring sessions onto the agenda" modOnly>
+          <Section title="Authoring sessions onto the agenda" modOnly>
+            <Rule modOnly>
+              On an unconference slot you can <strong>place a session into a
+              specific room</strong> yourself (or let the server auto-pick the
+              largest free room). Placing the same session on several slots is
+              how you build a <em>recurring</em> session that runs more than
+              once.
+            </Rule>
+            <Rule modOnly>
+              Placements you author are kept — re-running a single slot&apos;s
+              auto-assignment won&apos;t wipe them. <em>Remove</em> a placement to
+              take that session out of the slot.
+            </Rule>
+          </Section>
+          </Disclosure>
+        )}
+
+        <Disclosure summary="Assigning attendees across the whole agenda">
+        <Section title="Assigning attendees across the whole agenda">
+          <Rule>
+            <strong>Assign attendees</strong> (in the Agenda header) routes
+            everyone across <em>all</em> unconference sessions at once, rather
+            than one slot at a time. Because it sees the whole agenda, it can
+            make smarter choices a single-slot run can&apos;t.
+          </Rule>
+          <Rule>
+            <strong>Split across repeats.</strong> When a session runs more
+            than once, its starrers are spread evenly across the occurrences
+            instead of everyone piling into the first one.
+          </Rule>
+          <Rule>
+            <strong>Look-ahead.</strong> If you starred two sessions in the
+            same time and one of them also runs later, you&apos;ll be sent to the
+            one that <em>doesn&apos;t</em> repeat now and caught up with the
+            other one at its later showing — so you don&apos;t miss either.
+          </Rule>
+          <Rule>
+            The hard rules still hold: never two sessions at once, never over a
+            room&apos;s capacity, never the same session twice, and your manual
+            picks and hosting duties are always respected.
+          </Rule>
+        </Section>
+        </Disclosure>
+
+        <Disclosure summary="Re-running">
         <Section title="Re-running">
           <Rule>
             A moderator can re-run the assignment at any time. Manual
@@ -288,6 +371,11 @@ export function AssignmentRulesModal({
             on re-run (mixer slots use a stable per-slot seed).
           </Rule>
         </Section>
+        </Disclosure>
+
+        <Disclosure summary="Glossary">
+          <Glossary />
+        </Disclosure>
 
         <div style={{
           paddingTop: 8,
@@ -300,10 +388,13 @@ export function AssignmentRulesModal({
   );
 }
 
-// Trigger for the assignment-rules modal. Renders as a quiet, inline help
-// link — circular `?` glyph plus optional label. Use this everywhere the
-// user needs quick access to the rules (slot detail, Agenda header, etc.)
-// without it competing visually with primary actions.
+// Trigger for the assignment-rules modal. Two shapes share one component:
+//   - Compact (no `label`): a quiet circular `?` button, for sitting next to a
+//     primary action (slot detail) where it must not compete.
+//   - Labeled (`label` passed): a clearly discoverable help affordance — an
+//     accent-colored "? <label>" link/pill — for headers and empty states
+//     where the moderator should actually notice "How assignment works".
+// Both open the same modal.
 export function AssignmentRulesTrigger({
   isMod, label,
 }: {
@@ -313,6 +404,25 @@ export function AssignmentRulesTrigger({
 }) {
   // Local state is fine — multiple triggers each own their own modal.
   const [open, setOpen] = useState(false);
+
+  // Accent tokens for the labeled (discoverable) variant; muted tokens for the
+  // compact one. Centralized so hover handlers and base style stay in sync.
+  const baseColor = label
+    ? "var(--fgColor-accent, var(--uncon-primary, #2563eb))"
+    : "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
+  const baseBorder = label
+    ? "var(--borderColor-accent-muted, var(--uncon-primary, #2563eb))"
+    : "var(--borderColor-muted, var(--uncon-border-muted, #d0d7de))";
+  const hoverColor = label
+    ? "var(--fgColor-accent, var(--uncon-primary, #2563eb))"
+    : "var(--fgColor-default, inherit)";
+  const hoverBorder = label
+    ? "var(--borderColor-accent-emphasis, var(--uncon-primary, #2563eb))"
+    : "var(--borderColor-default, var(--uncon-border, #afb8c1))";
+  const hoverBg = label
+    ? "var(--bgColor-accent-muted, var(--uncon-bg-subtle, rgba(37,99,235,0.08)))"
+    : "var(--bgColor-muted, var(--uncon-bg-subtle, rgba(0,0,0,0.04)))";
+
   return (
     <>
       <button
@@ -329,9 +439,9 @@ export function AssignmentRulesTrigger({
           minWidth: 28,
           padding: label ? "0 12px" : 0,
           borderRadius: 999,
-          border: "1px solid var(--borderColor-muted, var(--uncon-border-muted, #d0d7de))",
+          border: `1px solid ${baseBorder}`,
           background: "transparent",
-          color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
+          color: baseColor,
           fontSize: 12,
           fontWeight: 600,
           lineHeight: 1,
@@ -339,25 +449,31 @@ export function AssignmentRulesTrigger({
           transition: "color .15s ease, border-color .15s ease, background .15s ease",
         }}
         onMouseEnter={(e) => {
-          e.currentTarget.style.color = "var(--fgColor-default, inherit)";
-          e.currentTarget.style.borderColor = "var(--borderColor-default, var(--uncon-border, #afb8c1))";
-          e.currentTarget.style.background = "var(--bgColor-muted, var(--uncon-bg-subtle, rgba(0,0,0,0.04)))";
+          e.currentTarget.style.color = hoverColor;
+          e.currentTarget.style.borderColor = hoverBorder;
+          e.currentTarget.style.background = hoverBg;
         }}
         onMouseLeave={(e) => {
-          e.currentTarget.style.color = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
-          e.currentTarget.style.borderColor = "var(--borderColor-muted, var(--uncon-border-muted, #d0d7de))";
+          e.currentTarget.style.color = baseColor;
+          e.currentTarget.style.borderColor = baseBorder;
           e.currentTarget.style.background = "transparent";
         }}
       >
         <span
           aria-hidden
           style={{
-            display: "inline-block",
-            fontSize: 14,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 14,
+            height: 14,
+            borderRadius: 999,
+            border: label ? "1.25px solid currentColor" : "none",
+            fontSize: label ? 10 : 14,
             fontWeight: 700,
             lineHeight: 1,
-            // Slight optical alignment for the `?` glyph.
-            transform: "translateY(-0.5px)",
+            // Slight optical alignment for the bare `?` glyph.
+            transform: label ? undefined : "translateY(-0.5px)",
           }}
         >
           ?
@@ -381,42 +497,26 @@ export function AssignmentRulesTrigger({
 // Section header: small kicker label ("Step 01") + title + optional Moderator
 // pill. Underlined with a thin divider so each block is visually distinct
 // without resorting to colored borders or heavy backgrounds.
+// Content wrapper for the rules inside a Disclosure. The enclosing
+// `<Disclosure summary=… modOnly=…>` owns the heading + Moderator badge (and,
+// for the legacy non-collapsible callers, supplied the step kicker) — so this
+// just lays the `<Rule>` list out. `title`/`index`/`modOnly` are accepted for
+// call-site compatibility but intentionally not rendered here, to avoid
+// duplicating the heading the Disclosure already shows.
 function Section({
-  title, children, modOnly, index,
+  children,
 }: {
   title: string;
   children: React.ReactNode;
   modOnly?: boolean;
-  /** Optional step number rendered as a small kicker above the title. */
   index?: number;
 }) {
-  const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
   return (
-    <div style={{ paddingTop: 4 }}>
-      {index !== undefined && (
-        <div style={{
-          fontSize: 10, letterSpacing: 1.2, textTransform: "uppercase",
-          fontWeight: 700, color: muted, marginBottom: 4,
-        }}>
-          Step {String(index).padStart(2, "0")}
-        </div>
-      )}
-      <Stack direction="row" gap="condensed" align="center">
-        <div style={{
-          fontSize: 16, fontWeight: 600, lineHeight: 1.3,
-          letterSpacing: -0.1,
-        }}>
-          {title}
-        </div>
-        {modOnly && <Badge variant="attention">Moderator</Badge>}
-      </Stack>
-      <div style={{
-        marginTop: 10, paddingTop: 10,
-        borderTop: "1px solid var(--borderColor-muted, var(--uncon-border-muted, #e5e7eb))",
-        display: "flex", flexDirection: "column", gap: 8,
-      }}>
-        {children}
-      </div>
+    <div style={{
+      paddingTop: 2,
+      display: "flex", flexDirection: "column", gap: 8,
+    }}>
+      {children}
     </div>
   );
 }
@@ -468,5 +568,184 @@ function Rule({
         </span>
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// "Start here" — the first thing a non-technical moderator reads. A boxed
+// summary that pairs the 4-step build path (BUILD_STEPS) with the two-step
+// assignment framing (ASSIGN_STEPS). Copy is owned by agendaGuide.ts; this
+// only lays it out.
+// ---------------------------------------------------------------------------
+function StartHere() {
+  const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
+  return (
+    <div
+      style={{
+        borderRadius: 8,
+        border: "1px solid var(--borderColor-muted, var(--uncon-border-muted, #d0d7de))",
+        background: "var(--bgColor-muted, var(--uncon-bg-subtle, rgba(0,0,0,0.025)))",
+        padding: 16,
+        display: "flex",
+        flexDirection: "column",
+        gap: 14,
+      }}
+    >
+      <div>
+        <div style={{
+          fontSize: 10, letterSpacing: 1.2, textTransform: "uppercase",
+          fontWeight: 700, color: "var(--fgColor-accent, var(--uncon-primary, #2563eb))",
+          marginBottom: 4,
+        }}>
+          Start here
+        </div>
+        <div style={{ fontSize: 15, fontWeight: 600, lineHeight: 1.3 }}>
+          From an empty conference to a running agenda
+        </div>
+        <div style={{ marginTop: 4, fontSize: 13, color: muted, lineHeight: 1.5 }}>
+          Four steps, in order. Each one unlocks the next.
+        </div>
+      </div>
+
+      <ol style={{
+        listStyle: "none", margin: 0, padding: 0,
+        display: "flex", flexDirection: "column", gap: 10,
+      }}>
+        {BUILD_STEPS.map((step, i) => (
+          <li key={step.key} style={{ display: "flex", gap: 10 }}>
+            <span
+              aria-hidden
+              style={{
+                flexShrink: 0,
+                width: 22, height: 22,
+                borderRadius: 999,
+                display: "inline-flex",
+                alignItems: "center", justifyContent: "center",
+                fontSize: 12, fontWeight: 700,
+                background: "var(--bgColor-accent-muted, var(--uncon-bg-subtle, rgba(37,99,235,0.1)))",
+                color: "var(--fgColor-accent, var(--uncon-primary, #2563eb))",
+              }}
+            >
+              {i + 1}
+            </span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>
+                {step.title}
+              </div>
+              <div style={{ fontSize: 12, color: muted, lineHeight: 1.5 }}>
+                {step.blurb}
+              </div>
+            </div>
+          </li>
+        ))}
+      </ol>
+
+      <div style={{
+        paddingTop: 12,
+        borderTop: "1px solid var(--borderColor-muted, var(--uncon-border-muted, #e5e7eb))",
+        display: "flex", flexDirection: "column", gap: 10,
+      }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>
+          That last step is two moves
+        </div>
+        {[ASSIGN_STEPS.place, ASSIGN_STEPS.assign].map((s) => (
+          <div key={s.title} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>{s.title}</div>
+            <div style={{ fontSize: 12, color: muted, lineHeight: 1.5 }}>{s.blurb}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Disclosure — a styled native <details>/<summary>. Keeps every deep rule in
+// the document but collapsed by default so the modal isn't a wall of text.
+// `modOnly` adds the same "Moderator" pill the Section header uses.
+// ---------------------------------------------------------------------------
+function Disclosure({
+  summary, children, modOnly, defaultOpen,
+}: {
+  summary: string;
+  children: React.ReactNode;
+  modOnly?: boolean;
+  defaultOpen?: boolean;
+}) {
+  const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
+  // Track open state so the chevron can rotate — native <details> doesn't let
+  // us style the marker from inline styles alone. `defaultOpen` still seeds the
+  // element's own `open` attribute so it works even before any toggle event.
+  const [open, setOpen] = useState(defaultOpen ?? false);
+  return (
+    <details
+      open={defaultOpen}
+      onToggle={(e) => setOpen(e.currentTarget.open)}
+      style={{
+        borderRadius: 8,
+        border: "1px solid var(--borderColor-muted, var(--uncon-border-muted, #e5e7eb))",
+        background: "var(--bgColor-default, var(--uncon-bg, transparent))",
+      }}
+    >
+      <summary
+        style={{
+          listStyle: "none",
+          cursor: "pointer",
+          padding: "12px 14px",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 14,
+          fontWeight: 600,
+          lineHeight: 1.3,
+          userSelect: "none",
+        }}
+      >
+        <span
+          aria-hidden
+          style={{
+            flexShrink: 0,
+            color: muted,
+            fontSize: 11,
+            transition: "transform .15s ease",
+            transform: open ? "rotate(90deg)" : "rotate(0deg)",
+          }}
+        >
+          ▸
+        </span>
+        {/* dangerouslySetInnerHTML avoided — the summary strings here may carry
+            an HTML entity ("&amp;"); decode it for plain text rendering. */}
+        <span style={{ flex: 1 }}>{summary.replace(/&amp;/g, "&")}</span>
+        {modOnly && <Badge variant="attention">Moderator</Badge>}
+      </summary>
+      <div style={{ padding: "0 14px 14px" }}>
+        {children}
+      </div>
+    </details>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Glossary — renders the shared GLOSSARY term/definition list. Plain dl so the
+// term/definition relationship is semantic.
+// ---------------------------------------------------------------------------
+function Glossary() {
+  const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
+  return (
+    <dl style={{
+      margin: 0,
+      display: "flex",
+      flexDirection: "column",
+      gap: 10,
+    }}>
+      {GLOSSARY.map((g) => (
+        <div key={g.term} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <dt style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>{g.term}</dt>
+          <dd style={{ margin: 0, fontSize: 13, color: muted, lineHeight: 1.5 }}>
+            {g.definition}
+          </dd>
+        </div>
+      ))}
+    </dl>
   );
 }

@@ -114,7 +114,7 @@ export function SlotConfigure({
         {!isMixer && (
           <Stack gap="condensed">
             <Text>
-              <strong>Eligible submissions</strong>
+              <strong>Eligible sessions</strong>
             </Text>
             <Stack direction="row" gap="condensed">
               <Button
@@ -129,7 +129,7 @@ export function SlotConfigure({
                 variant={!useAllSubs ? "primary" : "default"}
                 onClick={() => setUseAllSubs(false)}
               >
-                Select submissions
+                Select sessions
               </Button>
             </Stack>
             {!useAllSubs && (
@@ -145,7 +145,7 @@ export function SlotConfigure({
                   </Button>
                 ))}
                 {subs.length === 0 && (
-                  <Text muted>No published submissions yet.</Text>
+                  <Text muted>No published sessions yet.</Text>
                 )}
               </Stack>
             )}

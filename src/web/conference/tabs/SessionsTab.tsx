@@ -12,6 +12,7 @@ import { useToast } from "../../design-system/hooks";
 import type { Participant, Role, Room, Submission } from "../types";
 import { EmptyState } from "../ui/EmptyState";
 import { Pager } from "../ui/Pager";
+import { Tip } from "../ui/Tip";
 import { useRequirementsConfirm } from "../ui/RequirementsConfirm";
 import { usePaginatedList } from "../usePaginatedList";
 import type { SessionFilter } from "./sessions/types";
@@ -231,6 +232,13 @@ export function SessionsTab({
         </Banner>
       )}
 
+      {isMod && !participantSubmissionsEnabled && (
+        <Tip>
+          Attendees can&apos;t submit their own sessions right now. Turn on
+          participant submissions in Settings for a crowd-sourced unconference.
+        </Tip>
+      )}
+
       {!isMod && maxSessionsPerUser !== null && participantSubmissionsEnabled && (
         <MySessionQuotaHint current={mySessionCount} limit={maxSessionsPerUser} />
       )}
@@ -308,7 +316,9 @@ export function SessionsTab({
               ? "No sessions match your filters."
               : isMod && filter !== "all"
                 ? `No sessions with status "${filter}".`
-                : "No sessions yet. Be the first to submit one."
+                : isMod
+                  ? "No sessions yet. Add a few rooms first, then create a session here — publish it so it can be scheduled or starred. (You can also let attendees submit their own from Settings.)"
+                  : "No sessions yet. Be the first to submit one."
           }
           action={
             anyFilterActive ? (

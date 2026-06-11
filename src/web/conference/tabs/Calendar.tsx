@@ -95,9 +95,9 @@ export function CalendarLegend({ children }: { children?: ReactNode }) {
       display: "flex", flexWrap: "wrap", gap: 16,
       fontSize: 12, color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
     }}>
-      <span><span style={{ display: "inline-block", width: 10, height: 10, marginRight: 6, background: "var(--borderColor-accent-emphasis, #0969da)", verticalAlign: "middle" }} /> unconference</span>
-      <span><span style={{ display: "inline-block", width: 10, height: 10, marginRight: 6, background: "var(--borderColor-success-emphasis, #1a7f37)", verticalAlign: "middle" }} /> mixer</span>
-      <span><span style={{ display: "inline-block", width: 10, height: 10, marginRight: 6, background: "var(--borderColor-neutral-emphasis, #6e7781)", verticalAlign: "middle" }} /> planned</span>
+      <span><span style={{ display: "inline-block", width: 10, height: 10, marginRight: 6, background: "var(--borderColor-neutral-emphasis, #6e7781)", verticalAlign: "middle" }} /> Planned</span>
+      <span><span style={{ display: "inline-block", width: 10, height: 10, marginRight: 6, background: "var(--borderColor-accent-emphasis, #0969da)", verticalAlign: "middle" }} /> Unconference</span>
+      <span><span style={{ display: "inline-block", width: 10, height: 10, marginRight: 6, background: "var(--borderColor-success-emphasis, #1a7f37)", verticalAlign: "middle" }} /> Mixer</span>
       {children}
     </div>
   );
