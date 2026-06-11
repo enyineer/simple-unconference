@@ -69,16 +69,20 @@ export function DuplicateSlotForm({
   return (
     <Stack gap="condensed">
       <Tip>
-        Linked offerings share their room pool, eligible sessions, and
-        assignment flags — edit any of those once on the series form and
-        every offering updates. Time, title, and description stay
-        per-instance.
+        <strong>Repeat this slot at another time.</strong> This makes a second
+        copy of the slot that runs at a time you choose. The copies are linked
+        as a series (each copy is called an &ldquo;offering&rdquo;).
       </Tip>
       <Tip>
-        <strong>Placement counts per offering.</strong> A session placed in
-        two offerings counts as two placements against its cap. If you want
-        the same session to run in every offering, lift its cap on the
-        Sessions tab first.
+        Linked offerings share their room pool, eligible sessions, and
+        assignment rules — edit any of those once on the series form and
+        every offering updates. Time, title, and description stay per-copy.
+      </Tip>
+      <Tip>
+        <strong>Each offering counts on its own.</strong> A session placed in
+        two offerings counts as two placements against its cap. If you want the
+        same session to run in every offering, lift its cap on the Sessions tab
+        first.
       </Tip>
       <Form onSubmit={submit}>
         <TextInput

@@ -284,6 +284,10 @@ export interface PlacementOut {
   /** Capacity of the assigned room, denormalized so the client can compute
    *  `star_count > room_capacity` without a join. */
   room_capacity: number;
+  /** True when a moderator placed this session by hand; false when the
+   *  per-slot star-ranked auto-fill created it. Lets the UI distinguish a
+   *  deliberate "placed by you" occurrence from a "by stars" one. */
+  manual: boolean;
 }
 export interface MixerPlacementOut {
   slot_id: number; room_id: number; attendee_count: number;
@@ -428,6 +432,17 @@ export type AssignResult =
       kind: "conflict";
       conflicts: PreAssignmentConflict[];
     };
+
+// Result of `agenda.assignAll`: the global attendee router routed participants
+// across every unconference slot's placements at once. `assigned` is the total
+// number of (user, session) seats filled; `unplaced_user_ids` are participants
+// who starred something but got no seat; `slot_ids` are the unconference slots
+// that were (re)computed.
+export interface AssignAllResult {
+  assigned: number;
+  unplaced_user_ids: number[];
+  slot_ids: number[];
+}
 
 // Result shape for `agenda.scheduleSubmission`. On success, returns the
 // auto-picked room (or the Submission's pinned room when set). On failure,

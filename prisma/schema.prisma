@@ -290,7 +290,7 @@ model Submission {
   createdAt    DateTime         @default(now()) @map("created_at")
 
   conference          Conference              @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
-  submitter           ConferenceIdentity      @relation(fields: [submitterId], references: [id])
+  submitter           ConferenceIdentity      @relation(fields: [submitterId], references: [id], onDelete: Cascade)
   preAssignedRoom     Room?                   @relation("SubmissionPreAssignedRoom", fields: [preAssignedRoomId], references: [id], onDelete: SetNull)
   stars               Star[]
   trackAssignments    TrackAssignment[]
@@ -581,11 +581,19 @@ model TrackRequirement {
   @@map("track_requirements")
 }
 
-// Output of the unconference assignment algorithm: which submission lives in which room.
+// Which submission lives in which room for a slot. Two authors:
+// - the per-slot assignment algorithm (auto, `manual = false`), and
+// - moderators hand-authoring the agenda (`manual = true`).
+// The global attendee router (`assignAgenda`) treats these as a FIXED
+// occurrence set: it reads them and never writes them. `manual = true`
+// rows are preserved by the per-slot auto-assign instead of being clobbered
+// (mirrors `UserAssignment.manual`).
 model UnconferencePlacement {
   slotId       Int @map("slot_id")
   submissionId Int @map("submission_id")
   roomId       Int @map("room_id")
+  // True when a moderator hand-placed this session (vs algorithm output).
+  manual       Boolean @default(false)
 
   slot       AgendaSlot @relation(fields: [slotId], references: [id], onDelete: Cascade)
   submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)

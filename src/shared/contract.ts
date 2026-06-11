@@ -41,6 +41,7 @@ import {
   SignupViaLinkSchema,
   SlotTypeSchema,
   ScheduleSubmissionSchema,
+  PlacementPinSchema,
   TrackAssignmentSchema,
   TransferOwnershipSchema,
   UpdateConferenceSchema,
@@ -71,6 +72,7 @@ import {
   type Page,
   type AgendaOut,
   type AssignResult,
+  type AssignAllResult,
   type CalendarOut,
   type ConfCreated,
   type ConfDetail,
@@ -327,6 +329,18 @@ export const contract = {
         exclude_submission_ids: v.optional(v.array(Id)),
       }))
       .output(type<AssignResult>()),
+    // Moderator authors an unconference occurrence: place a session into a
+    // slot + room. Room auto-picked when omitted. Conflicts come back as a
+    // `ScheduleSubmissionResult` (same shape as `scheduleSubmission`).
+    placeSubmission: oc
+      .input(v.object({ slug: Slug, slot_id: Id, ...PlacementPinSchema.entries }))
+      .output(type<ScheduleSubmissionResult>()),
+    unplaceSubmission: oc
+      .input(v.object({ slug: Slug, slot_id: Id, submission_id: Id }))
+      .output(type<Ok>()),
+    // Route attendees across the WHOLE agenda at once over the existing
+    // placements (writes only UserAssignment rows; never moves placements).
+    assignAll: oc.input(InConf).output(type<AssignAllResult>()),
     myAssignments: oc.input(InConf).output(type<MyAssignmentsOut>()),
     pickAssignment: oc
       .input(v.object({ slug: Slug, slot_id: Id, submission_id: Id }))

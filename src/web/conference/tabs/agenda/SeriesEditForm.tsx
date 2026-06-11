@@ -123,11 +123,35 @@ export function SeriesEditForm({
   return (
     <Card title={isMixer ? "Configure mixer series" : "Configure unconference series"}>
       <Stack gap="condensed">
-        <Tip>
-          Editing here applies to every linked offering ({series.slot_ids.length} total).
-          Per-instance fields (time, title, description) stay on each
-          offering via its own Edit form.
-        </Tip>
+        <div
+          style={{
+            display: "flex",
+            gap: 10,
+            alignItems: "flex-start",
+            padding: 12,
+            borderRadius: 8,
+            border:
+              "1px solid var(--borderColor-attention-emphasis, var(--uncon-border-muted, #d4a72c))",
+            background:
+              "var(--bgColor-attention-muted, rgba(212,167,44,0.18))",
+            color: "var(--fgColor-default, var(--uncon-fg, inherit))",
+            fontSize: 13,
+            lineHeight: "18px",
+          }}
+        >
+          <span aria-hidden style={{ fontSize: 16, lineHeight: "18px" }}>
+            ⚠
+          </span>
+          <span>
+            <strong>
+              Changes here apply to all {series.slot_ids.length} linked times.
+            </strong>{" "}
+            This is a series, so editing the rooms, eligible sessions, or
+            assignment rules below updates every time at once. Each time keeps
+            its own start, title, and description (edit those on its own Edit
+            form).
+          </span>
+        </div>
 
         <Stack gap="condensed">
           <Text><strong>Rooms</strong></Text>
@@ -166,7 +190,7 @@ export function SeriesEditForm({
 
         {!isMixer && (
           <Stack gap="condensed">
-            <Text><strong>Eligible submissions</strong></Text>
+            <Text><strong>Eligible sessions</strong></Text>
             <Stack direction="row" gap="condensed">
               <Button
                 size="small"
@@ -180,7 +204,7 @@ export function SeriesEditForm({
                 variant={!useAllSubs ? "primary" : "default"}
                 onClick={() => setUseAllSubs(false)}
               >
-                Select submissions
+                Select sessions
               </Button>
             </Stack>
             {!useAllSubs && (
@@ -195,7 +219,7 @@ export function SeriesEditForm({
                     {s.title}
                   </Button>
                 ))}
-                {subs.length === 0 && <Text muted>No published submissions yet.</Text>}
+                {subs.length === 0 && <Text muted>No published sessions yet.</Text>}
               </Stack>
             )}
           </Stack>

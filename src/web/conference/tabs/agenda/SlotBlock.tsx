@@ -45,7 +45,12 @@ export interface SlotBlockProps {
     attendee_count: number;
     star_count: number;
     room_capacity: number;
+    manual: boolean;
   }[];
+  /** Per-submission start times of OTHER slots the same session is placed in,
+   *  so each placement card can show an "also at HH:MM" recurrence hint.
+   *  Forwarded straight to `UnconferenceBody`. */
+  recurrenceTimes: Map<number, number[]>;
   isMod: boolean;
   timeZone: string;
   onChange: () => Promise<void>;
@@ -67,6 +72,7 @@ export function SlotBlock({
   subs,
   tracks,
   placements,
+  recurrenceTimes,
   isMod,
   timeZone,
   onChange,
@@ -334,12 +340,12 @@ export function SlotBlock({
                 </Button>
               )}
               <Button
-                variant="primary"
+                variant="default"
                 onClick={() => runAssignment()}
                 size="small"
                 disabled={runDisabledReason !== null}
               >
-                {isMixer ? "Assign rooms" : "Run assignment"}
+                {isMixer ? "Assign rooms" : "Auto-fill this slot from stars"}
               </Button>
               {runDisabledReason && (
                 <Text muted>
@@ -450,6 +456,8 @@ export function SlotBlock({
           subs={subs}
           rooms={rooms}
           placements={placements}
+          recurrenceTimes={recurrenceTimes}
+          timeZone={timeZone}
           onChange={onChange}
           isMod={isMod}
         />

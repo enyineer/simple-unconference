@@ -162,7 +162,31 @@ something the next session would need to know.
 - **Assignment algorithm is pure** ([src/server/assignment.ts](src/server/assignment.ts)).
   It takes plain data — `rooms`, `submissions`, `stars: Map<userId, Set<subId>>` —
   and is the most heavily tested piece (15 unit + 3 scale + integration). DB
-  wiring lives in `runAssignmentForSlot` in `routes/agenda.ts`.
+  wiring lives in `runAssignmentForSlot` in `rpc/agenda.ts`. This pure fn does
+  BOTH per-slot placement (which session → which room) AND user routing.
+- **Two assignment modes — don't confuse them:**
+  - *Per-slot* (`assignUnconferenceSlot` + `runAssignmentForSlot`, `agenda.assign`
+    RPC, "Run assignment" button): one slot, greedy, places sessions AND routes
+    users. Unchanged, still the most-tested module — never weaken its tests.
+  - *Whole-agenda* (`assignAgenda` in
+    [src/server/assignment-agenda.ts](src/server/assignment-agenda.ts) +
+    `runAssignmentForAgenda`, `agenda.assignAll` RPC, "Assign attendees"
+    header button): routes USERS across every slot at once over a FIXED
+    occurrence set (`UnconferencePlacement` rows), writing ONLY `UserAssignment`
+    — it never creates/moves placements. Gets cross-slot lookahead + even split
+    of a recurring session's starrers across its occurrences. It's an integer
+    min-cost flow (Dijkstra + Johnson potentials); a moderator BATCH action, not
+    a hot path (~seconds at conference scale). The ≤1-per-band gate is the LAST
+    per-user node (band-faithful) so it can't double-book; per-submission-once
+    is enforced upstream + a deterministic dedup so a user is never shown the
+    same session twice. The full ≤1/band + ≤1/sub + capacity problem is
+    NP-hard (multi-commodity), so it's a high-quality deterministic heuristic,
+    not provably optimal at scale — bounded re-solve rounds keep it fast.
+- **Placement authoring:** mods author the occurrence set via
+  `agenda.placeSubmission` / `unplaceSubmission` (UI: `PlacementAuthor` in the
+  unconference slot body). `UnconferencePlacement.manual=true` marks
+  mod-authored placements so the per-slot auto-assign preserves them
+  (`placementWriteOps` deletes only `manual:false`).
 - **Per-slot unconference scope:** an `AgendaSlot` has
   `unconfUseAllRooms` / `unconfUseAllSubmissions` flags + `SlotRoom` /
   `SlotSubmission` join tables. The assignment respects these so a slot can

@@ -55,6 +55,17 @@ export const ScheduleSubmissionSchema = v.object({
 });
 export type ScheduleSubmissionInput = v.InferOutput<typeof ScheduleSubmissionSchema>;
 
+// `agenda.placeSubmission`: moderator authors an unconference occurrence —
+// a session running in a specific slot + room. `room_id` is optional; when
+// omitted the server auto-picks (honoring the submission's pin / room
+// requirements / largest free room, like `scheduleSubmission`). The global
+// attendee router then assigns participants over these placements.
+export const PlacementPinSchema = v.object({
+  submission_id: PosInt,
+  room_id: v.optional(PosInt),
+});
+export type PlacementPinInput = v.InferOutput<typeof PlacementPinSchema>;
+
 // PATCH /agenda/:id — moderators can tweak time, title, and the per-slot
 // unconference configuration (which rooms / which submissions participate).
 export const UpdateSlotSchema = v.pipe(

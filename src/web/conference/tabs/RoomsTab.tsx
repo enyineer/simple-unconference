@@ -118,7 +118,16 @@ export function RoomsTab({ slug, isMod }: { slug: string; isMod: boolean }) {
       {rooms.loading && rooms.items.length === 0 ? (
         <Spinner label="Loading…" />
       ) : showEmpty ? (
-        <EmptyState message="No rooms yet." />
+        <EmptyState
+          message="No rooms yet. Rooms are the spaces sessions run in — their capacity drives unconference auto-assignment. Add your first room to get started."
+          action={
+            isMod ? (
+              <Button size="small" variant="primary" onClick={() => setAdding(true)}>
+                + Add room
+              </Button>
+            ) : undefined
+          }
+        />
       ) : showNoMatches ? (
         <EmptyState
           message={`No rooms match "${rooms.q}".`}
