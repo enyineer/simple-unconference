@@ -1,5 +1,48 @@
 # simple-unconference
 
+## 0.10.0
+
+### Minor Changes
+
+- [#16](https://github.com/enyineer/simple-unconference/pull/16) [`024aa5f`](https://github.com/enyineer/simple-unconference/commit/024aa5facc0a8ae9776a37ccc30260331687c8d9) Thanks [@enyineer](https://github.com/enyineer)! - Redesign the agenda + assignment UX to be understandable for non-technical moderators (while keeping every advanced capability).
+
+  - **Clear two-step model.** The agenda now frames unconference setup as "1 · Place sessions → 2 · Assign attendees", so the per-slot and whole-agenda actions no longer compete. The per-slot button is relabelled "Auto-fill this slot from stars"; the whole-agenda "Assign attendees" action now confirms before re-seating and states that manual placements + people's own picks are kept and participants are notified.
+  - **Slot-type chooser.** "Add slot" now offers selectable Planned / Unconference / Mixer cards (each with "what it is" + "use it when"), defaults to Planned, and links inline help — instead of a bare dropdown.
+  - **Onboarding.** A dismissible "Set up your agenda" checklist (rooms → publish sessions → add a slot → place sessions) guides first-time owners, and the Rooms/Sessions/Agenda empty states now explain the next step and prerequisites.
+  - **Plain-language help.** The "How it works" guide leads with a Start-here summary, collapses the deep mechanics into expandable sections, and adds a glossary. A single shared copy module keeps all this wording consistent.
+  - **Placement clarity.** Placed sessions show "placed by you" / "by stars" and "also at HH:MM" (recurrence) badges; the placement control has a heading explaining how to make a session recurring.
+  - **Terminology.** User-facing copy now consistently says "session" (not "submission"), softens "track"/"pin" wording, and renames a participant's tag to "chose this".
+
+- [#16](https://github.com/enyineer/simple-unconference/pull/16) [`024aa5f`](https://github.com/enyineer/simple-unconference/commit/024aa5facc0a8ae9776a37ccc30260331687c8d9) Thanks [@enyineer](https://github.com/enyineer)! - Add whole-agenda attendee assignment with moderator-authored placements.
+
+  Moderators can now place a session into a specific slot + room
+  (`agenda.placeSubmission` / `unplaceSubmission`, surfaced as the placement
+  authoring controls on an unconference slot), including placing the same session
+  on multiple slots to build a recurring session. A new **Assign attendees**
+  action (`agenda.assignAll`) then routes participants across the entire agenda at
+  once instead of one slot at a time.
+
+  The global router (`assignAgenda`, a new pure module) is an integer min-cost
+  flow that, unlike the per-slot greedy assigner, sees the whole agenda: it
+  **splits a recurring session's starrers evenly across its occurrences** and
+  applies **cross-slot look-ahead** (a user starring two same-time sessions, one
+  of which also runs later, is sent to the non-recurring one now and caught up
+  with the other at its later showing). Hard rules still hold: at most one session
+  per overlapping time-band, room capacity, never the same session twice, and
+  manual picks + submitter hosting are respected. It writes only `UserAssignment`
+  rows — authored placements are preserved. The existing per-slot "Run assignment"
+  button is unchanged.
+
+### Patch Changes
+
+- [#16](https://github.com/enyineer/simple-unconference/pull/16) [`024aa5f`](https://github.com/enyineer/simple-unconference/commit/024aa5facc0a8ae9776a37ccc30260331687c8d9) Thanks [@enyineer](https://github.com/enyineer)! - Fix `P2003` foreign-key crash when deleting a conference (and when removing a participant who authored a submission).
+
+  `Submission.submitter` referenced `ConferenceIdentity` with no `onDelete`, so it defaulted to `Restrict`. Deleting a conference cascades into both its identities and its submissions, but the Restrict edge between a submission and its (about-to-be-deleted) submitter blocked the cascade, surfacing as `ForeignKeyConstraintViolation`. The same edge made `conferences.removeParticipant` 500 whenever the removed identity had submitted a session. The relation is now `onDelete: Cascade` (migration `submission_submitter_cascade`): removing an identity removes the sessions they authored.
+
+- [`b44ec19`](https://github.com/enyineer/simple-unconference/commit/b44ec19acbfa960f24ecc2090973fe02ad9b4319) Thanks [@enyineer](https://github.com/enyineer)! - Fix `react-hooks/set-state-in-effect` lint failure in `usePaginatedList`.
+
+  The fetch effect previously called `setLoading(true)` and `setError(null)` synchronously before kicking off the request, which the React ESLint plugin flags as a cascading-render hazard. Page, error, and the inputs they were loaded for now live in a single state object updated atomically from inside the promise callback; `loading` is derived from `(result.key !== currentKey)` so it flips true automatically when inputs change without any synchronous setState. Error display clears in lockstep with new data since both ride on the same update.
+
 ## 0.9.0
 
 ### Minor Changes
