@@ -138,6 +138,14 @@ export async function sendEmail(msg: OutgoingEmail): Promise<void> {
   __emailOutbox.push(msg);
   if (__emailOutbox.length > OUTBOX_CAP) __emailOutbox.shift();
 
+  // Hard safety floor: the test suite must NEVER deliver real mail, no matter
+  // how email env is configured. `bun test` sets NODE_ENV=test. The outbox
+  // above still captures the message for assertions. (A run with a developer's
+  // RESEND_API_KEY in .env once fired the whole suite's signup/reset emails at
+  // the live Resend API and burned the quota; this makes that impossible even
+  // if the hermetic test preload is bypassed.)
+  if (process.env.NODE_ENV === "test") return;
+
   const t = transport();
   if (t === "memory") return; // configured, but delivery is outbox-only
   if (t === "none" || !emailConfigured()) {
