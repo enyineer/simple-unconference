@@ -1,5 +1,47 @@
 # simple-unconference
 
+## 0.11.0
+
+### Minor Changes
+
+- [#17](https://github.com/enyineer/simple-unconference/pull/17) [`26c5c27`](https://github.com/enyineer/simple-unconference/commit/26c5c272a593ac2db2f6bc4313573939d1bc7e8f) Thanks [@enyineer](https://github.com/enyineer)! - Add verified global accounts and opt-in cross-conference account linking.
+
+  When an email transport is configured, new owner signups must confirm their
+  email (6-digit code or magic link) before entering; a `requireVerified` gate
+  also protects conference creation and linking server-side. A verified email is
+  then the private join key for linking: from the dashboard, an owner can link
+  the per-conference identities that share their email (proving control with that
+  conference's password once), after which a single global login resolves into
+  every linked conference. Linking never exposes `linkedUserId` or verification
+  state to other users, and discovery only runs behind the authenticated,
+  verified session, so it can't be used to enumerate accounts.
+
+  Email transport is now pluggable via `EMAIL_TRANSPORT`: `resend` (REST),
+  `smtp` (lazy-loaded nodemailer), `memory` (enabled but outbox-only, for
+  dev/CI), or `none`. With no real transport configured, signups auto-verify and
+  the verification wall + linking UI are switched off, so self-hosted instances
+  are never locked out and the base product is unchanged. New env vars:
+  `EMAIL_TRANSPORT`, `SMTP_URL`/`SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/
+  `SMTP_SECURE`, `EMAIL_VERIFY_CODE_TTL_MIN`, `EMAIL_VERIFY_LINK_TTL_MIN`,
+  `VERIFY_RESEND_PER_HOUR_PER_EMAIL`, `VERIFY_RESEND_PER_HOUR_PER_IP`. Adds a
+  Prisma migration (email-verification columns on User, `linkedUserId` on
+  ConferenceIdentity) with a backfill that grandfathers existing accounts.
+
+- [#17](https://github.com/enyineer/simple-unconference/pull/17) [`26c5c27`](https://github.com/enyineer/simple-unconference/commit/26c5c272a593ac2db2f6bc4313573939d1bc7e8f) Thanks [@enyineer](https://github.com/enyineer)! - Add a self-service forgot-password flow for both global owner accounts and
+  per-conference identities. Users request a reset link from the sign-in screen;
+  the link carries a single-use, short-lived token (default 30 min). Completing
+  the reset rotates the password, signs out all existing sessions, and logs the
+  user in.
+
+  Security: only the SHA-256 hash of the token is stored (never the raw token);
+  requests never reveal whether an address exists (no account enumeration);
+  requests are rate-limited per-email and per-IP and protected by Cloudflare
+  Turnstile when configured. Email is sent via Resend (`RESEND_API_KEY` /
+  `EMAIL_FROM`); when no transport is configured the link is logged so
+  self-hosted operators can still recover accounts. New env vars: `APP_URL`,
+  `RESEND_API_KEY`, `EMAIL_FROM`, `PASSWORD_RESET_TOKEN_TTL_MIN`,
+  `PASSWORD_RESET_PER_HOUR_PER_EMAIL`, `PASSWORD_RESET_PER_HOUR_PER_IP`.
+
 ## 0.10.0
 
 ### Minor Changes
