@@ -185,7 +185,7 @@ export function ConferenceLoginPage({
             <>
               <Text muted>
                 {mode === "login"
-                  ? "Use the email + password you set when you joined this conference. Other conferences use separate accounts."
+                  ? "Sign in with the email and password you set when you joined this conference."
                   : "Enter the email you joined this conference with and we'll send you a link to choose a new password."}
               </Text>
               <Form onSubmit={submit}>
@@ -224,6 +224,14 @@ export function ConferenceLoginPage({
                   </Link>
                 </Stack>
               </Form>
+              {mode === "login" && (
+                <Text muted>
+                  Run this conference yourself?{" "}
+                  <Link href="#" onClick={(e) => { e.preventDefault(); onCancel(); }}>
+                    Sign in from the main page
+                  </Link>
+                </Text>
+              )}
             </>
           )}
         </Card>

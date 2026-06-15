@@ -522,6 +522,12 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
                       <Text muted>Signup is disabled on this instance.</Text>
                     )}
                   </Stack>
+                  {mode === "login" && (
+                    <Text muted>
+                      Invited to a conference? Open the link from your invitation
+                      to sign in there. Each conference has its own sign-in.
+                    </Text>
+                  )}
                 </Form>
               )}
             </Card>
