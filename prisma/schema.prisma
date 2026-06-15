@@ -19,10 +19,29 @@ model User {
   name          String?
   passwordHash  String   @map("password_hash")
   createdAt     DateTime @default(now()) @map("created_at")
+  // Forgot-password flow. We store only the SHA-256 hash of the opaque reset
+  // token (never the raw token) so a DB leak can't be used to reset accounts.
+  // Both columns are cleared on successful reset and on any successful login.
+  passwordResetTokenHash String?   @unique @map("password_reset_token_hash")
+  passwordResetExpiresAt DateTime? @map("password_reset_expires_at")
+  // Email verification (account-linking Phase 3). A verified email is the
+  // private join key for opt-in conference linking. The 6-digit code and the
+  // magic-link token are stored only as hashes and have separate TTLs (code
+  // 15 min, link 30 min); emailVerifyAttempts caps online code guessing.
+  // emailVerifiedAt is backfilled to createdAt for pre-existing accounts so
+  // current owners are grandfathered in and never see the verification wall.
+  emailVerifiedAt          DateTime? @map("email_verified_at")
+  emailVerifyTokenHash     String?   @unique @map("email_verify_token_hash")
+  emailVerifyLinkExpiresAt DateTime? @map("email_verify_link_expires_at")
+  emailVerifyCodeHash      String?   @map("email_verify_code_hash")
+  emailVerifyCodeExpiresAt DateTime? @map("email_verify_code_expires_at")
+  emailVerifyAttempts      Int       @default(0) @map("email_verify_attempts")
 
   sessions             Session[]
   ownedConferences     Conference[]         @relation("ConferenceOwner")
   conferenceIdentities ConferenceIdentity[]
+  // Per-conference identities this global account has opted to link (Phase 4).
+  linkedIdentities     ConferenceIdentity[] @relation("LinkedIdentities")
   chatBansIssued       ConferenceIdentity[] @relation("ChatBans")
   chatReportsResolved  MessageReport[]
 
@@ -125,6 +144,16 @@ model ConferenceIdentity {
   ownerUserId   Int?         @map("owner_user_id")
   createdAt     DateTime     @default(now()) @map("created_at")
   claimedAt     DateTime?    @map("claimed_at")
+  // Forgot-password flow (mirrors User). SHA-256 hash of the opaque reset
+  // token only; cleared on successful reset and on any successful login.
+  passwordResetTokenHash     String?   @unique @map("password_reset_token_hash")
+  passwordResetExpiresAt     DateTime? @map("password_reset_expires_at")
+  // Opt-in link to a global account (account-linking Phase 4). Set only when
+  // the user proves control of both sides; backfilled from ownerUserId so the
+  // owner's auto-minted identity is uniformly "linked". Server-internal, never
+  // serialized to other users/mods. onDelete: SetNull keeps the identity (and
+  // its own password) if the global account is deleted.
+  linkedUserId               Int?      @map("linked_user_id")
   profilePublished           Boolean   @default(false) @map("profile_published")
   bio                        String?
   pronouns                   String?
@@ -145,6 +174,7 @@ model ConferenceIdentity {
 
   conference   Conference @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
   ownerUser    User?      @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+  linkedUser   User?      @relation("LinkedIdentities", fields: [linkedUserId], references: [id], onDelete: SetNull)
   chatBannedBy User?      @relation("ChatBans", fields: [chatBannedByUserId], references: [id], onDelete: SetNull)
 
   sessions             Session[]
@@ -167,6 +197,7 @@ model ConferenceIdentity {
   @@unique([conferenceId, email])
   @@index([conferenceId])
   @@index([ownerUserId])
+  @@index([linkedUserId])
   @@map("conference_identities")
 }
 

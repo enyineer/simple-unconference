@@ -86,6 +86,76 @@ spec:
               value: {{ .loginLockoutMin | quote }}
             - name: WRITES_PER_HOUR_PER_USER
               value: {{ .writesPerHourPerUser | quote }}
+            - name: PASSWORD_RESET_TOKEN_TTL_MIN
+              value: {{ .passwordResetTokenTtlMin | quote }}
+            - name: PASSWORD_RESET_PER_HOUR_PER_EMAIL
+              value: {{ .passwordResetPerHourPerEmail | quote }}
+            - name: PASSWORD_RESET_PER_HOUR_PER_IP
+              value: {{ .passwordResetPerHourPerIp | quote }}
+            - name: EMAIL_VERIFY_CODE_TTL_MIN
+              value: {{ .emailVerifyCodeTtlMin | quote }}
+            - name: EMAIL_VERIFY_LINK_TTL_MIN
+              value: {{ .emailVerifyLinkTtlMin | quote }}
+            - name: VERIFY_RESEND_PER_HOUR_PER_EMAIL
+              value: {{ .verifyResendPerHourPerEmail | quote }}
+            - name: VERIFY_RESEND_PER_HOUR_PER_IP
+              value: {{ .verifyResendPerHourPerIp | quote }}
+            {{- end }}
+            {{- if and .Values.email .Values.email.transport }}
+            - name: EMAIL_TRANSPORT
+              value: {{ .Values.email.transport | quote }}
+            {{- end }}
+            # Required: this instance's public origin. No default on the server
+            # (a loopback default would ship broken email links), so the chart
+            # fails the install if it's unset rather than letting the pod
+            # crash-loop on boot.
+            - name: APP_URL
+              value: {{ required "email.appUrl is required: set it to this instance's public URL, e.g. https://unconf.example.com" (.Values.email).appUrl | quote }}
+            {{- if and .Values.email .Values.email.from }}
+            - name: EMAIL_FROM
+              value: {{ .Values.email.from | quote }}
+            {{- end }}
+            {{- if and .Values.email .Values.email.resendApiKeySecret .Values.email.resendApiKeySecret.name }}
+            - name: RESEND_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.email.resendApiKeySecret.name | quote }}
+                  key: {{ .Values.email.resendApiKeySecret.key | quote }}
+            {{- else if and .Values.email .Values.email.resendApiKey }}
+            - name: RESEND_API_KEY
+              value: {{ .Values.email.resendApiKey | quote }}
+            {{- end }}
+            {{- with (.Values.email).smtp }}
+            {{- with .url }}
+            - name: SMTP_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .host }}
+            - name: SMTP_HOST
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .port }}
+            - name: SMTP_PORT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .user }}
+            - name: SMTP_USER
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .secure }}
+            - name: SMTP_SECURE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if and .passwordSecret .passwordSecret.name }}
+            - name: SMTP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .passwordSecret.name | quote }}
+                  key: {{ .passwordSecret.key | quote }}
+            {{- else if .password }}
+            - name: SMTP_PASS
+              value: {{ .password | quote }}
+            {{- end }}
             {{- end }}
             {{- if and .Values.turnstile .Values.turnstile.siteKey }}
             - name: TURNSTILE_SITE_KEY

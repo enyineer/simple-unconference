@@ -18,6 +18,7 @@ import {
   type ResolvedPrincipal,
   type Role,
 } from "../lib/permissions";
+import { emailConfigured } from "../lib/email";
 
 // ----- shared types ---------------------------------------------------------
 
@@ -30,8 +31,23 @@ export interface RpcContext {
   responseHeaders: Headers;
 }
 
-export function toUserOut(u: { id: number; email: string; name: string | null }) {
-  return { id: u.id, email: u.email, name: u.name };
+export function toUserOut(
+  u: { id: number; email: string; name: string | null; emailVerifiedAt: Date | null },
+) {
+  return { id: u.id, email: u.email, name: u.name, email_verified: u.emailVerifiedAt !== null };
+}
+
+// Best-effort client IP for per-IP rate limiting. Behind our reverse proxy /
+// ingress the real client is in `x-forwarded-for` (first hop) or `x-real-ip`;
+// falls back to null when neither is present (e.g. tests), which the limiter
+// treats as "skip the per-IP axis".
+export function clientIp(req: Request): string | null {
+  const fwd = req.headers.get("x-forwarded-for");
+  if (fwd) {
+    const first = fwd.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  return req.headers.get("x-real-ip")?.trim() || null;
 }
 
 // Returns the acting identity's id for any conference-scoped handler. For
@@ -52,6 +68,17 @@ export const authed = base.use(async ({ context, next }) => {
     throw new ORPCError("UNAUTHORIZED", { message: "not_authenticated" });
   }
   return next({ context: { ...context, user: principal.user } });
+});
+
+// Like `authed`, but also requires the owner's email to be verified. No-op when
+// no email transport is configured (nobody can verify, so we don't wall anyone
+// out on a self-hosted box). Gates sensitive owner actions: conference creation
+// and account linking.
+export const verified = authed.use(async ({ context, next }) => {
+  if (emailConfigured() && context.user.emailVerifiedAt === null) {
+    throw new ORPCError("FORBIDDEN", { message: "email_unverified" });
+  }
+  return next();
 });
 
 // Conference-scoped gate. Resolves the principal for this conference (owner

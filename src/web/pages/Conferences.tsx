@@ -9,6 +9,7 @@ import { api, errorCode } from "../api";
 import { quotaErrorMessage } from "../quotaErrors";
 import { detectLocalTimeZone, listTimeZones } from "../../shared/tz";
 import { SearchableSelect } from "../conference/ui/SearchableSelect";
+import { LinkedConferencesSection } from "./LinkedConferences";
 
 interface Conf {
   id: number; name: string; slug: string; role: string; owner_id: number;
@@ -35,6 +36,8 @@ export function ConferencesPage({
   // null limit = no per-account cap on this instance; null overall = still
   // loading config.get. We hide the quota line in both cases.
   const [maxConferences, setMaxConferences] = useState<number | null | undefined>(undefined);
+  // Whether the instance has email configured; gates the account-linking UI.
+  const [emailEnabled, setEmailEnabled] = useState(false);
 
   async function refresh() {
     try { setConfs(await api.conferences.list()); }
@@ -51,7 +54,11 @@ export function ConferencesPage({
   useEffect(() => {
     let cancelled = false;
     api.config.get()
-      .then((c) => { if (!cancelled) setMaxConferences(c.max_conferences_per_user); })
+      .then((c) => {
+        if (cancelled) return;
+        setMaxConferences(c.max_conferences_per_user);
+        setEmailEnabled(c.email_enabled);
+      })
       .catch(() => { if (!cancelled) setMaxConferences(null); });
     return () => { cancelled = true; };
   }, []);
@@ -109,6 +116,11 @@ export function ConferencesPage({
             ))}
           </Stack>
         )}
+
+        {/* Account-linking: conferences already on this account + ones we can
+            offer to link (auto-suggest). Only when the instance has email
+            configured; renders nothing when there's nothing to show. */}
+        {emailEnabled && <LinkedConferencesSection onOpen={onOpen} />}
 
         {/* Owner quota hint. Only counts conferences the viewer actually owns
             (not ones they were invited into as moderator/participant). Hidden

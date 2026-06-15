@@ -40,6 +40,19 @@ export async function resolveConferencePrincipal(
     return { kind: "owner", user: ownerPrincipal.user, identity, role: "owner" };
   }
 
+  // Linked global account: the global cookie belongs to a user who has linked
+  // an identity in THIS conference (and isn't its owner). Act AS that identity
+  // with its conference role. This is the payoff of account-linking - one
+  // global login steps into every conference the user has explicitly linked,
+  // with no per-conference password. Mirrors the owner path (global cookie ->
+  // derived identity).
+  if (ownerPrincipal && ownerPrincipal.kind === "owner") {
+    const linked = await prisma.conferenceIdentity.findFirst({
+      where: { conferenceId, linkedUserId: ownerPrincipal.user.id },
+    });
+    if (linked) return { kind: "identity", identity: linked, role: linked.role };
+  }
+
   // Otherwise look for a per-conference identity session.
   const identityPrincipal = await principalFromRequest(prisma, req, {
     type: "conference",

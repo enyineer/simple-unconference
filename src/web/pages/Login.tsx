@@ -5,7 +5,9 @@ import {
 import { useToast } from "../design-system/hooks";
 import { api, errorCode, errorFields } from "../api";
 import { useForm } from "../useForm";
-import { LoginSchema, SignupSchema, safeParse } from "../../shared/schemas";
+import {
+  LoginSchema, SignupSchema, RequestPasswordResetSchema, safeParse,
+} from "../../shared/schemas";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "../components/TurnstileWidget";
 
 const REPO_URL = "https://github.com/enyineer/simple-unconference";
@@ -311,8 +313,11 @@ function Features() {
 
 export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
   const toast = useToast();
-  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [mode, setMode] = useState<"login" | "signup" | "forgot">("login");
   const [busy, setBusy] = useState(false);
+  // Set after a forgot-password request so we can show the (deliberately
+  // generic, non-enumerating) confirmation instead of the form.
+  const [resetSent, setResetSent] = useState(false);
   // null = still loading; true/false = known. Defaults to permissive (true)
   // on fetch failure so a transient outage doesn't lock out new owners.
   const [signupEnabled, setSignupEnabled] = useState<boolean | null>(null);
@@ -356,6 +361,26 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
       return;
     }
 
+    if (mode === "forgot") {
+      const r = safeParse(RequestPasswordResetSchema, {
+        email: form.values.email, turnstile_token: turnstileToken || undefined,
+      });
+      if (!r.ok) { form.setErrors(r.errors); return; }
+      setBusy(true);
+      try {
+        await api.auth.requestPasswordReset(r.data);
+        // Always show success — the server never reveals whether the email
+        // maps to a real account.
+        setResetSent(true);
+      } catch (e) {
+        toast.error(humanError(errorCode(e)));
+        turnstileRef.current?.reset();
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     const baseFields = mode === "login"
       ? { email: form.values.email, password: form.values.password }
       : form.values;
@@ -388,6 +413,14 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
     }
   }
 
+  // Switch between login / signup / forgot, clearing transient state so a
+  // stale error or confirmation doesn't bleed across modes.
+  function switchMode(next: "login" | "signup" | "forgot") {
+    setMode(next);
+    setResetSent(false);
+    form.setErrors({});
+  }
+
   return (
     <PageLayout>
       <style>{PAGE_STYLES}</style>
@@ -398,61 +431,105 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
 
         <div className="unconf-signin-section">
           <span className="unconf-signin-heading">
-            {mode === "login" ? "Sign in to continue" : "Create your account"}
+            {mode === "login" ? "Sign in to continue"
+              : mode === "signup" ? "Create your account"
+              : "Reset your password"}
           </span>
           <div className="unconf-signin">
-            <Card title={mode === "login" ? "Sign in" : "Create account"}>
-              <Form onSubmit={submit}>
-                <TextInput
-                  label="Email" type="email" required
-                  value={form.values.email ?? ""}
-                  onChange={(e) => form.setValue("email", e.target.value)}
-                  error={form.fieldError("email")}
-                />
-                <TextInput
-                  label="Password" type="password" required
-                  value={form.values.password ?? ""}
-                  onChange={(e) => form.setValue("password", e.target.value)}
-                  error={form.fieldError("password")}
-                />
-                {mode === "signup" && (
-                  <TextInput
-                    label="Name (optional)"
-                    value={form.values.name ?? ""}
-                    onChange={(e) => form.setValue("name", e.target.value)}
-                    error={form.fieldError("name")}
-                  />
-                )}
-                {turnstileSiteKey !== null && (
-                  <TurnstileWidget
-                    ref={turnstileRef}
-                    siteKey={turnstileSiteKey}
-                  />
-                )}
-                <Stack direction="row" gap="condensed" align="center">
-                  <Button type="submit" variant="primary" disabled={busy}>
-                    {mode === "login" ? "Sign in" : "Create account"}
-                  </Button>
-                  {signupEnabled !== false && (
+            <Card title={mode === "login" ? "Sign in"
+              : mode === "signup" ? "Create account"
+              : "Forgot password"}>
+              {mode === "forgot" && resetSent ? (
+                <Stack gap="normal">
+                  <Text muted>
+                    If an account exists for that email, we&apos;ve sent a link
+                    to reset your password. Check your inbox (and spam folder) -
+                    the link expires shortly.
+                  </Text>
+                  <Stack direction="row" gap="condensed" align="center">
+                    <Button variant="primary" onClick={() => switchMode("login")}>
+                      Back to sign in
+                    </Button>
+                  </Stack>
+                </Stack>
+              ) : (
+                <Form onSubmit={submit}>
+                  {mode === "forgot" && (
                     <Text muted>
-                      {mode === "login" ? "No account?" : "Already have one?"}{" "}
-                      <Link
-                        href="#"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          setMode(mode === "login" ? "signup" : "login");
-                          form.setErrors({});
-                        }}
-                      >
-                        {mode === "login" ? "Sign up" : "Sign in"}
-                      </Link>
+                      Enter your account email and we&apos;ll send you a link to
+                      choose a new password.
                     </Text>
                   )}
-                  {signupEnabled === false && (
-                    <Text muted>Signup is disabled on this instance.</Text>
+                  <TextInput
+                    label="Email" type="email" required
+                    value={form.values.email ?? ""}
+                    onChange={(e) => form.setValue("email", e.target.value)}
+                    error={form.fieldError("email")}
+                  />
+                  {mode !== "forgot" && (
+                    <TextInput
+                      label="Password" type="password" required
+                      value={form.values.password ?? ""}
+                      onChange={(e) => form.setValue("password", e.target.value)}
+                      error={form.fieldError("password")}
+                    />
                   )}
-                </Stack>
-              </Form>
+                  {mode === "signup" && (
+                    <TextInput
+                      label="Name (optional)"
+                      value={form.values.name ?? ""}
+                      onChange={(e) => form.setValue("name", e.target.value)}
+                      error={form.fieldError("name")}
+                    />
+                  )}
+                  {turnstileSiteKey !== null && (
+                    <TurnstileWidget
+                      ref={turnstileRef}
+                      siteKey={turnstileSiteKey}
+                    />
+                  )}
+                  <Stack direction="row" gap="condensed" align="center">
+                    <Button type="submit" variant="primary" disabled={busy}>
+                      {mode === "login" ? "Sign in"
+                        : mode === "signup" ? "Create account"
+                        : "Send reset link"}
+                    </Button>
+                    {mode === "login" && (
+                      <Link muted href="#" onClick={(e) => { e.preventDefault(); switchMode("forgot"); }}>
+                        Forgot password?
+                      </Link>
+                    )}
+                    {mode === "forgot" && (
+                      <Link muted href="#" onClick={(e) => { e.preventDefault(); switchMode("login"); }}>
+                        Back to sign in
+                      </Link>
+                    )}
+                    {mode !== "forgot" && signupEnabled !== false && (
+                      <Text muted>
+                        {mode === "login" ? "No account?" : "Already have one?"}{" "}
+                        <Link
+                          href="#"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            switchMode(mode === "login" ? "signup" : "login");
+                          }}
+                        >
+                          {mode === "login" ? "Sign up" : "Sign in"}
+                        </Link>
+                      </Text>
+                    )}
+                    {mode === "login" && signupEnabled === false && (
+                      <Text muted>Signup is disabled on this instance.</Text>
+                    )}
+                  </Stack>
+                  {mode === "login" && (
+                    <Text muted>
+                      Invited to a conference? Open the link from your invitation
+                      to sign in there. Each conference has its own sign-in.
+                    </Text>
+                  )}
+                </Form>
+              )}
             </Card>
           </div>
         </div>

@@ -35,9 +35,21 @@ export interface UserOut {
   id: number;
   email: string;
   name: string | null;
+  // False while a global account is awaiting email verification (only possible
+  // when an email transport is configured). Drives the verification wall.
+  email_verified: boolean;
 }
 
 export interface CalendarOut { token: string; path: string }
+
+// A conference reachable through (or linkable to) the caller's global account.
+// Used by the account-linking dashboard. Carries no identifiers that would let
+// other users correlate - it's only ever returned to the account owner.
+export interface LinkableConferenceOut {
+  slug: string;
+  name: string;
+  role: "owner" | "moderator" | "participant";
+}
 
 export interface ConfSummary {
   id: number; name: string; slug: string;
@@ -641,6 +653,9 @@ export interface ProfileSummaryOut {
 export interface PublicConfigOut {
   signup_enabled: boolean;
   turnstile_site_key: string | null;
+  // True when an email transport (Resend/SMTP) is configured. Gates the
+  // verification wall and the account-linking UI.
+  email_enabled: boolean;
   max_conferences_per_user: number | null;
   // Per-user cap on submissions within a single conference. Surfaced so the
   // Sessions tab can show "X of N submitted" before the user tries to add

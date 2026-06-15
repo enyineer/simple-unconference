@@ -19,6 +19,10 @@ const apiEnv = {
   // http://localhost:9090/metrics without extra env wiring. Respect an
   // explicit override if the developer set one.
   METRICS_PORT: process.env.METRICS_PORT ?? "9090",
+  // In dev the SPA is served by Vite (5173), not the API (3000) — the API runs
+  // with SERVE_STATIC=0. Point email links (password reset, verification) at
+  // the Vite origin so they actually open the app. Respect an explicit override.
+  APP_URL: process.env.APP_URL ?? "http://localhost:5173",
 };
 
 let api: Subprocess = spawn(apiArgs, {

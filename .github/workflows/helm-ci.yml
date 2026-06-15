@@ -28,12 +28,15 @@ jobs:
       - name: Lint chart
         run: helm lint charts/simple-unconference
 
+      # email.appUrl is a required value (no default) so the chart can't ship
+      # loopback links; provide a placeholder here so rendering succeeds.
       - name: Render chart (sqlite default)
-        run: helm template ci charts/simple-unconference >/dev/null
+        run: helm template ci charts/simple-unconference --set email.appUrl=https://ci.example >/dev/null
 
       - name: Render chart (postgres)
         run: |
           helm template ci charts/simple-unconference \
+            --set email.appUrl=https://ci.example \
             --set database.type=postgres \
             --set database.postgres.host=pg.example \
             --set database.postgres.user=app \

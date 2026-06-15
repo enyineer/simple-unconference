@@ -1,0 +1,7 @@
+# Bun configuration.
+
+[test]
+# Neutralize the developer's local email env (.env is auto-loaded by bun) so
+# the test suite is hermetic regardless of how email is configured locally.
+# See src/server/test-preload.ts.
+preload = ["./src/server/test-preload.ts"]

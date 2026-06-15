@@ -29,6 +29,22 @@ const ConferenceLoginPage = lazy(() =>
 const ProfilePage = lazy(() =>
   import("./conference/ProfilePage").then((m) => ({ default: m.ProfilePage })),
 );
+const ResetPasswordPage = lazy(() =>
+  import("./pages/ResetPassword").then((m) => ({ default: m.ResetPasswordPage })),
+);
+const VerifyEmailWall = lazy(() =>
+  import("./pages/VerifyEmail").then((m) => ({ default: m.VerifyEmailWall })),
+);
+const VerifyEmailTokenPage = lazy(() =>
+  import("./pages/VerifyEmail").then((m) => ({ default: m.VerifyEmailTokenPage })),
+);
+
+// Pull `?token=...` out of the hash-router path (which keeps the query tail).
+function resetTokenFromPath(p: string): string {
+  const q = p.indexOf("?");
+  if (q === -1) return "";
+  return new URLSearchParams(p.slice(q + 1)).get("token") ?? "";
+}
 
 // Owner identity (global User). Only used by the owner-facing ConferencesPage
 // and the global LoginPage. No `color_mode` here — that preference lives on
@@ -37,6 +53,9 @@ export interface Me {
   id: number;
   email: string;
   name: string | null;
+  // False while a global account awaits email verification (only when the
+  // instance has email configured). Drives the "verify before entering" wall.
+  email_verified: boolean;
 }
 
 // Per-conference identity. The acting identity inside a single conference,
@@ -203,6 +222,9 @@ export function App() {
   // Routes (parsed up front; some are anonymous, some require auth).
   const joinMatch = matchRoute("/c/:slug/join", path);
   const confLoginMatch = matchRoute("/c/:slug/login", path);
+  const confResetMatch = matchRoute("/c/:slug/reset", path);
+  const ownerResetMatch = matchRoute("/auth/reset", path);
+  const ownerVerifyMatch = matchRoute("/auth/verify", path);
   const confMatch = matchRoute("/conferences/:slug", path);
   const profileMatch = matchRoute("/conferences/:slug/p/:identityId", path);
   // Per-tab routes. ConferencePage reads the tab segment to decide which
@@ -350,6 +372,42 @@ export function App() {
         />
       );
     }
+    // ----- password reset (anonymous; token comes from the email link) -----
+    if (ownerResetMatch) {
+      return (
+        <ResetPasswordPage
+          scope={{ kind: "owner" }}
+          token={resetTokenFromPath(path)}
+          // Reset logs the caller in server-side; refresh owner state so the
+          // home route renders the authed view instead of the login screen.
+          onDone={() => { loadOwner(); navigate("/"); }}
+          onCancel={() => navigate("/")}
+        />
+      );
+    }
+    // Magic-link email confirmation. Confirms server-side (logging the caller
+    // in), then refreshes owner state and lands on the dashboard.
+    if (ownerVerifyMatch) {
+      return (
+        <VerifyEmailTokenPage
+          token={resetTokenFromPath(path)}
+          onDone={() => { loadOwner(); navigate("/"); }}
+        />
+      );
+    }
+    if (confResetMatch && confResetMatch.slug) {
+      const resetSlug = confResetMatch.slug;
+      return (
+        <ResetPasswordPage
+          scope={{ kind: "conference", slug: resetSlug }}
+          token={resetTokenFromPath(path)}
+          // Navigating to the conference re-runs the confMe fetch with the
+          // freshly-set identity cookie.
+          onDone={() => navigate(`/conferences/${resetSlug}`)}
+          onCancel={() => navigate(`/c/${resetSlug}/login`)}
+        />
+      );
+    }
 
     // ----- per-conference profile page (requires identity) -----
     if (profileMatch && profileMatch.slug && profileMatch.identityId) {
@@ -420,6 +478,18 @@ export function App() {
     // ----- owner-side default route -----
     if (owner === undefined) return <MinimalLoading />;
     if (owner === null) return <LoginPage onLoggedIn={loadOwner} />;
+    // Verify-before-entering: a logged-in but unverified owner can do nothing
+    // in the owner area until they confirm their email. (Only reachable when
+    // the instance has email configured; otherwise signup auto-verifies.)
+    if (!owner.email_verified) {
+      return (
+        <VerifyEmailWall
+          email={owner.email}
+          onVerified={loadOwner}
+          onLogout={async () => { await api.auth.logout(); loadOwner(); }}
+        />
+      );
+    }
     return (
       <ConferencesPage
         me={owner}
