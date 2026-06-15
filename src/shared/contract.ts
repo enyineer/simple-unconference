@@ -30,6 +30,7 @@ import {
   InviteCreateSchema,
   InviteImportSchema,
   JoinLinkSetSchema,
+  LinkConferenceSchema,
   LoginSchema,
   ProfileDeleteAvatarSchema,
   ProfileGetSchema,
@@ -37,6 +38,10 @@ import {
   ProfileUpdateAnySchema,
   ProfileUpdateMineSchema,
   PromoteExpertSchema,
+  RequestPasswordResetSchema,
+  ResetPasswordSchema,
+  VerifyEmailSchema,
+  VerifyEmailTokenSchema,
   SignupSchema,
   SignupViaLinkSchema,
   SlotTypeSchema,
@@ -85,6 +90,7 @@ import {
   type InviteOut,
   type InvitePreviewOut,
   type JoinLinkOut,
+  type LinkableConferenceOut,
   type MyAssignmentsOut,
   type NotificationListOut,
   type Ok,
@@ -109,11 +115,42 @@ export const contract = {
     login: oc.input(LoginSchema).output(type<UserOut>()),
     logout: oc.output(type<Ok>()),
     me: oc.output(type<UserOut>()),
-    // Self-service account deletion. Removes the calling owner's User row;
-    // any conferences they still own become orphaned (ownerUserId -> null
-    // per the schema's SetNull rule). Cookies are cleared. Used by the
-    // loadtest teardown to leave instances clean after runs.
+    // Forgot-password (global owner account). `requestPasswordReset` always
+    // returns Ok regardless of whether the email exists (no enumeration); the
+    // email, if any, carries a single-use, short-lived token. `resetPassword`
+    // consumes that token, sets the new password, invalidates other sessions,
+    // and logs the caller in (returns the fresh UserOut).
+    requestPasswordReset: oc.input(RequestPasswordResetSchema).output(type<Ok>()),
+    resetPassword: oc.input(ResetPasswordSchema).output(type<UserOut>()),
+    // Email verification (account-linking). `verifyEmail` consumes the 6-digit
+    // code (authed: the signup session is already set). `verifyEmailByToken`
+    // consumes the magic-link token (anonymous, so the link works in any
+    // browser, and logs the caller in). `resendVerification` re-sends a fresh
+    // code+link (throttled). All return the updated UserOut / Ok.
+    verifyEmail: oc.input(VerifyEmailSchema).output(type<UserOut>()),
+    verifyEmailByToken: oc.input(VerifyEmailTokenSchema).output(type<UserOut>()),
+    resendVerification: oc.output(type<Ok>()),
+    // Self-service account deletion. Removes the calling owner's User row and
+    // clears cookies. Refuses with `owned_conferences_present` if the caller
+    // still owns any conference (they must delete or transfer those first), so
+    // other people's data isn't orphaned. Used by the loadtest teardown.
     deleteSelf: oc.output(type<Ok>()),
+  },
+  // Cross-conference account linking (account-linking Phase 4). All procedures
+  // require a verified global account. Results are self-only and never expose
+  // linkedUserId or verification state to anyone else.
+  account: {
+    // Conferences with a password-bearing identity matching the caller's
+    // verified email that isn't linked yet (the auto-suggest discovery list).
+    discoverLinkable: oc.output(type<LinkableConferenceOut[]>()),
+    // Conferences already linked to the caller's account.
+    listLinked: oc.output(type<LinkableConferenceOut[]>()),
+    // Link the matching identity by proving its conference password.
+    linkConferenceIdentity: oc
+      .input(v.object({ slug: Slug, ...LinkConferenceSchema.entries }))
+      .output(type<LinkableConferenceOut>()),
+    // Remove a link (the identity keeps its own password).
+    unlinkConferenceIdentity: oc.input(InConf).output(type<Ok>()),
   },
   conferences: {
     list: oc.output(type<ConfSummary[]>()),
@@ -192,6 +229,15 @@ export const contract = {
     // ----- per-conference identity session ---------------------------------
     login: oc
       .input(v.object({ slug: Slug, ...ConfLoginSchema.entries }))
+      .output(type<ConfMeOut>()),
+    // Forgot-password for a per-conference identity. Same privacy contract as
+    // the owner flow, scoped to one conference. `resetPassword` returns the
+    // fresh ConfMeOut and sets the per-conference identity cookie.
+    requestPasswordReset: oc
+      .input(v.object({ slug: Slug, ...RequestPasswordResetSchema.entries }))
+      .output(type<Ok>()),
+    resetPassword: oc
+      .input(v.object({ slug: Slug, ...ResetPasswordSchema.entries }))
       .output(type<ConfMeOut>()),
     logout: oc.input(InConf).output(type<Ok>()),
     me: oc.input(InConf).output(type<ConfMeOut>()),

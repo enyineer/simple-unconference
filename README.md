@@ -38,10 +38,16 @@ The SQLite database lives at `/app/data/prod.sqlite` inside the container. Mount
 docker run -d \
   --name simple-unconference \
   -p 3000:3000 \
+  -e APP_URL=https://unconf.example.com \
   -v simple-unconference-data:/app/data \
   --restart unless-stopped \
   ghcr.io/enyineer/simple-unconference:latest
 ```
+
+`APP_URL` is required — set it to the public origin where users reach this
+instance (for a purely local trial, `http://localhost:3000`). The server
+refuses to start without it so email links can't silently point at the wrong
+host.
 
 Or with Compose:
 
@@ -51,6 +57,8 @@ services:
     image: ghcr.io/enyineer/simple-unconference:latest
     ports:
       - "3000:3000"
+    environment:
+      APP_URL: https://unconf.example.com
     volumes:
       - data:/app/data
     restart: unless-stopped
@@ -70,6 +78,12 @@ Override `DATABASE_URL` if you want to point at libSQL/Turso instead of the bund
 | `SERVE_STATIC` | `1` | Set to `0` in dev to let Vite serve the SPA; production images keep this on. |
 | `DISABLE_SIGNUP` | _unset_ | When set to `1`/`true`/`yes`, disables **global owner signup**. The signup form is hidden on the login page and `POST /api/auth/signup` returns `403 signup_disabled`. Existing accounts can still log in. Does **not** affect per-conference participant signup; conference-level joining is controlled by each conference's own settings. |
 | `WORKERS` | `1` | Number of Bun worker processes inside the container. `1` runs single-process (no fork). `auto` derives the count from cgroup CPU + memory limits: `min(round(cores), floor(mem_MiB / 192), 8)`. A specific integer (e.g. `4`) forces that count, clamped to 8. Workers share the listening port via `SO_REUSEPORT`. SQLite WAL serializes writes across workers; reads fan out fully. Bump `resources.limits.memory` by ~150Mi per additional worker. |
+| `APP_URL` | **required** | Public base URL of this instance, used to build links in outgoing email (password-reset, email verification). **No default** — the server refuses to start without it, so a misconfigured rollout can't silently send broken/loopback links. Set to your real origin (e.g. `https://unconf.example.com`). The dev launcher (`bun run dev`) sets it to `http://localhost:5173` automatically. |
+| `EMAIL_TRANSPORT` | _auto_ | Email backend: `resend`, `smtp`, `memory`, or `none`. When unset, defaults to `resend` if `RESEND_API_KEY` is set, else `none`. `memory` enables email-dependent features (verification, account linking) but only records mail to an in-memory outbox + logs (handy for dev/demos). `none` disables delivery (links are logged). **With no real transport, email verification and cross-conference account linking are switched off; everything else works.** |
+| `RESEND_API_KEY` | _unset_ | [Resend](https://resend.com) API key (used when `EMAIL_TRANSPORT=resend`). |
+| `SMTP_URL` | _unset_ | Full SMTP connection URL (e.g. `smtp://user:pass@host:587`), used when `EMAIL_TRANSPORT=smtp`. Alternatively set `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`SMTP_SECURE`. Delivered via lazy-loaded `nodemailer`. |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_SECURE` | _unset_ / `587` / _unset_ / _unset_ / `false` | Discrete SMTP settings (alternative to `SMTP_URL`). |
+| `EMAIL_FROM` | `Unconference <onboarding@resend.dev>` | From-address for outgoing email. Set to an address on a domain you've verified (Resend) or that your SMTP server can send as. |
 
 **Public-instance hardening** — all of these are opt-in via env and default to values that work for a free public instance running events up to ~2000 attendees. Set any value to `0` to disable that specific cap. See [Public Instance Hardening](#public-instance-hardening) for the full design.
 
@@ -85,7 +99,14 @@ Override `DATABASE_URL` if you want to point at libSQL/Turso instead of the bund
 | `LOGIN_LOCKOUT_MIN` | `15` | How long the email is locked after hitting the failure limit, in minutes. |
 | `WRITES_PER_HOUR_PER_USER` | `600` | Sliding-window cap on expensive write operations per User per hour (`conferences.create`, `submissions.create`, etc). Catches scripted abuse from compromised accounts. `0` disables. |
 | `TURNSTILE_SITE_KEY` | _unset_ | Cloudflare Turnstile public key. Sent to the SPA so it can render the widget on signup / login / join pages. |
-| `TURNSTILE_SECRET_KEY` | _unset_ | Cloudflare Turnstile secret key. When set, the server requires a valid Turnstile token on `auth.signup`, `auth.login`, `conferences.claimInvite`, and `conferences.signupViaLink`. Leave unset for a no-op. |
+| `TURNSTILE_SECRET_KEY` | _unset_ | Cloudflare Turnstile secret key. When set, the server requires a valid Turnstile token on `auth.signup`, `auth.login`, `conferences.claimInvite`, `conferences.signupViaLink`, and the password-reset endpoints. Leave unset for a no-op. |
+| `PASSWORD_RESET_TOKEN_TTL_MIN` | `30` | Lifetime of a password-reset link, in minutes. Tokens are single-use and cleared on the next successful login. |
+| `PASSWORD_RESET_PER_HOUR_PER_EMAIL` | `3` | Sliding-window cap on reset-link requests per email per hour. `0` disables. |
+| `PASSWORD_RESET_PER_HOUR_PER_IP` | `0` (off) | Sliding-window cap on reset-link requests per client IP per hour (read from `x-forwarded-for` / `x-real-ip`). **Off by default and NAT-blind on purpose:** participants reset per-conference passwords too, and a venue full of attendees shares one public IP, so a per-IP cap would lock out the crowd at event start. Per-email throttling + Turnstile are the real defenses. Set a positive value only if you know your users aren't behind a shared NAT and want a coarse anti-spray backstop. |
+| `EMAIL_VERIFY_CODE_TTL_MIN` | `15` | Lifetime of the 6-digit email-verification code, in minutes. The code is capped at 5 wrong attempts before a resend is required. |
+| `EMAIL_VERIFY_LINK_TTL_MIN` | `30` | Lifetime of the email-verification magic link, in minutes. |
+| `VERIFY_RESEND_PER_HOUR_PER_EMAIL` | `5` | Sliding-window cap on verification-resend requests per email per hour (plus a hard 30s cooldown between sends). `0` disables. |
+| `VERIFY_RESEND_PER_HOUR_PER_IP` | `20` | Sliding-window cap on verification-resend requests per client IP per hour. Verification only ever applies to global accounts (of which a venue has very few), so this is safe to keep on. `0` disables. |
 
 ## Deploy to Kubernetes (Helm)
 

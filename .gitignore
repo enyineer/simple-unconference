@@ -48,3 +48,6 @@ plans/
 # local env
 .env
 .env.local
+
+# generated email template previews (bun run email:preview)
+.email-preview/

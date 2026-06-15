@@ -192,6 +192,7 @@ describe("public config + DISABLE_SIGNUP", () => {
       expect(await open.rpc.config.get()).toEqual({
         signup_enabled: true,
         turnstile_site_key: null,
+        email_enabled: false,
         max_conferences_per_user: LIMITS.maxConferencesPerUser,
         max_sessions_per_user_per_conference: LIMITS.maxSessionsPerUserPerConference,
       });
@@ -203,6 +204,7 @@ describe("public config + DISABLE_SIGNUP", () => {
       expect(await locked.rpc.config.get()).toEqual({
         signup_enabled: false,
         turnstile_site_key: null,
+        email_enabled: false,
         max_conferences_per_user: LIMITS.maxConferencesPerUser,
         max_sessions_per_user_per_conference: LIMITS.maxSessionsPerUserPerConference,
       });

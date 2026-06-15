@@ -32,6 +32,11 @@ export interface TextInputProps {
   disabled?: boolean;
   error?: string;
   block?: boolean;
+  // Mobile keyboard hint + autofill + focus. Used by the email-verification
+  // code input (numeric keypad, OS one-time-code autofill, autofocus).
+  inputMode?: "text" | "numeric" | "tel" | "email";
+  autoComplete?: string;
+  autoFocus?: boolean;
 }
 
 export interface TextareaProps {
@@ -96,6 +101,11 @@ export interface SpinnerProps {
 export interface LinkProps extends BaseProps {
   href: string;
   onClick?: (e: React.MouseEvent) => void;
+  // Render as a small, secondary inline link (matches `Text muted` sizing,
+  // keeps the link color) instead of the prominent default body-size link.
+  // Use for standalone secondary actions ("Forgot password?", "Back") so they
+  // don't read like a heading next to a button.
+  muted?: boolean;
 }
 
 export interface BadgeProps extends BaseProps {

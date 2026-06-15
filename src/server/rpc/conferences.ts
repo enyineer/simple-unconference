@@ -1,7 +1,7 @@
 import { ORPCError } from "@orpc/server";
 import type { Prisma } from "@prisma/client";
 import {
-  base, authed, requireConf, actorIdentityId,
+  base, authed, verified, requireConf, actorIdentityId, clientIp,
   slugify, INVITE_TTL_MS, newOpaqueToken, joinUrl, calendarFeedPath,
   pageOf, parsePageInput,
   toInviteOut, toConfMeOut,
@@ -17,9 +17,15 @@ import {
   LIMITS,
   assertQuota,
   assertLoginAllowed, recordLoginFailure, recordLoginSuccess,
+  assertPasswordResetAllowed,
   recordWrite,
 } from "../lib/limits";
 import { assertTurnstile } from "../lib/turnstile";
+import {
+  generateResetToken, hashResetToken, resetTokenTtlMs, resetTokenTtlMinutes,
+  identityResetUrl,
+} from "../lib/password-reset";
+import { sendPasswordResetEmail } from "../lib/email";
 
 export const conferenceRouter = {
   // Owner-only: list conferences this global account owns. Identities never
@@ -41,7 +47,7 @@ export const conferenceRouter = {
     }));
   }),
 
-  create: authed.conferences.create.handler(async ({ input, context }) => {
+  create: verified.conferences.create.handler(async ({ input, context }) => {
     const ownedCount = await context.prisma.conference.count({
       where: { ownerId: context.user.id },
     });
@@ -696,6 +702,82 @@ export const conferenceRouter = {
       throw new ORPCError("UNAUTHORIZED", { message: "invalid_credentials" });
     }
     recordLoginSuccess(lockoutKey);
+    const sessionToken = await createIdentitySession(context.prisma, identity.id);
+    setIdentityCookie(context.responseHeaders, conf.id, sessionToken);
+    return toConfMeOut(identity);
+  }),
+
+  // Request a reset link for a per-conference identity. Mirrors the owner flow
+  // (no enumeration, rate-limited, Turnstile-protected) but scoped to one
+  // conference. Only identities that have actually set a password (claimed
+  // their account) get an email; unclaimed rows still return Ok.
+  requestPasswordReset: base.conferences.requestPasswordReset.handler(async ({ input, context }) => {
+    const ip = clientIp(context.req);
+    assertPasswordResetAllowed(`conf:${input.slug}:${input.email}`, ip);
+    await assertTurnstile(input.turnstile_token, ip ?? undefined);
+
+    const conf = await context.prisma.conference.findUnique({
+      where: { slug: input.slug }, select: { id: true, name: true },
+    });
+    if (conf) {
+      const identity = await context.prisma.conferenceIdentity.findUnique({
+        where: { conferenceId_email: { conferenceId: conf.id, email: input.email } },
+      });
+      if (identity && identity.passwordHash) {
+        const token = generateResetToken();
+        await context.prisma.conferenceIdentity.update({
+          where: { id: identity.id },
+          data: {
+            passwordResetTokenHash: hashResetToken(token),
+            passwordResetExpiresAt: new Date(Date.now() + resetTokenTtlMs()),
+          },
+        });
+        await sendPasswordResetEmail({
+          to: identity.email,
+          resetUrl: identityResetUrl(input.slug, token),
+          ttlMinutes: resetTokenTtlMinutes(),
+          scopeName: conf.name,
+        });
+      }
+    }
+    return { ok: true as const };
+  }),
+
+  // Consume a per-conference reset token: set the new password, clear the
+  // token, sign out this identity's other sessions, and log them in here.
+  resetPassword: base.conferences.resetPassword.handler(async ({ input, context }) => {
+    await assertTurnstile(input.turnstile_token, clientIp(context.req) ?? undefined);
+
+    const conf = await context.prisma.conference.findUnique({
+      where: { slug: input.slug }, select: { id: true },
+    });
+    if (!conf) throw new ORPCError("NOT_FOUND", { message: "conference_not_found" });
+
+    const tokenHash = hashResetToken(input.token);
+    const identity = await context.prisma.conferenceIdentity.findUnique({
+      where: { passwordResetTokenHash: tokenHash },
+    });
+    // Token must exist, be unexpired, and belong to THIS conference (defence in
+    // depth — the hash is globally unique, but the slug is part of the link).
+    if (!identity || identity.conferenceId !== conf.id
+        || !identity.passwordResetExpiresAt
+        || identity.passwordResetExpiresAt.getTime() <= Date.now()) {
+      throw new ORPCError("BAD_REQUEST", { message: "invalid_or_expired_token" });
+    }
+
+    const passwordHash = await hashPassword(input.password);
+    await context.prisma.$transaction([
+      context.prisma.conferenceIdentity.update({
+        where: { id: identity.id },
+        data: {
+          passwordHash,
+          passwordResetTokenHash: null,
+          passwordResetExpiresAt: null,
+        },
+      }),
+      context.prisma.session.deleteMany({ where: { conferenceIdentityId: identity.id } }),
+    ]);
+
     const sessionToken = await createIdentitySession(context.prisma, identity.id);
     setIdentityCookie(context.responseHeaders, conf.id, sessionToken);
     return toConfMeOut(identity);

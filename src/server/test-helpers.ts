@@ -9,6 +9,7 @@ import { RPCLink } from "@orpc/client/fetch";
 import type { RouterClient } from "@orpc/server";
 import type { AppRouter } from "./rpc";
 import { __resetLimitsState } from "./lib/limits";
+import { __resetEmailOutbox } from "./lib/email";
 import { mkdtempSync, rmSync, existsSync, copyFileSync, readFileSync, mkdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,6 +59,13 @@ export function setupTestApp(): TestApp {
   // Reset in-memory anti-abuse stores so per-describe tests don't leak state
   // (login lockouts and write-rate counters live at module scope).
   __resetLimitsState();
+  // Drop any email captured by a previous describe block's outbox.
+  __resetEmailOutbox();
+  // APP_URL is required in prod (no default) for building email links; tests
+  // build the app directly (bypassing startServer's boot check), so give them
+  // a stable origin. The host is irrelevant to assertions (they parse the
+  // token out of the link).
+  if (!process.env.APP_URL) process.env.APP_URL = "http://localhost:3000";
 
   const dir = mkdtempSync(join(tmpdir(), "uncon-test-"));
   const dbPath = join(dir, "test.sqlite");

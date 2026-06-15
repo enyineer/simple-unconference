@@ -117,6 +117,48 @@ limits:
   # Per-account sliding-window write rate. 600/hour is well above any real
   # interactive user; catches scripted abuse from a compromised account.
   writesPerHourPerUser: 600               # WRITES_PER_HOUR_PER_USER (0 disables)
+  # Forgot-password throttle + reset-link lifetime.
+  passwordResetTokenTtlMin: 30            # PASSWORD_RESET_TOKEN_TTL_MIN
+  passwordResetPerHourPerEmail: 3         # PASSWORD_RESET_PER_HOUR_PER_EMAIL (0 disables)
+  # Off by default: NAT-blind, like the login lockout. A venue shares one
+  # public IP, so a per-IP cap would lock out attendees resetting their
+  # per-conference passwords. Per-email + Turnstile are the real defenses.
+  # Set a positive value only if your users aren't behind a shared NAT.
+  passwordResetPerHourPerIp: 0            # PASSWORD_RESET_PER_HOUR_PER_IP (0 disables)
+  # Email-verification code/link lifetimes + resend throttle. Verification only
+  # applies to global accounts, so the per-IP cap is safe to keep on.
+  emailVerifyCodeTtlMin: 15               # EMAIL_VERIFY_CODE_TTL_MIN
+  emailVerifyLinkTtlMin: 30               # EMAIL_VERIFY_LINK_TTL_MIN
+  verifyResendPerHourPerEmail: 5          # VERIFY_RESEND_PER_HOUR_PER_EMAIL (0 disables)
+  verifyResendPerHourPerIp: 20            # VERIFY_RESEND_PER_HOUR_PER_IP (0 disables)
+
+# Transactional email (password-reset + email verification + account linking).
+# Pick a transport. With no real transport (transport: none/blank and no key),
+# delivery is a no-op (links logged), and email verification + cross-conference
+# account linking are switched OFF - everything else still works. Set appUrl to
+# your real public origin or links will point at localhost.
+email:
+  transport: ""  # EMAIL_TRANSPORT: resend | smtp | memory | none (blank = auto)
+  # REQUIRED. This instance's public origin (APP_URL). No server-side default -
+  # the chart install fails if this is empty. e.g. https://unconf.example.com
+  appUrl: ""
+  from: ""       # EMAIL_FROM, e.g. "Unconf <noreply@example.com>"
+  # --- Resend (transport: resend) ---
+  resendApiKey: ""  # RESEND_API_KEY (plain). Prefer resendApiKeySecret below.
+  resendApiKeySecret:
+    name: ""     # Secret name (takes precedence over resendApiKey when set)
+    key: ""      # Key within that Secret
+  # --- SMTP (transport: smtp), via nodemailer ---
+  smtp:
+    url: ""      # SMTP_URL (overrides the discrete fields below when set)
+    host: ""     # SMTP_HOST
+    port: ""     # SMTP_PORT (default 587)
+    user: ""     # SMTP_USER
+    password: ""        # SMTP_PASS (plain). Prefer passwordSecret below.
+    passwordSecret:
+      name: ""   # Secret name (takes precedence over password when set)
+      key: ""    # Key within that Secret
+    secure: ""   # SMTP_SECURE: "true"/"false"
 
 # Cloudflare Turnstile (CAPTCHA). When BOTH keys are set the server requires
 # a valid token on auth.signup, auth.login, and conferences.signupViaLink.

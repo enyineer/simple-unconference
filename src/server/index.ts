@@ -8,6 +8,8 @@ import { avatarRoutes } from "./routes/avatars";
 import { realtimeRoutes } from "./routes/realtime";
 import { handleRpc } from "./rpc";
 import { startMetricsPusher } from "./metrics/push";
+import { startPendingUserReaper } from "./lib/reaper";
+import { assertAppUrlConfigured } from "./lib/app-url";
 import {
   renderLocal,
   resolveMetricsPort,
@@ -96,6 +98,10 @@ function mimeFor(path: string): string {
 // the port is already bound — otherwise an orphaned old backend can keep
 // answering requests alongside the new one and you'd never notice.
 export function startServer(): void {
+  // Fail fast on misconfiguration: APP_URL must be set so email links resolve.
+  // No default — a loopback default would silently ship broken reset/verify
+  // links after rollout.
+  assertAppUrlConfigured();
   const prisma = getPrisma();
   const app = buildApp(prisma);
   const port = Number(process.env.PORT ?? 3000);
@@ -124,6 +130,10 @@ export function startServer(): void {
       return new Response("Not Found (no static dist; in dev open the Vite URL)", { status: 404 });
     },
   });
+  // Periodically delete abandoned pending signups (unverified + link long
+  // expired). Idempotent deleteMany, so harmless if it runs in every worker.
+  startPendingUserReaper(prisma);
+
   const workerTag = process.env.WORKER_ID !== undefined ? ` [w${process.env.WORKER_ID}]` : "";
   console.log(
     `simple-unconference API${workerTag}: http://localhost:${port}` +

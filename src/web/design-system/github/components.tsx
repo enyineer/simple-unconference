@@ -114,8 +114,14 @@ export const Text: DesignSystem["Text"] = ({ children, muted }) => (
   </PText>
 );
 
-export const Link: DesignSystem["Link"] = ({ href, onClick, children }) => (
-  <PLink href={href} onClick={onClick}>{children}</PLink>
+export const Link: DesignSystem["Link"] = ({ href, onClick, muted, children }) => (
+  <PLink
+    href={href}
+    onClick={onClick}
+    style={muted ? { fontSize: 12, lineHeight: "16px" } : undefined}
+  >
+    {children}
+  </PLink>
 );
 
 export const Button: DesignSystem["Button"] = ({
@@ -136,6 +142,7 @@ export const Button: DesignSystem["Button"] = ({
 export const TextInput: DesignSystem["TextInput"] = ({
   id, name, label, placeholder, type = "text", value, defaultValue,
   onChange, onBlur, required, disabled, error, block,
+  inputMode, autoComplete, autoFocus,
 }) => (
   <FormControl required={required} disabled={disabled}>
     {label && <FormControl.Label>{label}</FormControl.Label>}
@@ -145,6 +152,9 @@ export const TextInput: DesignSystem["TextInput"] = ({
       onChange={onChange}
       onBlur={onBlur}
       block={block ?? true}
+      inputMode={inputMode}
+      autoComplete={autoComplete}
+      autoFocus={autoFocus}
       validationStatus={error ? "error" : undefined}
     />
     {error && <FormControl.Validation variant="error">{error}</FormControl.Validation>}

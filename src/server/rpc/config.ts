@@ -1,6 +1,7 @@
 import { base } from "./shared";
 import { LIMITS } from "../lib/limits";
 import { turnstileSiteKey } from "../lib/turnstile";
+import { emailConfigured } from "../lib/email";
 
 // Truthy = signup blocked. Treats "1"/"true"/"yes" (any case) as on; anything
 // else (including unset) leaves global signup enabled — safe default for
@@ -16,6 +17,9 @@ export const configRouter = {
     return {
       signup_enabled: !isSignupDisabled(),
       turnstile_site_key: turnstileSiteKey(),
+      // Drives the email-verification wall + whether account-linking is exposed.
+      // False when no email transport is configured (self-hosted, no Resend/SMTP).
+      email_enabled: emailConfigured(),
       max_conferences_per_user:
         LIMITS.maxConferencesPerUser === 0 ? null : LIMITS.maxConferencesPerUser,
       max_sessions_per_user_per_conference:

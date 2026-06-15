@@ -152,8 +152,16 @@ export const Text: DesignSystem["Text"] = ({ children, muted }) => (
   </span>
 );
 
-export const Link: DesignSystem["Link"] = ({ href, onClick, children }) => (
-  <a href={href} onClick={onClick} style={{ color: "var(--uncon-primary)", textDecoration: "none" }}>
+export const Link: DesignSystem["Link"] = ({ href, onClick, muted, children }) => (
+  <a
+    href={href}
+    onClick={onClick}
+    style={{
+      color: "var(--uncon-primary)",
+      textDecoration: "none",
+      ...(muted ? { fontSize: 12, lineHeight: "16px" } : {}),
+    }}
+  >
     {children}
   </a>
 );
@@ -222,12 +230,14 @@ function inputStyle(error?: string, block?: boolean): React.CSSProperties {
 export const TextInput: DesignSystem["TextInput"] = ({
   id, name, label, placeholder, type = "text", value, defaultValue,
   onChange, onBlur, required, disabled, error, block,
+  inputMode, autoComplete, autoFocus,
 }) => (
   <FieldShell label={label} error={error} required={required} disabled={disabled}>
     <input
       id={id} name={name} placeholder={placeholder} type={type}
       value={value} defaultValue={defaultValue}
       onChange={onChange} onBlur={onBlur} required={required} disabled={disabled}
+      inputMode={inputMode} autoComplete={autoComplete} autoFocus={autoFocus}
       style={inputStyle(error, block ?? true)}
     />
   </FieldShell>

@@ -12,6 +12,7 @@ import type { PrismaClient } from "@prisma/client";
 import { base } from "./rpc/shared";
 import { configRouter } from "./rpc/config";
 import { authRouter } from "./rpc/auth";
+import { accountRouter } from "./rpc/account";
 import { conferenceRouter } from "./rpc/conferences";
 import { roomsRouter } from "./rpc/rooms";
 import { submissionsRouter } from "./rpc/submissions";
@@ -26,6 +27,7 @@ export function buildRouter() {
   return base.router({
     config: configRouter,
     auth: authRouter,
+    account: accountRouter,
     conferences: conferenceRouter,
     rooms: roomsRouter,
     submissions: submissionsRouter,
