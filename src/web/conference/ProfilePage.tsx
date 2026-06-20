@@ -215,11 +215,9 @@ export function ProfilePage({ slug, identityId, onConfMeRefresh }: ProfilePagePr
   function openExperts(): void {
     // Phase 4 v1: just navigate to the experts tab. Cross-tab focus into a
     // specific expert row is future work (no scroll-into-view yet).
-    navigate(`/conferences/${slug}`);
-    // Hash-only navigation doesn't pass query state through our matchRoute —
-    // ConferencePage owns the active tab in local state. A small URL hint
-    // exists for completeness but we don't read it yet.
-    window.location.hash = `/conferences/${encodeURIComponent(slug)}?tab=experts`;
+    // ConferencePage reads the active tab from the /:tab URL segment, so the
+    // experts tab lives at /conferences/<slug>/experts (not a ?tab= query).
+    navigate(`/conferences/${encodeURIComponent(slug)}/experts`);
   }
 
   return (
