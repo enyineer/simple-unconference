@@ -1,5 +1,18 @@
 # simple-unconference
 
+## 0.11.1
+
+### Patch Changes
+
+- [#19](https://github.com/enyineer/simple-unconference/pull/19) [`347b234`](https://github.com/enyineer/simple-unconference/commit/347b234ac51da2b1340f5d2da04039b47f3c92dd) Thanks [@enyineer](https://github.com/enyineer)! - Fix the "Book Expert" link on a profile page navigating to the wrong tab.
+
+  `openExperts` in `ProfilePage` set `window.location.hash` to
+  `/conferences/<slug>?tab=experts`, but `ConferencePage` derives the active tab
+  from the `/:tab` URL segment (`/conferences/<slug>/experts`), not a `?tab=`
+  query param — so the click landed on the default "sessions" tab. It now
+  navigates straight to `/conferences/<slug>/experts` via `navigate`, matching
+  the canonical tab routing used by `setTab`.
+
 ## 0.11.0
 
 ### Minor Changes
