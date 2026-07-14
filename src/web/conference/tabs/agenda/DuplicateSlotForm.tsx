@@ -1,7 +1,6 @@
 import { useState } from "react";
 import {
   Button,
-  DateTime,
   Form,
   Stack,
   TextInput,
@@ -10,6 +9,8 @@ import { useToast } from "../../../design-system/hooks";
 import { api, errorCode } from "../../../api";
 import type { Slot } from "../../types";
 import { Tip } from "../../ui/Tip";
+import { SlotTimeFields } from "./SlotTimeFields";
+import { slotTimesValid } from "./slotTimes";
 
 // ---- Duplicate-slot sheet contents ----------------------------------------
 //
@@ -44,10 +45,7 @@ export function DuplicateSlotForm({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (endsAt <= startsAt) {
-      toast.error("End time must be after start time.");
-      return;
-    }
+    if (!slotTimesValid(startsAt, endsAt)) return;
     setBusy(true);
     try {
       await api.agenda.duplicateSlot({
@@ -91,22 +89,19 @@ export function DuplicateSlotForm({
           onChange={(e) => setTitle(e.target.value)}
           placeholder={slot.title ?? "Same as source"}
         />
-        <DateTime
-          label="Starts at"
-          value={startsAt}
-          onChange={setStartsAt}
+        <SlotTimeFields
+          startsAt={startsAt}
+          endsAt={endsAt}
+          onStartsAtChange={setStartsAt}
+          onEndsAtChange={setEndsAt}
           timeZone={timeZone}
-          max={endsAt}
-        />
-        <DateTime
-          label="Ends at"
-          value={endsAt}
-          onChange={setEndsAt}
-          timeZone={timeZone}
-          min={startsAt}
         />
         <Stack direction="row" gap="condensed">
-          <Button type="submit" variant="primary" disabled={busy}>
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={busy || !slotTimesValid(startsAt, endsAt)}
+          >
             Create offering
           </Button>
           <Button onClick={onCancel} disabled={busy}>

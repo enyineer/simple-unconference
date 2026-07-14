@@ -1,7 +1,6 @@
 import { useState } from "react";
 import {
   Button,
-  DateTime,
   Form,
   Select,
   Stack,
@@ -13,6 +12,8 @@ import { Tip } from "../../ui/Tip";
 import { AssignmentRulesTrigger } from "../../ui/AssignmentRulesModal";
 import { SLOT_TYPE_DETAIL } from "../../ui/agendaGuide";
 import { SlotTypeChooser } from "./SlotTypeChooser";
+import { SlotTimeFields } from "./SlotTimeFields";
+import { slotTimesValid } from "./slotTimes";
 import { type SlotKind } from "./types";
 
 export function NewSlotForm({
@@ -70,6 +71,10 @@ export function NewSlotForm({
 
   return (
     <Stack gap="condensed">
+      <Tip>
+        A slot is <strong>one time block</strong> on your agenda - a talks
+        round, a mixer, a lunch break. Most days are built from several slots.
+      </Tip>
       <Form onSubmit={submit}>
         <div
           style={{
@@ -125,22 +130,19 @@ export function NewSlotForm({
             onChange={(e) => setTitle(e.target.value)}
           />
         )}
-        <DateTime
-          label="Starts at"
-          value={startsAt}
-          onChange={setStartsAt}
+        <SlotTimeFields
+          startsAt={startsAt}
+          endsAt={endsAt}
+          onStartsAtChange={setStartsAt}
+          onEndsAtChange={setEndsAt}
           timeZone={timeZone}
-          max={endsAt}
-        />
-        <DateTime
-          label="Ends at"
-          value={endsAt}
-          onChange={setEndsAt}
-          timeZone={timeZone}
-          min={startsAt}
         />
         <Stack direction="row" gap="condensed">
-          <Button type="submit" variant="primary" disabled={busy}>
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={busy || !slotTimesValid(startsAt, endsAt)}
+          >
             Add slot
           </Button>
           <Button onClick={onCancel} disabled={busy}>
