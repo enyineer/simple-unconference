@@ -1,5 +1,11 @@
 # simple-unconference
 
+## 0.11.2
+
+### Patch Changes
+
+- [`3ebc075`](https://github.com/enyineer/simple-unconference/commit/3ebc075832a04f0d48e05bd3eb625be14c8bd3f7) Thanks [@enyineer](https://github.com/enyineer)! - Helm chart: fail the install when the Resend transport is configured (explicitly via `email.transport: resend`, or implicitly via a Resend API key with blank transport) but `email.from` is empty. Without a sender address the app falls back to `onboarding@resend.dev`, which Resend restricts to sandbox delivery (the account owner's own address only), so emails to real users silently fail with a 403.
+
 ## 0.11.1
 
 ### Patch Changes
