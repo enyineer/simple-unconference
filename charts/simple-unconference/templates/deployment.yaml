@@ -111,6 +111,19 @@ spec:
             # crash-loop on boot.
             - name: APP_URL
               value: {{ required "email.appUrl is required: set it to this instance's public URL, e.g. https://unconf.example.com" (.Values.email).appUrl | quote }}
+            {{- /* Resend counts as active either explicitly (transport: resend)
+                 or implicitly (blank transport + a key present), mirroring the
+                 server's transport auto-detection. Without email.from the app
+                 falls back to onboarding@resend.dev, which Resend keeps in
+                 sandbox mode (delivers only to the account owner's address),
+                 so every email to real users silently fails with a 403. Fail
+                 the install instead of shipping that footgun. */}}
+            {{- $email := .Values.email | default dict }}
+            {{- $resendKeySet := or (and $email.resendApiKeySecret $email.resendApiKeySecret.name) $email.resendApiKey }}
+            {{- $resendActive := or (eq ($email.transport | default "") "resend") (and (not $email.transport) $resendKeySet) }}
+            {{- if and $resendActive (not $email.from) }}
+            {{- fail "email.from is required when the Resend transport is configured: without it the app sends from onboarding@resend.dev, which Resend restricts to sandbox delivery (your own address only). Set email.from to an address on a domain verified at resend.com/domains, e.g. \"Unconf <noreply@example.com>\"" }}
+            {{- end }}
             {{- if and .Values.email .Values.email.from }}
             - name: EMAIL_FROM
               value: {{ .Values.email.from | quote }}

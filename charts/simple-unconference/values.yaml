@@ -142,7 +142,11 @@ email:
   # REQUIRED. This instance's public origin (APP_URL). No server-side default -
   # the chart install fails if this is empty. e.g. https://unconf.example.com
   appUrl: ""
-  from: ""       # EMAIL_FROM, e.g. "Unconf <noreply@example.com>"
+  # EMAIL_FROM, e.g. "Unconf <noreply@example.com>". REQUIRED when the Resend
+  # transport is active (transport: resend, or blank transport with a Resend
+  # key set) - the install fails without it. The onboarding@resend.dev default
+  # only delivers to the Resend account owner's own address (sandbox mode).
+  from: ""
   # --- Resend (transport: resend) ---
   resendApiKey: ""  # RESEND_API_KEY (plain). Prefer resendApiKeySecret below.
   resendApiKeySecret:
