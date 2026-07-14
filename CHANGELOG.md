@@ -1,5 +1,11 @@
 # simple-unconference
 
+## 0.11.4
+
+### Patch Changes
+
+- [`9b64001`](https://github.com/enyineer/simple-unconference/commit/9b64001fdd37a80c44fdfe0f3a8f971e4ba1a185) Thanks [@enyineer](https://github.com/enyineer)! - Slot form time-picker UX: the start and end pickers no longer constrain each other natively (which made it impossible to move a slot's start into the future without editing the end first). An invalid order now shows an inline "End time must be after start time." error and disables saving. The forms also show a live duration readout, warn when a slot exceeds 4 hours (a slot is one agenda block, not the whole day), and the new-slot form explains that days are built from several slots.
+
 ## 0.11.3
 
 ### Patch Changes
