@@ -145,8 +145,9 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
 
       <Sheet open={inviteSheetOpen} onClose={() => setInviteSheetOpen(false)} title="Invite people">
         <Tip>
-          We send an invite token, not a password. The recipient sets their own password
-          when they click the link.
+          Creating an invite doesn&apos;t send any email. Each invite generates a personal
+          link - copy it or export the CSV and share the links yourself. The recipient
+          sets their own password when they open their link.
         </Tip>
 
         <Stack gap="spacious">
