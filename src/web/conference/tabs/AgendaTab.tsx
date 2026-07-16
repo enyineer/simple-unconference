@@ -25,6 +25,7 @@ import { Calendar, CalendarLegend } from "./Calendar";
 import { slotSheetTitle } from "./agenda/types";
 import { NewSlotForm } from "./agenda/NewSlotForm";
 import { SlotBlock } from "./agenda/SlotBlock";
+import { PitchModeSheet } from "./agenda/PitchModeSheet";
 import { OnboardingChecklist } from "./agenda/OnboardingChecklist";
 
 export function AgendaTab({
@@ -59,6 +60,7 @@ export function AgendaTab({
     try { return localStorage.getItem(assignConfirmKey) === "1"; } catch { return false; }
   });
   const [selectedSlotId, setSelectedSlotId] = useState<number | null>(null);
+  const [pitchOpen, setPitchOpen] = useState(false);
 
   // Open the confirm, or assign straight away if the mod opted out of it.
   function requestAssignAll() {
@@ -97,7 +99,7 @@ export function AgendaTab({
       })
       .catch(() => {
         if (cancelled) return;
-        setData({ slots: [], slot_series: [], tracks: [], placements: [], mixer_placements: [], participant_count: null });
+        setData({ slots: [], slot_series: [], tracks: [], placements: [], mixer_placements: [], participant_count: null, spotlight_submission_id: null });
       });
     return () => { cancelled = true; };
   }, [fetchAgenda]);
@@ -256,6 +258,11 @@ export function AgendaTab({
               identical primary actions competing on one screen. */}
           <AssignmentRulesTrigger isMod={isMod} label="How it works" />
           {isMod && (
+            <Button onClick={() => setPitchOpen(true)}>
+              Pitch mode
+            </Button>
+          )}
+          {isMod && (
             <Button variant="primary" onClick={() => setAdding(true)}>
               + Add slot
             </Button>
@@ -361,6 +368,17 @@ export function AgendaTab({
           </Stack>
         </Stack>
       </Sheet>
+
+      {isMod && (
+        <PitchModeSheet
+          slug={slug}
+          open={pitchOpen}
+          onClose={() => setPitchOpen(false)}
+          subs={subs}
+          activeId={data.spotlight_submission_id}
+          onChanged={refresh}
+        />
+      )}
 
       <Sheet open={adding} onClose={() => setAdding(false)} title="Add slot">
         <NewSlotForm

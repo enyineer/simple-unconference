@@ -21,6 +21,9 @@ const ConferencePage = lazy(() =>
 const JoinPage = lazy(() =>
   import("./pages/Join").then((m) => ({ default: m.JoinPage })),
 );
+const BoardPage = lazy(() =>
+  import("./pages/Board").then((m) => ({ default: m.BoardPage })),
+);
 const ConferenceLoginPage = lazy(() =>
   import("./pages/ConferenceLogin").then((m) => ({
     default: m.ConferenceLoginPage,
@@ -220,6 +223,7 @@ export function App() {
   const { path, navigate } = useRoute();
 
   // Routes (parsed up front; some are anonymous, some require auth).
+  const boardMatch = matchRoute("/board/:slug", path);
   const joinMatch = matchRoute("/c/:slug/join", path);
   const confLoginMatch = matchRoute("/c/:slug/login", path);
   const confResetMatch = matchRoute("/c/:slug/reset", path);
@@ -353,6 +357,10 @@ export function App() {
   );
 
   function renderPage() {
+    // ----- public Live Board — full-screen, no conference chrome -----
+    if (boardMatch && boardMatch.slug) {
+      return <BoardPage slug={boardMatch.slug} />;
+    }
     // ----- anonymous, conference-scoped routes -----
     if (joinMatch && joinMatch.slug) {
       return (

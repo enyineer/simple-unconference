@@ -50,7 +50,7 @@ export function MyAssignmentsTab({
       .catch(() => {
         if (cancelled) return;
         setData({ assignments: [], unplaced_slots: [] });
-        setAgenda({ slots: [], slot_series: [], tracks: [], placements: [], mixer_placements: [], participant_count: null });
+        setAgenda({ slots: [], slot_series: [], tracks: [], placements: [], mixer_placements: [], participant_count: null, spotlight_submission_id: null });
       });
     return () => { cancelled = true; };
   }, [fetchAll]);

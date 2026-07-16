@@ -338,6 +338,10 @@ export interface AgendaOut {
   /** Number of conference identities. Moderator-only — `null` for participants
    *  so the conference's size isn't leaked to non-mods. */
   participant_count: number | null;
+  /** The submission currently spotlighted on the Live Board (Pitch Mode), or
+   *  null. Lets the mod Pitch Mode sheet reflect the real state across devices
+   *  and moderators instead of guessing locally. */
+  spotlight_submission_id: number | null;
 }
 
 // Response of `agenda.updateSeries`. When the requested patch would orphan

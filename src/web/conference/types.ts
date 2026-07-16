@@ -119,6 +119,10 @@ export interface AgendaData {
    *  overfill badge on planned tracks (every participant attends a required
    *  talk, so the room must seat all of them). */
   participant_count: number | null;
+  /** The submission currently spotlighted on the Live Board (Pitch Mode), or
+   *  null. Server truth — keeps the Pitch Mode sheet consistent across
+   *  moderators and devices. */
+  spotlight_submission_id: number | null;
 }
 
 import type { MyAssignmentsOut } from "../../shared/contract";

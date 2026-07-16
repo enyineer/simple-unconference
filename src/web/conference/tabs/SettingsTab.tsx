@@ -10,6 +10,7 @@ import { SettingsSection } from "../ui/SettingsSection";
 import { SearchableSelect } from "../ui/SearchableSelect";
 import { DangerZone } from "./settings/DangerZone";
 import { JoinLinkSection } from "./settings/JoinLinkSection";
+import { BoardLinkSection } from "./settings/BoardLinkSection";
 import { UsageCard } from "./settings/UsageCard";
 import { useMemoTimezones } from "./settings/helpers";
 import type { SavedKey, UsageCounters } from "./settings/types";
@@ -338,6 +339,8 @@ export function SettingsTab({
       </SettingsSection>
 
       <JoinLinkSection slug={slug} />
+
+      <BoardLinkSection slug={slug} />
 
       <DangerZone
         slug={slug}

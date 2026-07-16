@@ -1696,7 +1696,7 @@ export const agendaRouter = {
       }),
       context.prisma.conference.findUniqueOrThrow({
         where: { id: confId },
-        select: { mixerAvoidRepeatsDefault: true },
+        select: { mixerAvoidRepeatsDefault: true, spotlightSubmissionId: true },
       }),
       // Identity count — surfaced only to mods (see `participant_count` below).
       context.prisma.conferenceIdentity.count({ where: { conferenceId: confId } }),
@@ -1772,6 +1772,9 @@ export const agendaRouter = {
         })),
       // Mods see the conference size; participants get null (no size leak).
       participant_count: isMod ? identityCount : null,
+      // Current Live Board spotlight — lets the Pitch Mode sheet reflect the
+      // real state across devices/moderators instead of guessing locally.
+      spotlight_submission_id: conf.spotlightSubmissionId,
     };
   }),
 
