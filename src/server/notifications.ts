@@ -39,7 +39,10 @@ export type NotificationKind =
   | "schedule_changed"
   // Mod-only heads-up when a per-conference quota crosses 80% or hits 100%.
   // Fired by `notifyQuotaThreshold` exactly twice per resource per lifetime.
-  | "quota_threshold";
+  | "quota_threshold"
+  // Mod broadcast to every conference identity (announcements.send). One-shot,
+  // no dedupeKey — each announcement is its own bell row.
+  | "announcement";
 
 export interface NotificationInput {
   identityId: number;

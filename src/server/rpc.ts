@@ -18,6 +18,7 @@ import { roomsRouter } from "./rpc/rooms";
 import { submissionsRouter } from "./rpc/submissions";
 import { agendaRouter } from "./rpc/agenda";
 import { expertsRouter } from "./rpc/experts";
+import { announcementsRouter } from "./rpc/announcements";
 import { notificationsRouter } from "./rpc/notifications";
 import { profilesRouter } from "./rpc/profiles";
 import { chatRouter } from "./rpc/chat";
@@ -33,6 +34,7 @@ export function buildRouter() {
     submissions: submissionsRouter,
     agenda: agendaRouter,
     experts: expertsRouter,
+    announcements: announcementsRouter,
     notifications: notificationsRouter,
     profiles: profilesRouter,
     chat: chatRouter,

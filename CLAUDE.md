@@ -158,6 +158,25 @@ something the next session would need to know.
   carries the `conversationId` so per-conversation subscribers can filter
   cheaply. Drop a payload without it and ConversationView will silently
   ignore the event.
+- **Live Board topic events** (`agenda.changed`, `board.spotlight`) are
+  routed on a CONFERENCE key, not an identity: `recipientId =
+  boardTopicKey(confId)` (a NEGATIVE number, so it never collides with a
+  positive ConferenceIdentity.id). The board SSE
+  ([src/server/routes/board.ts](src/server/routes/board.ts)) is the only
+  subscriber; the notification/chat stream never sees them. Publish via
+  `publishAgendaChanged(confId)` / `publishBoardSpotlight(confId, subId)`
+  from [src/server/realtime/bus.ts](src/server/realtime/bus.ts), AFTER the
+  mutating tx commits. `publishAgendaChanged` is wired into every agenda
+  mutation (slot/track/placement/series writes, per-slot assign, mixer run,
+  `assignAll`, refit, spotlight) PLUS `submissions.star`/`unstar` (star
+  counts drive the board). Grep for `publishAgendaChanged(` before adding a
+  new agenda-mutating path — it must call it too.
+- **The public board payload MUST stay email-free.** `GET /api/board/:slug`
+  is token-gated (`Conference.boardToken`) but PUBLIC — display names, titles,
+  room names, star/attendee counts ONLY. Never add an email or unpublished-
+  profile-sensitive field. A spotlighted session is hidden once unpublished.
+  Late board joiners get current state from the payload route, so the board
+  SSE does NO replay — it only forwards events that arrive after connect.
 
 ## Notifications (single entrypoint)
 

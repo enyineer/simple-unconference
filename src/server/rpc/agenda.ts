@@ -12,6 +12,7 @@ import {
 } from "../assignment-agenda";
 import { effectiveSlotConfig, SLOT_CONFIG_INCLUDE } from "../lib/slot-config";
 import { createNotifications } from "../notifications";
+import { publishAgendaChanged, publishBoardSpotlight } from "../realtime/bus";
 import {
   expertDedicatedRoomIds, expertDedicationOf,
   unavailableRoomIds, roomAvailabilityWindows,
@@ -1795,6 +1796,7 @@ export const agendaRouter = {
           : null,
       },
     });
+    publishAgendaChanged(context.conferenceId);
     return { id: created.id };
   }),
 
@@ -1870,6 +1872,7 @@ export const agendaRouter = {
         }
       }
     });
+    publishAgendaChanged(context.conferenceId);
     return { ok: true as const };
   }),
 
@@ -1887,6 +1890,7 @@ export const agendaRouter = {
     if (slot.seriesId !== null) {
       await maybeAutoDetachSingleton(context.prisma, slot.seriesId);
     }
+    publishAgendaChanged(context.conferenceId);
     return { ok: true as const };
   }),
 
@@ -1991,6 +1995,7 @@ export const agendaRouter = {
       return { slotId: sibling.id, seriesId: seriesId! };
     });
 
+    publishAgendaChanged(context.conferenceId);
     return { slot_id: result.slotId, series_id: result.seriesId };
   }),
 
@@ -2200,6 +2205,7 @@ export const agendaRouter = {
       }
     });
 
+    publishAgendaChanged(context.conferenceId);
     return { kind: "ok" as const };
   }),
 
@@ -2231,6 +2237,7 @@ export const agendaRouter = {
     // there's no point keeping the series around — auto-detach the
     // singleton too.
     await maybeAutoDetachSingleton(context.prisma, series.id);
+    publishAgendaChanged(context.conferenceId);
     return { ok: true as const };
   }),
 
@@ -2265,6 +2272,7 @@ export const agendaRouter = {
         context.prisma.slotSeries.delete({ where: { id: series.id } }),
       ]);
     }
+    publishAgendaChanged(context.conferenceId);
     return { ok: true as const };
   }),
 
@@ -2391,6 +2399,7 @@ export const agendaRouter = {
         mandatory: newMandatory, change: { kind: "scheduled", roomName },
       });
     }
+    publishAgendaChanged(context.conferenceId);
     return { kind: "ok" as const };
   }),
 
@@ -2417,6 +2426,7 @@ export const agendaRouter = {
         mandatory: track.mandatory, change: { kind: "removed" },
       });
     }
+    publishAgendaChanged(context.conferenceId);
     return { ok: true as const };
   }),
 
@@ -2626,6 +2636,7 @@ export const agendaRouter = {
       change: { kind: "scheduled", roomName: chosenRoom.name },
     });
 
+    publishAgendaChanged(context.conferenceId);
     return {
       kind: "ok" as const,
       track_id: track.id,
@@ -2992,6 +3003,7 @@ export const agendaRouter = {
       });
     }
 
+    publishAgendaChanged(context.conferenceId);
     return { kind: "ok" as const, moves, unresolved };
   }),
 
@@ -3019,6 +3031,7 @@ export const agendaRouter = {
       // sent here. The mod runs "Update seating" (`agenda.assignAll`) to seat
       // attendees over the placements; that action notifies only people whose
       // seat actually changed.
+      publishAgendaChanged(context.conferenceId);
       return { kind: "unconference" as const, ...r };
     }
     if (slot.type === "mixer") {
@@ -3037,6 +3050,7 @@ export const agendaRouter = {
         ctaLabel: "Open schedule",
         ctaHref: "tab:me",
       })));
+      publishAgendaChanged(context.conferenceId);
       return { kind: "mixer" as const, ...r };
     }
     throw new ORPCError("BAD_REQUEST", { message: "not_an_assignable_slot" });
@@ -3274,6 +3288,7 @@ export const agendaRouter = {
         dedupeKey: `track:${input.slot_id}:${submission.id}`,
       })));
     }
+    publishAgendaChanged(context.conferenceId);
     // `track_id` is vestigial here (placements have no track) — it exists only
     // because this endpoint reuses the `ScheduleSubmissionResult` shape; the
     // client ignores it.
@@ -3299,6 +3314,7 @@ export const agendaRouter = {
         where: { id: input.slot_id }, data: { seatingStale: true },
       }),
     ]);
+    publishAgendaChanged(context.conferenceId);
     return { ok: true as const };
   }),
 
@@ -3324,6 +3340,7 @@ export const agendaRouter = {
         dedupeKey: `assign:${context.conferenceId}`,
       })));
     }
+    publishAgendaChanged(context.conferenceId);
     return {
       assigned: r.user_assignments.length,
       unplaced_user_ids: r.unplaced_users,
@@ -3535,6 +3552,31 @@ export const agendaRouter = {
     await context.prisma.userAssignment.deleteMany({
       where: { slotId: input.slot_id, userId: actorIdentityId(context), manual: true },
     });
+    return { ok: true as const };
+  }),
+
+  // Pitch Mode: set/clear the conference's Live Board spotlight. Mod-only.
+  // A non-null submission must belong to this conference AND be published
+  // (the board is public, so an unpublished draft must never be surfaced).
+  spotlight: requireConf("moderator").agenda.spotlight.handler(async ({ input, context }) => {
+    if (input.submission_id !== null) {
+      const sub = await context.prisma.submission.findFirst({
+        where: { id: input.submission_id, conferenceId: context.conferenceId },
+        select: { status: true },
+      });
+      if (!sub) throw new ORPCError("BAD_REQUEST", { message: "submission_not_in_conference" });
+      if (sub.status !== "published") {
+        throw new ORPCError("BAD_REQUEST", { message: "submission_not_published" });
+      }
+    }
+    await context.prisma.conference.update({
+      where: { id: context.conferenceId },
+      data: { spotlightSubmissionId: input.submission_id },
+    });
+    // Fan out both the dedicated spotlight event (drives the overlay directly)
+    // and agenda.changed (so any board refetch also picks up the new state).
+    publishBoardSpotlight(context.conferenceId, input.submission_id);
+    publishAgendaChanged(context.conferenceId);
     return { ok: true as const };
   }),
 };

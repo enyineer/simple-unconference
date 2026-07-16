@@ -25,9 +25,50 @@ export type BusEvent =
   | { kind: "message.deleted"; recipientId: number; messageId: number; conversationId: number }
   | { kind: "message.read"; recipientId: number; conversationId: number }
   | { kind: "notification.upserted"; recipientId: number; notificationId: number }
-  | { kind: "notification.read"; recipientId: number; conversationId: number | null };
+  | { kind: "notification.read"; recipientId: number; conversationId: number | null }
+  // ----- public Live Board topic events --------------------------------------
+  // Routed on a CONFERENCE topic key, not a per-identity recipient:
+  // `recipientId = boardTopicKey(conferenceId)` (a NEGATIVE number, so it can
+  // never collide with a positive ConferenceIdentity.id used everywhere else as
+  // the subscription key). The board SSE (routes/board.ts) is the only
+  // subscriber. Both carry IDs only and stay strictly email-free — the board
+  // payload is public. `agenda.changed` tells the board "something scheduling-
+  // related changed, refetch"; `board.spotlight` carries the pitch-mode target.
+  | { kind: "agenda.changed"; recipientId: number; conferenceId: number }
+  | { kind: "board.spotlight"; recipientId: number; conferenceId: number; submissionId: number | null };
 
 export type BusHandler = (event: BusEvent) => void;
+
+// Board topic routing key for a conference. Negative so it shares no value with
+// any positive ConferenceIdentity.id (which the notification/chat SSE uses as
+// its per-recipient subscription key). Keeps board fan-out cleanly separated
+// from identity fan-out on the same EventBus.
+export function boardTopicKey(conferenceId: number): number {
+  return -conferenceId;
+}
+
+// Publish the tiny `agenda.changed` topic event for a conference. Call this
+// AFTER the mutating transaction commits so any board client that refetches the
+// public payload sees fresh data. Carries only the conferenceId; the board SSE
+// forwards it and the board page debounces + refetches. See routes/board.ts.
+export function publishAgendaChanged(conferenceId: number): void {
+  getBus().publish({
+    kind: "agenda.changed",
+    recipientId: boardTopicKey(conferenceId),
+    conferenceId,
+  });
+}
+
+// Publish the current pitch-mode spotlight target for a conference's board.
+// `submissionId === null` means the spotlight was cleared.
+export function publishBoardSpotlight(conferenceId: number, submissionId: number | null): void {
+  getBus().publish({
+    kind: "board.spotlight",
+    recipientId: boardTopicKey(conferenceId),
+    conferenceId,
+    submissionId,
+  });
+}
 
 export interface EventBus {
   publish(event: BusEvent): void;

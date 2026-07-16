@@ -93,6 +93,15 @@ model Conference {
   // hides the "Submit a session" button for them. Default true so the
   // out-of-the-box behaviour matches an open unconference.
   participantSubmissionsEnabled Boolean @default(true) @map("participant_submissions_enabled")
+  // Opaque secret that, when set, enables the public read-only Live Board at
+  // /#/board/<slug>?t=<token>. Null = board disabled. Rotating it mints a new
+  // token and invalidates the old link. Never exposed except to the owner.
+  boardToken    String?  @unique @map("board_token")
+  // The session currently in "spotlight" (Pitch Mode) on the Live Board.
+  // Persisted so it survives worker restarts and late board joiners. Cleared
+  // to null when the mod ends the spotlight. SetNull on submission delete so a
+  // removed session simply clears the spotlight instead of blocking the delete.
+  spotlightSubmissionId Int? @map("spotlight_submission_id")
   createdAt     DateTime @default(now()) @map("created_at")
 
   identities    ConferenceIdentity[]
@@ -105,6 +114,7 @@ model Conference {
   expertPools   ExpertRoomPool[]
   experts       Expert[]
   conversations Conversation[]
+  spotlightSubmission Submission? @relation("ConferenceSpotlight", fields: [spotlightSubmissionId], references: [id], onDelete: SetNull)
 
   @@map("conferences")
 }
@@ -193,6 +203,7 @@ model ConferenceIdentity {
   filedReports         MessageReport[]    @relation("MessageReportsFiled")
   chatBlocksMade       ChatBlock[]        @relation("ChatBlockBlocker")
   chatBlocksReceived   ChatBlock[]        @relation("ChatBlockBlocked")
+  takeaways            SessionTakeaway[]
 
   @@unique([conferenceId, email])
   @@index([conferenceId])
@@ -360,10 +371,33 @@ model Submission {
   roomRequirements    SubmissionRoomRequirement[]
   slotMemberships     SlotSubmission[]
   seriesMemberships   SeriesSubmission[]
+  takeaways           SessionTakeaway[]
+  // Back-relation for Conference.spotlightSubmission. A submission may be the
+  // spotlighted session of at most one conference (its own), but Prisma models
+  // the inverse side as a list.
+  spotlightedIn       Conference[]                @relation("ConferenceSpotlight")
 
   @@index([conferenceId])
   @@index([conferenceId, status])
   @@map("submissions")
+}
+
+// A short takeaway (learning / link) captured against a session. Anyone in the
+// conference can add/edit/delete their own; moderators can delete any. Visible
+// to all members. See the Harvest & Wrap-up feature (W2 builds the CRUD).
+model SessionTakeaway {
+  id           Int      @id @default(autoincrement())
+  submissionId Int      @map("submission_id")
+  identityId   Int      @map("identity_id")
+  text         String
+  url          String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  submission Submission         @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  identity   ConferenceIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+  @@map("session_takeaways")
 }
 
 // Free-form labels the submitter (or a moderator) attaches to a talk.

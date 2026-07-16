@@ -135,6 +135,13 @@ export interface JoinLinkOut {
   max_uses: number | null;
   used_count: number;
 }
+// Owner-facing state of the public Live Board link. `url` is the relative hash
+// path to the board (with the token embedded); null while disabled.
+export interface BoardLinkOut {
+  enabled: boolean;
+  token: string | null;
+  url: string | null;
+}
 export interface ConfMeOut {
   id: number;
   email: string;
@@ -705,7 +712,10 @@ export type NotificationKind =
   | "chat_message"
   | "chat_report"
   | "chat_warning"
-  | "schedule_changed";
+  | "schedule_changed"
+  // Mod broadcast to every conference identity (announcements.send). One-shot
+  // (no dedupe) so each announcement is its own bell row.
+  | "announcement";
 
 export interface NotificationOut {
   id: number;
@@ -912,4 +922,56 @@ export interface ChatSettingsOut {
   read_receipts_enabled: boolean;
   chat_banned: boolean;
   chat_ban_reason: string | null;
+}
+
+// ----- public Live Board (F1) ---------------------------------------------
+//
+// Shape of the token-gated, read-only board payload served at
+// GET /api/board/:slug?t=<token> (a plain Hono route, not an oRPC procedure —
+// it is public and text/event-stream-adjacent). Declared here so the W3 board
+// page can import the exact type. PUBLIC-SAFE: display names only, NEVER
+// emails, NEVER unpublished-profile-sensitive data.
+export interface BoardSpotlightOut {
+  submission_id: number;
+  title: string;
+  star_count: number;
+  // Submitter display name, or null when the submitter has no name set.
+  submitter_name: string | null;
+}
+export interface BoardSlotOut {
+  id: number;
+  type: "unconference" | "mixer" | "normal";
+  title: string | null;
+  starts_at: number;
+  ends_at: number;
+}
+export interface BoardRoomOut {
+  id: number;
+  name: string;
+  capacity: number;
+}
+// A scheduled session on the board — a planned track OR an unconference
+// placement, unified for rendering the room x slot grid.
+export interface BoardEntryOut {
+  slot_id: number;
+  room_id: number;
+  submission_id: number;
+  title: string;
+  star_count: number;
+  submitter_name: string | null;
+  // Attendees seated into this session (unconference placements) — 0 for
+  // planned tracks, which have no per-seat rows on the board.
+  attendee_count: number;
+  // True for a planned (type "normal") track; false for an unconference
+  // placement. Mandatory planned tracks additionally set `mandatory`.
+  planned: boolean;
+  mandatory: boolean;
+}
+export interface BoardPayloadOut {
+  name: string;
+  timezone: string;
+  spotlight: BoardSpotlightOut | null;
+  slots: BoardSlotOut[];
+  rooms: BoardRoomOut[];
+  entries: BoardEntryOut[];
 }

@@ -134,3 +134,10 @@ export const UpdateSlotSeriesSchema = v.object({
   confirm: v.optional(v.boolean()),
 });
 export type UpdateSlotSeriesInput = v.InferOutput<typeof UpdateSlotSeriesSchema>;
+
+// Pitch Mode: set (or clear) the conference's spotlight session for the Live
+// Board. `submission_id: null` ends the spotlight. Mod-only server-side.
+export const SpotlightSchema = v.object({
+  submission_id: v.union([PosInt, v.null()]),
+});
+export type SpotlightInput = v.InferOutput<typeof SpotlightSchema>;

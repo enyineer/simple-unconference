@@ -85,6 +85,13 @@ export const JoinLinkSetSchema = v.object({
 });
 export type JoinLinkSetInput = v.InferOutput<typeof JoinLinkSetSchema>;
 
+// Owner-managed public Live Board link. Enabling mints a token if absent;
+// disabling drops it (the URL stops working).
+export const BoardLinkSetSchema = v.object({
+  enabled: v.boolean(),
+});
+export type BoardLinkSetInput = v.InferOutput<typeof BoardLinkSetSchema>;
+
 // Per-conference identity preferences. colorMode lives on ConferenceIdentity
 // (per-conference), and a participant can also update their display name.
 export const UpdateConfMeSchema = v.object({

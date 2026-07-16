@@ -30,6 +30,9 @@ import {
   InviteCreateSchema,
   InviteImportSchema,
   JoinLinkSetSchema,
+  BoardLinkSetSchema,
+  SpotlightSchema,
+  AnnouncementSendSchema,
   LinkConferenceSchema,
   LoginSchema,
   ProfileDeleteAvatarSchema,
@@ -90,6 +93,7 @@ import {
   type InviteOut,
   type InvitePreviewOut,
   type JoinLinkOut,
+  type BoardLinkOut,
   type LinkableConferenceOut,
   type MyAssignmentsOut,
   type NotificationListOut,
@@ -215,6 +219,16 @@ export const contract = {
       .input(v.object({ slug: Slug, ...JoinLinkSetSchema.entries }))
       .output(type<JoinLinkOut>()),
     rotateJoinLink: oc.input(InConf).output(type<JoinLinkOut>()),
+
+    // ----- public Live Board link (owner-only) ----------------------------
+    // Mirrors the join-link trio. `getBoardLink` reports current state;
+    // `setBoardLink({enabled})` mints/keeps or clears the token;
+    // `rotateBoardLink` issues a fresh token (invalidating the old URL).
+    getBoardLink: oc.input(InConf).output(type<BoardLinkOut>()),
+    setBoardLink: oc
+      .input(v.object({ slug: Slug, ...BoardLinkSetSchema.entries }))
+      .output(type<BoardLinkOut>()),
+    rotateBoardLink: oc.input(InConf).output(type<BoardLinkOut>()),
 
     // ----- anonymous onboarding -------------------------------------------
     // No auth required; the token in the input is the secret.
@@ -411,6 +425,12 @@ export const contract = {
     unpickAssignment: oc
       .input(v.object({ slug: Slug, slot_id: Id }))
       .output(type<Ok>()),
+    // Pitch Mode (F1): set/clear the conference's spotlight session for the
+    // Live Board. Mod-only. Persists `Conference.spotlightSubmissionId` and
+    // fans out `board.spotlight` + `agenda.changed` on the bus.
+    spotlight: oc
+      .input(v.object({ slug: Slug, ...SpotlightSchema.entries }))
+      .output(type<Ok>()),
   },
   experts: {
     // ----- room pools (mod+) ---------------------------------------------
@@ -449,6 +469,13 @@ export const contract = {
       .output(type<ExpertBookingCreatedOut>()),
     cancelBooking: oc
       .input(v.object({ slug: Slug, booking_id: Id }))
+      .output(type<Ok>()),
+  },
+  // Day-of broadcast (F2). A moderator sends one short message that fans out
+  // as an `announcement` notification to every conference identity.
+  announcements: {
+    send: oc
+      .input(v.object({ slug: Slug, ...AnnouncementSendSchema.entries }))
       .output(type<Ok>()),
   },
   notifications: {

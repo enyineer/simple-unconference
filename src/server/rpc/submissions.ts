@@ -7,6 +7,7 @@ import {
   resolveFinished,
 } from "./shared";
 import { createNotification, createNotifications, modIdentityIds } from "../notifications";
+import { publishAgendaChanged } from "../realtime/bus";
 import { LIMITS, assertQuota, recordWrite } from "../lib/limits";
 import { expertDedicationOf } from "../lib/room-constraints";
 
@@ -498,6 +499,9 @@ export const submissionsRouter = {
       create: { userId: myIdentityId, submissionId: input.id },
       update: {},
     });
+    // Star counts drive the Live Board (and the pitch spotlight card), so a
+    // star toggle is an agenda change for board purposes.
+    publishAgendaChanged(context.conferenceId);
     return { ok: true as const };
   }),
 
@@ -509,6 +513,7 @@ export const submissionsRouter = {
     await context.prisma.star.deleteMany({
       where: { userId: actorIdentityId(context), submissionId: input.id },
     });
+    publishAgendaChanged(context.conferenceId);
     return { ok: true as const };
   }),
 };

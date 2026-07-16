@@ -6,6 +6,7 @@ import { getPrisma } from "./db";
 import { calendarRoutes } from "./routes/calendar";
 import { avatarRoutes } from "./routes/avatars";
 import { realtimeRoutes } from "./routes/realtime";
+import { boardRoutes } from "./routes/board";
 import { handleRpc } from "./rpc";
 import { startMetricsPusher } from "./metrics/push";
 import { startPendingUserReaper } from "./lib/reaper";
@@ -46,6 +47,11 @@ export function buildApp(prisma = getPrisma()) {
   // oRPC contract. See src/server/routes/realtime.ts for the wire format
   // and Last-Event-ID replay semantics.
   app.route("/api/realtime", realtimeRoutes(prisma));
+
+  // Public read-only Live Board: token-gated JSON snapshot + its own SSE
+  // stream. Mounted before the oRPC catch-all (public + text/event-stream).
+  // See src/server/routes/board.ts — the payload MUST stay email-free.
+  app.route("/api/board", boardRoutes(prisma));
 
   // All other API traffic flows through oRPC (contract-driven; see
   // src/shared/contract.ts + src/server/rpc.ts).

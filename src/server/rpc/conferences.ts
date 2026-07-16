@@ -2,7 +2,7 @@ import { ORPCError } from "@orpc/server";
 import type { Prisma } from "@prisma/client";
 import {
   base, authed, verified, requireConf, actorIdentityId, clientIp,
-  slugify, INVITE_TTL_MS, newOpaqueToken, joinUrl, calendarFeedPath,
+  slugify, INVITE_TTL_MS, newOpaqueToken, joinUrl, boardUrl, calendarFeedPath,
   pageOf, parsePageInput,
   toInviteOut, toConfMeOut,
   type RpcContext,
@@ -48,6 +48,15 @@ async function resolveAutoLinkUserId(
   if (user.emailVerifiedAt === null) return null;
   if (user.email !== identityEmail) return null;
   return user.id;
+}
+
+// Shape the owner-facing board link state. `enabled` is simply "token is set".
+function toBoardLinkOut(slug: string, token: string | null) {
+  return {
+    enabled: token !== null,
+    token,
+    url: token ? boardUrl(slug, token) : null,
+  };
 }
 
 export const conferenceRouter = {
@@ -557,6 +566,43 @@ export const conferenceRouter = {
       max_uses: link.maxUses,
       used_count: link.usedCount,
     };
+  }),
+
+  // ----- public Live Board link (owner-only) -------------------------------
+  // The token is the board's only secret — anyone with the URL can view the
+  // read-only board. Board state lives on `Conference.boardToken`; enabled is
+  // simply "token is set".
+  getBoardLink: requireConf("owner").conferences.getBoardLink.handler(async ({ context }) => {
+    const conf = await context.prisma.conference.findUniqueOrThrow({
+      where: { id: context.conferenceId }, select: { slug: true, boardToken: true },
+    });
+    return toBoardLinkOut(conf.slug, conf.boardToken);
+  }),
+
+  setBoardLink: requireConf("owner").conferences.setBoardLink.handler(async ({ input, context }) => {
+    const conf = await context.prisma.conference.findUniqueOrThrow({
+      where: { id: context.conferenceId }, select: { slug: true, boardToken: true },
+    });
+    // Enabling keeps an existing token (stable URL) or mints one; disabling
+    // clears the token so the old URL stops resolving.
+    const token = input.enabled ? (conf.boardToken ?? newOpaqueToken()) : null;
+    if (token !== conf.boardToken) {
+      await context.prisma.conference.update({
+        where: { id: context.conferenceId }, data: { boardToken: token },
+      });
+    }
+    return toBoardLinkOut(conf.slug, token);
+  }),
+
+  rotateBoardLink: requireConf("owner").conferences.rotateBoardLink.handler(async ({ context }) => {
+    const conf = await context.prisma.conference.findUniqueOrThrow({
+      where: { id: context.conferenceId }, select: { slug: true },
+    });
+    const token = newOpaqueToken();
+    await context.prisma.conference.update({
+      where: { id: context.conferenceId }, data: { boardToken: token },
+    });
+    return toBoardLinkOut(conf.slug, token);
   }),
 
   previewInvite: base.conferences.previewInvite.handler(async ({ input, context }) => {
