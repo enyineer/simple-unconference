@@ -5,7 +5,7 @@
 // with the help modal and the slot-type chooser.
 
 import { useState } from "react";
-import { Button, Card, Heading, Stack, Text } from "../../../design-system";
+import { Button, Card, Heading, Stack } from "../../../design-system";
 import { useRoute } from "../../../router";
 import { BUILD_STEPS, type BuildStep } from "../../ui/agendaGuide";
 
@@ -163,27 +163,36 @@ export function OnboardingChecklist({
                 <div style={{ fontSize: 12, color: muted, lineHeight: "17px" }}>
                   {item.blurb}
                 </div>
-              </div>
-              {!item.done &&
-                (item.targetTab ? (
-                  <Button
-                    size="small"
-                    variant="default"
-                    onClick={() =>
-                      navigate(
-                        `/conferences/${encodeURIComponent(slug)}/${item.targetTab}`,
-                      )
-                    }
+                {/* Text-only action hints live UNDER the blurb, inside the
+                    flexible column — a nowrap span beside it crushed the
+                    title/blurb into a skinny column on mobile. Buttons stay
+                    on the right (short, and they wrap fine). */}
+                {!item.done && !item.targetTab && (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: muted,
+                      marginTop: 4,
+                    }}
                   >
                     {item.actionLabel}
-                  </Button>
-                ) : (
-                  <Text muted>
-                    <span style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                      {item.actionLabel}
-                    </span>
-                  </Text>
-                ))}
+                  </div>
+                )}
+              </div>
+              {!item.done && item.targetTab && (
+                <Button
+                  size="small"
+                  variant="default"
+                  onClick={() =>
+                    navigate(
+                      `/conferences/${encodeURIComponent(slug)}/${item.targetTab}`,
+                    )
+                  }
+                >
+                  {item.actionLabel}
+                </Button>
+              )}
             </div>
           ))}
         </Stack>
