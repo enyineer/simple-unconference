@@ -12,3 +12,13 @@ createRoot(root).render(
     </HashRouter>
   </StrictMode>,
 );
+
+// Offline-ready PWA (prod only — dev relies on Vite's own dev server, and a
+// registered SW there would fight its HMR fetches). Silent failure: this is
+// a resilience nicety, not something that should ever surface an error to
+// the user.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}

@@ -7,6 +7,7 @@ import { api, ApiError } from "./api";
 import { useRoute, matchRoute } from "./router";
 import type { Tab } from "./conference/types";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { OfflineBanner } from "./components/OfflineBanner";
 
 // Lazy-load each page in its own chunk.
 const LoginPage = lazy(() =>
@@ -516,6 +517,7 @@ export function App() {
       fallback={<MinimalLoading />}
     >
       <ToastProvider>
+        <OfflineBanner />
         <ErrorBoundary resetKey={path}>
           {/* Single tab-wide SSE stream. Mounted once the initial
               loadOwner call has settled (owner is no longer `undefined`)

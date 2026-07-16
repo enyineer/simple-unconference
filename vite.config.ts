@@ -7,7 +7,10 @@ import { fileURLToPath } from "node:url";
 // In production, `bun run build` outputs to /dist and Bun.serve serves it.
 export default defineConfig({
   root: "src/web",
-  publicDir: false,
+  // `public/` (relative to root, i.e. src/web/public) holds the service
+  // worker, PWA manifest, and icons — anything that must land at a fixed
+  // top-level URL in dist/ untouched by the bundler.
+  publicDir: "public",
   build: {
     outDir: fileURLToPath(new URL("./dist", import.meta.url)),
     emptyOutDir: true,

@@ -69,6 +69,15 @@ export default tseslint.config(
     },
   },
   {
+    // Hand-rolled service worker — plain JS, copied verbatim into dist/ via
+    // Vite's publicDir (unbundled), so it runs in the ServiceWorkerGlobalScope
+    // rather than the browser window scope src/web/**.{ts,tsx} gets above.
+    files: ["src/web/public/**/*.js"],
+    languageOptions: {
+      globals: { ...globals.serviceworker },
+    },
+  },
+  {
     files: ["**/*.test.ts", "**/*.test.tsx"],
     rules: {
       "@typescript-eslint/no-explicit-any": "off",

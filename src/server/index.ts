@@ -81,13 +81,19 @@ function serveStatic(req: Request, distDir: string): Response | null {
     });
   }
   const type = mimeFor(filePath);
-  return new Response(readFileSync(filePath), { headers: { "content-type": type } });
+  const headers: Record<string, string> = { "content-type": type };
+  // The service worker script must be revalidated on every request — an
+  // aggressively browser-cached sw.js would prevent PWA updates from ever
+  // reaching returning visitors. Everything else keeps default heuristics.
+  if (filePath.endsWith("/sw.js")) headers["cache-control"] = "no-cache";
+  return new Response(readFileSync(filePath), { headers });
 }
 
 function mimeFor(path: string): string {
   if (path.endsWith(".html")) return "text/html; charset=utf-8";
   if (path.endsWith(".js")) return "application/javascript; charset=utf-8";
   if (path.endsWith(".css")) return "text/css; charset=utf-8";
+  if (path.endsWith(".webmanifest")) return "application/manifest+json; charset=utf-8";
   if (path.endsWith(".json")) return "application/json; charset=utf-8";
   if (path.endsWith(".svg")) return "image/svg+xml";
   if (path.endsWith(".png")) return "image/png";
