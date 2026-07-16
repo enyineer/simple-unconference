@@ -14,6 +14,7 @@ import {
   Text,
 } from "../../design-system";
 import { useToast } from "../../design-system/hooks";
+import { useNow } from "../../useNow";
 import { api, errorCode } from "../../api";
 import type { AgendaData, Room, Submission } from "../types";
 import { AssignmentRulesTrigger } from "../ui/AssignmentRulesModal";
@@ -31,11 +32,15 @@ export function AgendaTab({
   isMod,
   timeZone,
   mixerAvoidRepeatsDefault,
+  myIdentityId,
 }: {
   slug: string;
   isMod: boolean;
   timeZone: string;
   mixerAvoidRepeatsDefault: boolean;
+  /** The viewer's conference identity id — lets slot bodies show
+   *  submitter-derived state ("you host this session") before seating runs. */
+  myIdentityId: number;
 }) {
   const [data, setData] = useState<AgendaData | null>(null);
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -43,7 +48,10 @@ export function AgendaTab({
   const [adding, setAdding] = useState(false);
   const [assigning, setAssigning] = useState(false);
   const [confirmingAssign, setConfirmingAssign] = useState(false);
-  // "Assign attendees" is re-runnable and encouraged as stars change, so let a
+  // Opt-in to also re-seat unchanged future slots (default off — the normal
+  // run only touches stale slots). Lives in the confirm sheet; reset after use.
+  const [alsoUnchanged, setAlsoUnchanged] = useState(false);
+  // "Update seating" is re-runnable and encouraged as stars change, so let a
   // mod silence the confirmation after they've seen it once (persisted per
   // conference). The confirm still explains what the action does the first time.
   const assignConfirmKey = `agenda-skip-assign-confirm:${slug}`;
@@ -65,6 +73,9 @@ export function AgendaTab({
     } catch { /* storage disabled — keep the in-memory choice */ }
   }
   const toast = useToast();
+  // Whole-minute "now", used to tell future slots from started ones for the
+  // seating-staleness gate. `useNow` keeps it pure + ticks every minute.
+  const now = useNow();
 
   const fetchAgenda = useCallback(() => Promise.all([
     api.agenda.get({ slug }),
@@ -86,7 +97,7 @@ export function AgendaTab({
       })
       .catch(() => {
         if (cancelled) return;
-        setData({ slots: [], slot_series: [], tracks: [], placements: [], mixer_placements: [] });
+        setData({ slots: [], slot_series: [], tracks: [], placements: [], mixer_placements: [], participant_count: null });
       });
     return () => { cancelled = true; };
   }, [fetchAgenda]);
@@ -101,9 +112,11 @@ export function AgendaTab({
     }
   }
 
-  // Route attendees across the WHOLE agenda at once over the existing
-  // placements (the per-slot auto-fill button stays for single-slot work).
-  // This is a batch action — disable the button while it runs.
+  // "Update seating" re-seats attendees across the WHOLE agenda at once over
+  // the existing placements — but only slots whose placements went stale since
+  // their last seating (the per-slot "Place sessions from stars" button stays
+  // for single-slot placement work). This is a batch action — disable the
+  // button while it runs.
   const unconfSlots = (data?.slots ?? []).filter((s) => s.type === "unconference");
   const hasUnconfSlots = unconfSlots.length > 0;
   const placements = data?.placements ?? [];
@@ -112,21 +125,43 @@ export function AgendaTab({
   // the distinct unconference slots that have at least one placement.
   const placedSessionCount = new Set(placements.map((p) => p.submission_id)).size;
   const placedSlotCount = new Set(placements.map((p) => p.slot_id)).size;
+  // Step-2 state, derived from slot staleness + seat counts:
+  //   - future stale slots are the ones a normal "Update seating" would re-seat
+  //   - nobody-seated-yet = placements exist but no seat has landed anywhere
+  // A slot that has already started never moves, so only future slots count.
+  const staleFutureCount = unconfSlots.filter(
+    (s) => s.seating_stale && s.starts_at > now,
+  ).length;
+  const seatedCount = placements.reduce((n, p) => n + p.attendee_count, 0);
+  const hasPlacements = placements.length > 0;
+  // Enable "Update seating" when there's stale future work, or when sessions
+  // are placed but nobody has been seated yet (the first-ever run).
+  const canUpdateSeating =
+    staleFutureCount > 0 || (hasPlacements && seatedCount === 0);
   async function assignAll() {
     setConfirmingAssign(false);
     setAssigning(true);
     try {
-      const r = await api.agenda.assignAll({ slug });
+      const r = await api.agenda.assignAll({
+        slug,
+        ...(alsoUnchanged ? { include_unchanged: true } : {}),
+      });
+      const n = r.slot_ids.length;
       const unplaced = r.unplaced_user_ids.length;
-      toast.success(
-        `Assigned ${r.assigned} seat${r.assigned === 1 ? "" : "s"} across ${r.slot_ids.length} slot${r.slot_ids.length === 1 ? "" : "s"}` +
-          (unplaced > 0 ? ` · ${unplaced} couldn't be placed` : ""),
-      );
+      if (n === 0) {
+        toast.success("Nothing needed updating.");
+      } else {
+        toast.success(
+          `Seated attendees across ${n} slot${n === 1 ? "" : "s"}.` +
+            (unplaced > 0 ? ` ${unplaced} could not be seated.` : ""),
+        );
+      }
       await refresh();
     } catch (e) {
       toast.error(errorCode(e));
     } finally {
       setAssigning(false);
+      setAlsoUnchanged(false);
     }
   }
 
@@ -216,8 +251,8 @@ export function AgendaTab({
           <CalendarLegend />
         </Stack>
         <Stack direction="row" gap="condensed" align="center">
-          {/* "Assign attendees" lives in the two-step card below, where it has
-              the "place → assign" context. Keeping it only there avoids two
+          {/* "Update seating" lives in the two-step card below, where it has
+              the "place → seat" context. Keeping it only there avoids two
               identical primary actions competing on one screen. */}
           <AssignmentRulesTrigger isMod={isMod} label="How it works" />
           {isMod && (
@@ -238,10 +273,10 @@ export function AgendaTab({
         />
       )}
 
-      {/* Two-step framing. The whole point: "Place sessions" (done inside
-          unconference slots) FEEDS "Assign attendees". The numbered titles +
-          the disabled state when no placements exist make the dependency
-          literal. */}
+      {/* Two-step framing, working as a live checklist. "Place sessions" (done
+          inside unconference slots) FEEDS "Update seating". The numbered titles,
+          the captions (which read as live status), and the disabled state when
+          there's nothing to seat make the dependency literal. */}
       {isMod && hasUnconfSlots && (
         <Card>
           <Stack
@@ -267,15 +302,19 @@ export function AgendaTab({
                   variant="primary"
                   size="small"
                   onClick={requestAssignAll}
-                  disabled={assigning || placements.length === 0}
+                  disabled={assigning || !canUpdateSeating}
                 >
-                  {assigning ? "Assigning…" : "Assign attendees"}
+                  {assigning ? "Updating…" : "Update seating"}
                 </Button>
               }
               caption={
-                placements.length === 0
+                !hasPlacements
                   ? "Place at least one session first."
-                  : undefined
+                  : staleFutureCount > 0
+                    ? `${staleFutureCount} slot${staleFutureCount === 1 ? "" : "s"} changed since ${staleFutureCount === 1 ? "its" : "their"} last seating - Update seating re-seats just ${staleFutureCount === 1 ? "it" : "those"}.`
+                    : seatedCount === 0
+                      ? "No one seated yet."
+                      : "Seating is up to date."
               }
             />
           </Stack>
@@ -285,12 +324,22 @@ export function AgendaTab({
       <Sheet
         open={confirmingAssign}
         onClose={() => { if (!assigning) setConfirmingAssign(false); }}
-        title="Assign attendees across the agenda"
+        title="Update seating"
       >
         <Stack gap="condensed">
           <Tip>
-            {`This re-seats attendees across all ${placedSlotCount} unconference slot${placedSlotCount === 1 ? "" : "s"} that have placements. Your manual placements and people's own session picks are kept, and assigned participants are notified.`}
+            {alsoUnchanged
+              ? "Re-seats every future unconference slot that has placements. Slots that have already started, and each person's own session picks, are never touched. Only people whose seat changes are notified."
+              : `Re-seats only the ${staleFutureCount} future slot${staleFutureCount === 1 ? "" : "s"} whose placements changed since ${staleFutureCount === 1 ? "it was" : "they were"} last seated. Slots that have already started, and each person's own session picks, are never touched. Only people whose seat changes are notified.`}
           </Tip>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={alsoUnchanged}
+              onChange={(e) => setAlsoUnchanged(e.target.checked)}
+            />
+            Also re-seat unchanged future slots
+          </label>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
             <input
               type="checkbox"
@@ -301,7 +350,7 @@ export function AgendaTab({
           </label>
           <Stack direction="row" gap="condensed">
             <Button variant="primary" onClick={assignAll} disabled={assigning}>
-              {assigning ? "Assigning…" : "Assign attendees"}
+              {assigning ? "Updating…" : "Update seating"}
             </Button>
             <Button
               onClick={() => setConfirmingAssign(false)}
@@ -393,7 +442,9 @@ export function AgendaTab({
               (p) => p.slot_id === selectedSlot.id,
             )}
             recurrenceTimes={recurrenceTimesFor(selectedSlot.id, data)}
+            participantCount={data.participant_count}
             isMod={isMod}
+            myIdentityId={myIdentityId}
             timeZone={timeZone}
             inSheet
             onChange={refresh}
@@ -427,7 +478,7 @@ function recurrenceTimesFor(
   return out;
 }
 
-// One column of the "1 · Place sessions → 2 · Assign attendees" strip. Kept
+// One column of the "1 · Place sessions → 2 · Update seating" strip. Kept
 // local to the tab since it's pure presentation specific to this header.
 function TwoStepCard({
   title,

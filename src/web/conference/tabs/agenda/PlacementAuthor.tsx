@@ -1,14 +1,19 @@
 import { useState } from "react";
-import { Button, Heading, Select, Stack, Text } from "../../../design-system";
+import { Button, Select, Stack, Text } from "../../../design-system";
 import { useToast } from "../../../design-system/hooks";
 import { api, errorCode } from "../../../api";
+import { Disclosure } from "../../ui/Disclosure";
 import type { Room, Submission } from "../../types";
 
 // Moderator-only control to author the unconference occurrence set: place a
 // session into this slot + room (or let the server auto-pick the room). The
-// global "Assign attendees" action then routes participants over these
+// global "Update seating" action then routes participants over these
 // placements. Mirrors the `scheduleSubmission` authoring pattern for planned
 // slots, but writes an `UnconferencePlacement`.
+//
+// Rendered as a collapsed Disclosure: placing from stars (the slot's primary
+// button) is the default path, and hand-placing is the deliberate exception —
+// the visual hierarchy should say so.
 export function PlacementAuthor({
   slug,
   slotId,
@@ -34,24 +39,13 @@ export function PlacementAuthor({
   const addable = eligibleSubs.filter((s) => !placedSubmissionIds.has(s.id));
   const freeRooms = eligibleRooms.filter((r) => !takenRoomIds.has(r.id));
 
-  const heading = (
-    <Stack gap="condensed">
-      <Heading level={4}>Place sessions in this slot</Heading>
-      <Text muted>
-        Pick a session and room. Place the same session on other slots to make
-        it recurring.
-      </Text>
-    </Stack>
-  );
-
   if (addable.length === 0) {
-    // Everything eligible is already placed — keep the heading so the section
-    // doesn't vanish, and tell the mod why there's nothing to add.
+    // Everything eligible is already placed — keep the disclosure so the
+    // affordance doesn't vanish, and tell the mod why there's nothing to add.
     return (
-      <Stack gap="condensed">
-        {heading}
+      <Disclosure summary="Place a session by hand">
         <Text muted>All eligible sessions are placed here.</Text>
-      </Stack>
+      </Disclosure>
     );
   }
 
@@ -81,36 +75,42 @@ export function PlacementAuthor({
   }
 
   return (
-    <Stack gap="condensed">
-      {heading}
-      <Stack
-        direction="row"
-        gap="condensed"
-        align="end"
-        wrap
-      >
-        <Select
-          label="Add session"
-          value={subId || String(addable[0]!.id)}
-          disabled={busy}
-          onChange={(e) => setSubId(e.target.value)}
-          options={addable.map((s) => ({ value: String(s.id), label: s.title }))}
-        />
-        <Select
-          label="Room"
-          value={roomId}
-          disabled={busy}
-          onChange={(e) => setRoomId(e.target.value)}
-          options={[
-            { value: "", label: "Auto (largest free)" },
-            ...freeRooms.map((r) => ({ value: String(r.id), label: `${r.name} · ${r.capacity}` })),
-          ]}
-        />
-        <Button variant="default" onClick={place} disabled={busy}>
-          {busy ? "Placing…" : "Place"}
-        </Button>
+    <Disclosure summary="Place a session by hand">
+      <Stack gap="condensed">
+        <Text muted>
+          Pick a session and room yourself - normally &ldquo;Place sessions
+          from stars&rdquo; does this for you. Place the same session on other
+          slots to make it recurring.
+        </Text>
+        <Stack
+          direction="row"
+          gap="condensed"
+          align="end"
+          wrap
+        >
+          <Select
+            label="Add session"
+            value={subId || String(addable[0]!.id)}
+            disabled={busy}
+            onChange={(e) => setSubId(e.target.value)}
+            options={addable.map((s) => ({ value: String(s.id), label: s.title }))}
+          />
+          <Select
+            label="Room"
+            value={roomId}
+            disabled={busy}
+            onChange={(e) => setRoomId(e.target.value)}
+            options={[
+              { value: "", label: "Auto (largest free)" },
+              ...freeRooms.map((r) => ({ value: String(r.id), label: `${r.name} · ${r.capacity}` })),
+            ]}
+          />
+          <Button variant="default" onClick={place} disabled={busy}>
+            {busy ? "Placing…" : "Place"}
+          </Button>
+        </Stack>
       </Stack>
-    </Stack>
+    </Disclosure>
   );
 }
 

@@ -194,6 +194,9 @@ export interface SubmissionOut {
   // to host) in multiple overlapping slots. Default false enforces a
   // strict no-overlap policy at assignment time.
   allow_overlapping_placements: boolean;
+  // Moderator-only assignment fill priority. high = place & fill first,
+  // low = last; default normal.
+  priority: "low" | "normal" | "high";
   // Number of times this submission has been placed (static tracks + unconf
   // placements). UI shows this as `placement_count / effective_cap`.
   placement_count: number;
@@ -246,6 +249,11 @@ export interface SlotOut {
   series_offering_index: number | null;
   // Total siblings in this series (including this slot). Null for standalone.
   series_total_offerings: number | null;
+  // True when this unconference slot's placements changed since its last
+  // seating run — i.e. "Update seating" would re-seat it. Cleared when a
+  // seating run actually re-seats the slot. Always false for non-unconference
+  // slots and for slots that have never been placed.
+  seating_stale: boolean;
 }
 
 export interface SlotSeriesOut {
@@ -310,6 +318,9 @@ export interface AgendaOut {
   tracks: TrackOut[];
   placements: PlacementOut[];
   mixer_placements: MixerPlacementOut[];
+  /** Number of conference identities. Moderator-only — `null` for participants
+   *  so the conference's size isn't leaked to non-mods. */
+  participant_count: number | null;
 }
 
 // Response of `agenda.updateSeries`. When the requested patch would orphan
@@ -428,10 +439,13 @@ export interface OverlapExclusions {
 
 export type AssignResult =
   | {
+      // Per-slot unconference "assign" is placement-only: it authors the
+      // occurrence set (which session runs in which room) and never seats
+      // attendees. Seating is a separate, global "Update seating" action
+      // (`agenda.assignAll`). Hence no `user_assignments` / `unplaced_users`
+      // here — only the placements and the informational overlap exclusions.
       kind: "unconference";
       placements: { slot_id: number; submission_id: number; room_id: number }[];
-      user_assignments: { slot_id: number; user_id: number; submission_id: number }[];
-      unplaced_users: number[];
       overlap_exclusions: OverlapExclusions;
     }
   | {
@@ -486,6 +500,39 @@ export type ScheduleSubmissionResult =
       pinned_room: { id: number; name: string } | null;
       required_tags: string[];
       candidate_room_names: string[];
+    };
+
+// One room reassignment produced by `agenda.refitRooms`: the talk that moved
+// and its old → new room names. Only tracks whose room actually changed appear.
+export interface RefitMove {
+  submission_id: number;
+  title: string;
+  from_room: string;
+  to_room: string;
+}
+
+// Result of `agenda.refitRooms` — reassign a planned slot's rooms among its
+// scheduled tracks by star count (biggest room → most-starred), honoring pins
+// and room requirements. All-or-nothing: any unmatchable track returns a
+// conflict with ZERO writes. Conflict shape mirrors `ScheduleSubmissionResult`
+// (same reason literals + fields) with an added `submission` naming the track
+// that couldn't be placed (a refit weighs many tracks at once).
+export type RefitRoomsResult =
+  | {
+      kind: "ok";
+      /** Empty array means nothing moved (already optimal); no writes happened. */
+      moves: RefitMove[];
+    }
+  | {
+      kind: "conflict";
+      reason:
+        | "pin_room_taken"
+        | "pin_room_out_of_scope"
+        | "unsatisfiable_requirements";
+      pinned_room: { id: number; name: string } | null;
+      required_tags: string[];
+      candidate_room_names: string[];
+      submission: { id: number; title: string } | null;
     };
 
 // ----- expert booking output types ---------------------------------------
@@ -558,7 +605,8 @@ export type NotificationKind =
   | "quota_threshold"
   | "chat_message"
   | "chat_report"
-  | "chat_warning";
+  | "chat_warning"
+  | "schedule_changed";
 
 export interface NotificationOut {
   id: number;

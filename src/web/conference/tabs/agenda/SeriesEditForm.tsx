@@ -35,7 +35,6 @@ export function SeriesEditForm({
   const isMixer = series.type === "mixer";
   const [useAllRooms, setUseAllRooms] = useState(series.unconf_use_all_rooms);
   const [useAllSubs, setUseAllSubs] = useState(series.unconf_use_all_submissions);
-  const [avoidRepeats, setAvoidRepeats] = useState(series.unconf_avoid_repeats);
   const [acrossSiblings, setAcrossSiblings] = useState(series.avoid_repeats_across_siblings);
   const [pickedRooms, setPickedRooms] = useState<Set<number>>(
     () => new Set(series.unconf_use_all_rooms ? rooms.map((r) => r.id) : series.unconf_room_ids),
@@ -70,7 +69,6 @@ export function SeriesEditForm({
         id: series.id,
         unconf_use_all_rooms: useAllRooms,
         unconf_use_all_submissions: useAllSubs,
-        unconf_avoid_repeats: avoidRepeats,
         avoid_repeats_across_siblings: acrossSiblings,
         unconf_room_ids: useAllRooms ? [] : [...pickedRooms],
         unconf_submission_ids: useAllSubs ? [] : [...pickedSubs],
@@ -225,59 +223,40 @@ export function SeriesEditForm({
           </Stack>
         )}
 
-        {!isMixer && (
+        {/* Cross-offering rotation drives `avoid_repeats_across_siblings`,
+            which only has a live effect for MIXER series (sibling pairing
+            avoidance in runMixerForSlot). For unconference series it no longer
+            influences seating (attend-once is structural), so it's hidden
+            there to avoid a dead control. */}
+        {isMixer && (
           <Stack gap="condensed">
-            <Text><strong>Repeat avoidance</strong></Text>
+            <Text><strong>Cross-offering rotation</strong></Text>
             <Tip>
-              Conference-wide avoid: never assign a participant to a session
-              they&apos;ve already attended in any earlier slot of the conference.
+              When on (the default), a participant placed in a session in one
+              offering won&apos;t be re-placed in the same session in a sibling
+              offering — so duplicating a slot to add capacity actually
+              rotates people through. Turn off for series where attending
+              twice is the point (e.g. an open discussion that runs three
+              times).
             </Tip>
             <Stack direction="row" gap="condensed">
               <Button
                 size="small"
-                variant={avoidRepeats ? "primary" : "default"}
-                onClick={() => setAvoidRepeats(true)}
+                variant={acrossSiblings ? "primary" : "default"}
+                onClick={() => setAcrossSiblings(true)}
               >
-                Avoid repeats
+                Rotate across offerings
               </Button>
               <Button
                 size="small"
-                variant={!avoidRepeats ? "primary" : "default"}
-                onClick={() => setAvoidRepeats(false)}
+                variant={!acrossSiblings ? "primary" : "default"}
+                onClick={() => setAcrossSiblings(false)}
               >
-                Allow repeats
+                Allow re-attendance
               </Button>
             </Stack>
           </Stack>
         )}
-
-        <Stack gap="condensed">
-          <Text><strong>Cross-offering rotation</strong></Text>
-          <Tip>
-            When on (the default), a participant placed in a session in one
-            offering won&apos;t be re-placed in the same session in a sibling
-            offering — so duplicating a slot to add capacity actually
-            rotates people through. Turn off for series where attending
-            twice is the point (e.g. an open discussion that runs three
-            times).
-          </Tip>
-          <Stack direction="row" gap="condensed">
-            <Button
-              size="small"
-              variant={acrossSiblings ? "primary" : "default"}
-              onClick={() => setAcrossSiblings(true)}
-            >
-              Rotate across offerings
-            </Button>
-            <Button
-              size="small"
-              variant={!acrossSiblings ? "primary" : "default"}
-              onClick={() => setAcrossSiblings(false)}
-            >
-              Allow re-attendance
-            </Button>
-          </Stack>
-        </Stack>
 
         <Stack direction="row" gap="condensed">
           <Button variant="primary" onClick={() => save(false)} disabled={busy}>

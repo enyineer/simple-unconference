@@ -307,7 +307,7 @@ Server and client share valibot schemas in [`src/shared/schemas.ts`](src/shared/
 | Add / edit / delete rooms | | ✓ | ✓ |
 | Publish / reject submissions | | ✓ | ✓ |
 | Edit a session's *required room features* (after publish) | | ✓ | ✓ |
-| Pin a session to a room / allow overlapping placements / mark finished | | ✓ | ✓ |
+| Pin a session to a room / allow overlapping placements / mark finished / set assignment priority | | ✓ | ✓ |
 | Add / delete agenda slots | | ✓ | ✓ |
 | Pick talks for static-slot tracks | | ✓ | ✓ |
 | Run unconference / mixer assignment, resolve pre-assignment conflicts | | ✓ | ✓ |

@@ -78,6 +78,11 @@ export function SessionCard({
         {roomName && (
           <Badge variant="attention">pinned: {roomName}</Badge>
         )}
+        {s.priority !== "normal" && (
+          <Badge variant={s.priority === "high" ? "attention" : "default"}>
+            {s.priority === "high" ? "High priority" : "Low priority"}
+          </Badge>
+        )}
         {s.room_requirements.length > 0 && (
           <Badge variant="default">
             needs: {s.room_requirements.join(", ")}

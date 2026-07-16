@@ -281,6 +281,36 @@ describe("external commitments", () => {
   });
 });
 
+// ---- session priority ------------------------------------------------------
+
+describe("session priority", () => {
+  test("user with two starred occurrences in one band lands in the high-priority one", () => {
+    // Both occurrences share a band, so the user can attend only one. 100 is
+    // high priority, 200 normal — the reward edge for 100 is fatter, so the
+    // flow routes the user there.
+    const hi = occ({ slot_id: 1, submission_id: 100, band_id: 1, capacity: 10, priority: 1 });
+    const lo = occ({ slot_id: 2, submission_id: 200, band_id: 1, capacity: 10, priority: 0 });
+    const r = assignAgenda({ occurrences: [hi, lo], stars: stars({ 1: [100, 200] }) });
+    expect(assignmentsOf(r, 1).map((x) => x.submission_id)).toEqual([100]);
+  });
+
+  test("a user whose only starred session is low-priority is still seated (coverage never sacrificed)", () => {
+    // High session (100, cap 1) and low session (200, cap 1) in distinct bands.
+    // User 1 stars only 100; user 2 stars both. Priority (PRIORITY_BONUS) must
+    // stay under USER_DIMINISH, so the solver gives user 1 their first (and
+    // only) session rather than handing user 2 the high-priority seat twice.
+    const hi = occ({ slot_id: 1, submission_id: 100, band_id: 1, capacity: 1, priority: 1 });
+    const lo = occ({ slot_id: 2, submission_id: 200, band_id: 2, capacity: 1, priority: -1 });
+    const r = assignAgenda({
+      occurrences: [hi, lo],
+      stars: stars({ 1: [100], 2: [100, 200] }),
+    });
+    expect(assignmentsOf(r, 1).map((x) => x.submission_id)).toEqual([100]);
+    expect(assignmentsOf(r, 2).map((x) => x.submission_id)).toEqual([200]);
+    expect(r.unplaced_users).toEqual([]);
+  });
+});
+
 // ---- brute-force optimality oracle (small inputs) --------------------------
 
 describe("optimality", () => {

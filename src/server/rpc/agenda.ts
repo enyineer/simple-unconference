@@ -5,7 +5,7 @@ import {
   normalizeLabels, resolveFinished,
 } from "./shared";
 import { clipToMinute } from "../../shared/tz";
-import { assignUnconferenceSlot, assignMixerSlot, pairKey, type AssignmentInput } from "../assignment";
+import { assignUnconferenceSlot, assignMixerSlot, pairKey, priorityWeight, type AssignmentInput } from "../assignment";
 import {
   assignAgenda, type AgendaOccurrence, type AgendaUserAssignment,
 } from "../assignment-agenda";
@@ -79,6 +79,72 @@ function assignmentWriteOps(
   ];
 }
 
+// Notify everyone affected when a talk's PLANNED-slot schedule changes —
+// scheduled into a slot, moved to a different room, or removed from the slot.
+// Recipients are the submission's starrers ∪ its submitter; for a `mandatory`
+// track (keynote / ceremony everyone attends) it's EVERY conference identity.
+// Coalesced per (slot, submission) so a burst of edits collapses to one bell
+// row. MUST be called AFTER any surrounding transaction commits so the SSE
+// event references row state other readers can see (CLAUDE.md rule).
+async function notifyPlannedScheduleChange(
+  prisma: PrismaClient,
+  args: {
+    conferenceId: number;
+    slotId: number;
+    submissionId: number;
+    title: string;
+    mandatory: boolean;
+    change:
+      | { kind: "scheduled"; roomName: string }
+      | { kind: "moved"; roomName: string }
+      | { kind: "removed" };
+  },
+): Promise<void> {
+  let recipientIds: number[];
+  if (args.mandatory) {
+    const all = await prisma.conferenceIdentity.findMany({
+      where: { conferenceId: args.conferenceId },
+      select: { id: true },
+    });
+    recipientIds = all.map((r) => r.id);
+  } else {
+    const [starrers, submission] = await Promise.all([
+      prisma.star.findMany({
+        where: { submissionId: args.submissionId },
+        select: { userId: true },
+      }),
+      prisma.submission.findUnique({
+        where: { id: args.submissionId },
+        select: { submitterId: true },
+      }),
+    ]);
+    const ids = new Set<number>(starrers.map((s) => s.userId));
+    if (submission) ids.add(submission.submitterId);
+    recipientIds = [...ids];
+  }
+  if (recipientIds.length === 0) return;
+
+  const body =
+    args.change.kind === "scheduled"
+      ? `${args.title} was scheduled in ${args.change.roomName}`
+      : args.change.kind === "moved"
+        ? `${args.title} moved to ${args.change.roomName}`
+        : `${args.title} was removed from this time slot`;
+
+  await createNotifications(
+    prisma,
+    recipientIds.map((identityId) => ({
+      identityId,
+      kind: "schedule_changed" as const,
+      title: "Schedule updated",
+      body,
+      ctaLabel: "Open schedule",
+      ctaHref: "tab:me",
+      dedupeKey: `track:${args.slotId}:${args.submissionId}`,
+    })),
+  );
+}
+
 // USER-FACING DOCS: the plain-language description of the steps below
 // (top-N selection, pin/tag pre-assignments, bipartite matching with
 // cascade analysis, overlap exclusions, finished filter, manual picks)
@@ -119,13 +185,21 @@ async function runAssignmentForSlot(
       maxPlacements: true, manuallyFinished: true,
       preAssignedRoomId: true,
       allowOverlappingPlacements: true,
+      priority: true,
       roomRequirements: { select: { value: true } },
     },
   });
   // Count placements + static tracks per submission, excluding the current
   // slot itself so a re-run doesn't push a still-eligible submission over
   // the cap. Both kinds of placement count toward "finished".
-  const [otherPlacements, otherTracks, confRow] = await Promise.all([
+  //
+  // `manualPlacementRows` are THIS slot's moderator-authored occurrences
+  // (`manual=true`). They become `fixedPlacements` for the algorithm: their
+  // sessions are excluded from the eligible pool and their rooms are reserved,
+  // but attendees are still routed into them (see the pure algorithm). Each
+  // row carries its room capacity + submitter + priority so the placement is
+  // self-contained even when the room lies outside the slot's effective scope.
+  const [otherPlacements, otherTracks, confRow, manualPlacementRows] = await Promise.all([
     prisma.unconferencePlacement.groupBy({
       by: ["submissionId"],
       where: {
@@ -145,7 +219,32 @@ async function runAssignmentForSlot(
     prisma.conference.findUniqueOrThrow({
       where: { id: confId }, select: { submissionMaxPlacementsDefault: true },
     }),
+    prisma.unconferencePlacement.findMany({
+      where: { slotId, manual: true },
+      select: {
+        submissionId: true, roomId: true,
+        room: { select: { capacity: true, name: true } },
+        submission: { select: { submitterId: true, priority: true, title: true } },
+      },
+    }),
   ]);
+  const fixedPlacements: NonNullable<AssignmentInput["fixedPlacements"]> = manualPlacementRows.map((p) => ({
+    submission_id: p.submissionId,
+    room_id: p.roomId,
+    capacity: p.room.capacity,
+    submitter_id: p.submission.submitterId,
+    priority: priorityWeight(p.submission.priority),
+  }));
+  const fixedSubIds = new Set(manualPlacementRows.map((p) => p.submissionId));
+  const fixedRoomIds = new Set(manualPlacementRows.map((p) => p.roomId));
+  // For pins that collide with a manual placement's room: roomId → the manual
+  // occupant, so the conflict gate can report the same `duplicate_room` shape.
+  const fixedRoomOccupant = new Map<number, { submissionId: number; title: string; roomName: string }>();
+  for (const p of manualPlacementRows) {
+    fixedRoomOccupant.set(p.roomId, {
+      submissionId: p.submissionId, title: p.submission.title, roomName: p.room.name,
+    });
+  }
   const placementCountBySub = new Map<number, number>();
   for (const p of otherPlacements) {
     placementCountBySub.set(p.submissionId, (placementCountBySub.get(p.submissionId) ?? 0) + p._count.submissionId);
@@ -322,6 +421,15 @@ async function runAssignmentForSlot(
       });
     }
   }
+  // Hold the slot's manual (fixed) placements out of the assignable pool:
+  // their sessions must never be re-placed and their rooms must never be
+  // handed to another session. The pure algorithm receives them separately
+  // as `fixedPlacements` and seats attendees into them. Done BEFORE the
+  // pre-assignment conflict gate / bipartite matching so nothing else touches
+  // them.
+  eligibleSubs = eligibleSubs.filter((s) => !fixedSubIds.has(s.id));
+  rooms = rooms.filter((r) => !fixedRoomIds.has(r.id));
+
   const submissions = eligibleSubs.map((s) => ({ id: s.id, submitterId: s.submitterId }));
   const submissionIds = new Set(submissions.map((s) => s.id));
 
@@ -349,16 +457,30 @@ async function runAssignmentForSlot(
   const starCountBySub = new Map<number, number>();
   for (const id of submissionIds) starCountBySub.set(id, 0);
   for (const s of starsRows) {
-    if (!submissionIds.has(s.submissionId)) continue;
     if (busyUserIds.has(s.userId)) continue;
+    // Stars on a FIXED session must still land in the `stars` map so the
+    // algorithm can route the user into that manual placement — but they
+    // don't count toward the assignable top-N popularity cut.
+    if (fixedSubIds.has(s.submissionId)) {
+      stars.get(s.userId)?.add(s.submissionId);
+      continue;
+    }
+    if (!submissionIds.has(s.submissionId)) continue;
     stars.get(s.userId)?.add(s.submissionId);
     starCountBySub.set(s.submissionId, (starCountBySub.get(s.submissionId) ?? 0) + 1);
   }
 
-  // Top-N: stars decide which submissions are placed. Pre-assignment only
-  // chooses *which room* a placed submission occupies; a pin on a session
-  // that doesn't make the top-N is silently ignored (no conflict raised).
+  // Top-N: priority (then stars) decides which submissions are placed.
+  // Pre-assignment only chooses *which room* a placed submission occupies; a
+  // pin on a session that doesn't make the top-N is silently ignored (no
+  // conflict raised). This ordering MUST match `assignUnconferenceSlot`'s
+  // internal `submissionsByPopularity` (priority desc, star count desc, id
+  // asc) or the route's conflict gate and the algorithm would disagree about
+  // which sessions are placed — hence the shared `priorityWeight` helper.
   const subsByPopularity = [...eligibleSubs].sort((a, b) => {
+    const pa = priorityWeight(a.priority);
+    const pb = priorityWeight(b.priority);
+    if (pb !== pa) return pb - pa;
     const sa = starCountBySub.get(a.id) ?? 0;
     const sb = starCountBySub.get(b.id) ?? 0;
     if (sb !== sa) return sb - sa;
@@ -405,6 +527,17 @@ async function runAssignmentForSlot(
     const outOfScope = new Map<number, { roomName: string | null; subs: { id: number; title: string }[] }>();
     for (const s of topNSubs) {
       if (s.preAssignedRoomId === null) continue;
+      // A pin onto a room already held by a manual placement is a genuine
+      // conflict: surface it as `duplicate_room`, seeding the group with the
+      // manual occupant so the mod sees both sessions contending for the room.
+      const occupant = fixedRoomOccupant.get(s.preAssignedRoomId);
+      if (occupant) {
+        const arr = groupedByRoom.get(s.preAssignedRoomId)
+          ?? [{ id: occupant.submissionId, title: occupant.title }];
+        arr.push({ id: s.id, title: s.title });
+        groupedByRoom.set(s.preAssignedRoomId, arr);
+        continue;
+      }
       const room = roomById.get(s.preAssignedRoomId);
       if (!room) {
         const cur = outOfScope.get(s.preAssignedRoomId)
@@ -442,7 +575,7 @@ async function runAssignmentForSlot(
         conflicts.push({
           kind: "duplicate_room",
           room_id: roomId,
-          room_name: roomById.get(roomId)!.name,
+          room_name: roomById.get(roomId)?.name ?? fixedRoomOccupant.get(roomId)?.roomName ?? "(unknown room)",
           submissions: subs.sort((a, b) => a.id - b.id),
         });
       } else {
@@ -620,10 +753,19 @@ async function runAssignmentForSlot(
           if (i === j) continue;
           const a = matchedConstrained[i]!;
           const b = matchedConstrained[j]!;
-          const aPop = starCountBySub.get(a.id) ?? 0;
-          const bPop = starCountBySub.get(b.id) ?? 0;
-          if (aPop < bPop) continue;
-          if (aPop === bPop && a.id > b.id) continue;
+          // Prefer giving the larger room to the higher-priority session, then
+          // the more-starred one — same leading-priority order the algorithm's
+          // popularity → largest-room zip uses, so constrained and
+          // unconstrained sessions get room sizes on consistent rules.
+          const aPrio = priorityWeight(a.priority);
+          const bPrio = priorityWeight(b.priority);
+          if (aPrio < bPrio) continue;
+          if (aPrio === bPrio) {
+            const aPop = starCountBySub.get(a.id) ?? 0;
+            const bPop = starCountBySub.get(b.id) ?? 0;
+            if (aPop < bPop) continue;
+            if (aPop === bPop && a.id > b.id) continue;
+          }
           const ra = matchSub.get(a.id)!;
           const rb = matchSub.get(b.id)!;
           if (roomById.get(rb)!.capacity <= roomById.get(ra)!.capacity) continue;
@@ -774,7 +916,9 @@ async function runAssignmentForSlot(
   // pre-assignment lands in a session it expects to place.
   const input: AssignmentInput = {
     rooms: rooms.map((r) => ({ id: r.id, capacity: r.capacity })),
-    submissions: topNSubs.map((s) => ({ id: s.id, submitter_id: s.submitterId })),
+    submissions: topNSubs.map((s) => ({
+      id: s.id, submitter_id: s.submitterId, priority: priorityWeight(s.priority),
+    })),
     stars, priorAssignments,
     // The algorithm only consults `priorAssignments` when this is true. We
     // pre-filtered the map per-axis above, so passing true whenever either
@@ -783,33 +927,35 @@ async function runAssignmentForSlot(
     avoidRepeats: conferenceWideAvoid || acrossSiblingsAvoid,
     fixedAssignments,
     preAssignments,
+    fixedPlacements,
   };
   const result = assignUnconferenceSlot(input);
 
-  const roomBySubmission = new Map<number, number>();
-  for (const p of result.placements) roomBySubmission.set(p.submission_id, p.room_id);
-  const honoredManual = new Set<number>();
-  for (const a of result.user_assignments) {
-    if (fixedAssignments.get(a.user_id) === a.submission_id) honoredManual.add(a.user_id);
-  }
-
+  // Placement-only: this per-slot run authors the occurrence set (which
+  // session runs in which room) and does NOT seat attendees. Seating is the
+  // separate global "Update seating" action (`runAssignmentForAgenda`). We
+  //   1. write the placements (auto rows; manual rows are preserved),
+  //   2. flag the slot `seatingStale` so the next seating run re-seats it, and
+  //   3. clean up any existing seats whose session is no longer placed here
+  //      (still-placed sessions keep their seats until the next re-seat).
+  // The submissions that remain placed after this rewrite = the manual
+  // (fixed) placements + the algorithm's auto placements.
+  const placedSubIds = [
+    ...new Set([
+      ...fixedPlacements.map((f) => f.submission_id),
+      ...result.placements.map((p) => p.submission_id),
+    ]),
+  ];
   await prisma.$transaction([
     ...placementWriteOps(prisma, slotId, result.placements),
-    ...assignmentWriteOps(
-      prisma, slotId,
-      result.user_assignments.map((a) => ({
-        user_id: a.user_id,
-        submission_id: a.submission_id,
-        room_id: roomBySubmission.get(a.submission_id) ?? null,
-        manual: honoredManual.has(a.user_id),
-      })),
-    ),
+    prisma.userAssignment.deleteMany({
+      where: { slotId, submissionId: { notIn: placedSubIds } },
+    }),
+    prisma.agendaSlot.update({ where: { id: slotId }, data: { seatingStale: true } }),
   ]);
 
   return {
     placements: result.placements.map((p) => ({ ...p, slot_id: slotId })),
-    user_assignments: result.user_assignments.map((a) => ({ ...a, slot_id: slotId })),
-    unplaced_users: result.unplaced_users,
     overlap_exclusions: {
       rooms: overlapExcludedRooms,
       submissions: overlapExcludedSubs,
@@ -1095,32 +1241,81 @@ function buildSlotBands(
   return band;
 }
 
-// Route attendees across the WHOLE agenda over the existing (moderator- or
-// algorithm-authored) `UnconferencePlacement` occurrence set. Writes ONLY
-// `UserAssignment` rows — never touches placements. See `assignAgenda`
+// "Update seating": re-seat attendees over the existing placement occurrence
+// set. This is the ONE global seating action — the per-slot `agenda.assign`
+// is placement-only.
+//
+// Target slots (the only ones this run re-seats) are unconference slots that
+//   - have at least one placement,
+//   - start in the FUTURE (server clock) — past/started slots are frozen, and
+//   - are `seatingStale` (their placements changed since the last seating run)
+//     OR `includeUnchanged` is set (re-seat unchanged future slots too).
+//
+// Every OTHER slot that already has `UserAssignment` rows is FROZEN: its seats
+// are hard constraints on this solve. Frozen commitments feed the algorithm as
+//   - `busyBands`: a user seated in a frozen slot can't be routed into a
+//     time-overlapping target occurrence (mandatory planned tracks freeze the
+//     whole conference into their band), and
+//   - `priorAttendance`: a user already seated in submission S (in any frozen
+//     unconference slot) is never re-seated into S in a target slot — the
+//     never-the-same-session-twice rule holds across the freeze boundary.
+//
+// Writes ONLY `UserAssignment` rows for the TARGET slots and clears their
+// `seatingStale` flag. Placements are never touched; frozen slots are never
+// touched. Returns `changed_user_ids` (identities whose target-slot seat set
+// changed) so the caller can notify exactly those people. See `assignAgenda`
 // (src/server/assignment-agenda.ts) for the algorithm + its guarantees.
-async function runAssignmentForAgenda(prisma: PrismaClient, confId: number) {
+async function runAssignmentForAgenda(
+  prisma: PrismaClient,
+  confId: number,
+  opts?: { includeUnchanged?: boolean },
+) {
+  const includeUnchanged = opts?.includeUnchanged ?? false;
+  const now = new Date();
+  const empty = {
+    user_assignments: [] as AgendaUserAssignment[],
+    unplaced_users: [] as number[],
+    slot_ids: [] as number[],
+    changed_user_ids: [] as number[],
+  };
+
   const allSlots = await prisma.agendaSlot.findMany({
     where: { conferenceId: confId },
-    select: { id: true, type: true, startsAt: true, endsAt: true },
+    select: { id: true, type: true, startsAt: true, endsAt: true, seatingStale: true },
   });
+  // Bands are computed over ALL slots so frozen commitments and target
+  // occurrences share one time-band coordinate system.
   const bandOf = buildSlotBands(allSlots);
+  const slotById = new Map(allSlots.map((s) => [s.id, s]));
   const unconfSlotIds = allSlots.filter((s) => s.type === "unconference").map((s) => s.id);
-  if (unconfSlotIds.length === 0) {
-    return { user_assignments: [], unplaced_users: [], slot_ids: [] as number[] };
-  }
+  if (unconfSlotIds.length === 0) return empty;
 
-  // Occurrences = placements in unconference slots (room capacity + submitter).
-  const placements = await prisma.unconferencePlacement.findMany({
+  // Every placement in every unconference slot; we partition into target vs
+  // frozen by slot below.
+  const allPlacements = await prisma.unconferencePlacement.findMany({
     where: { slotId: { in: unconfSlotIds } },
     select: {
       slotId: true, submissionId: true, roomId: true,
       room: { select: { capacity: true } },
-      submission: { select: { submitterId: true } },
+      submission: { select: { submitterId: true, priority: true } },
     },
     orderBy: [{ slotId: "asc" }, { submissionId: "asc" }],
   });
-  const occurrences: AgendaOccurrence[] = placements.map((p, i) => ({
+  const slotsWithPlacements = new Set(allPlacements.map((p) => p.slotId));
+
+  const targetSlotIds = allSlots
+    .filter((s) =>
+      s.type === "unconference"
+      && slotsWithPlacements.has(s.id)
+      && s.startsAt > now
+      && (s.seatingStale || includeUnchanged))
+    .map((s) => s.id);
+  const targetSet = new Set(targetSlotIds);
+  if (targetSlotIds.length === 0) return empty;
+
+  // Occurrences = TARGET slots' placements only.
+  const targetPlacements = allPlacements.filter((p) => targetSet.has(p.slotId));
+  const occurrences: AgendaOccurrence[] = targetPlacements.map((p, i) => ({
     id: i + 1,
     slot_id: p.slotId,
     submission_id: p.submissionId,
@@ -1128,6 +1323,7 @@ async function runAssignmentForAgenda(prisma: PrismaClient, confId: number) {
     capacity: p.room.capacity,
     submitter_id: p.submission.submitterId,
     band_id: bandOf.get(p.slotId)!,
+    priority: priorityWeight(p.submission.priority),
   }));
   const occByKey = new Map<string, number>(); // "slot:sub" -> occurrence id
   for (const o of occurrences) occByKey.set(`${o.slot_id}:${o.submission_id}`, o.id);
@@ -1145,9 +1341,10 @@ async function runAssignmentForAgenda(prisma: PrismaClient, confId: number) {
   for (const id of identities) stars.set(id.id, new Set());
   for (const s of starRows) stars.get(s.userId)?.add(s.submissionId);
 
-  // Manual picks in unconference slots → fixed assignments (re-honored).
+  // Manual picks in TARGET slots → fixed assignments (re-honored). Manual picks
+  // in frozen slots stay frozen (see below), so they aren't collected here.
   const manualRows = await prisma.userAssignment.findMany({
-    where: { manual: true, slotId: { in: unconfSlotIds }, submissionId: { not: null } },
+    where: { manual: true, slotId: { in: targetSlotIds }, submissionId: { not: null } },
     select: { userId: true, slotId: true, submissionId: true },
   });
   const fixedAssignments: { user_id: number; occurrence_id: number }[] = [];
@@ -1156,41 +1353,110 @@ async function runAssignmentForAgenda(prisma: PrismaClient, confId: number) {
     if (occId !== undefined) fixedAssignments.push({ user_id: m.userId, occurrence_id: occId });
   }
 
-  // Busy bands: a user committed in a non-unconference slot (mixer placement,
-  // explicit assignment, or a mandatory planned track) can't be routed into an
-  // overlapping unconference occurrence.
-  const nonUnconfSlotIds = allSlots.filter((s) => s.type !== "unconference").map((s) => s.id);
+  // Frozen commitments: every UserAssignment row OUTSIDE the target slots —
+  // mixers, planned tracks, past/started unconference slots, and unchanged
+  // future unconference slots we're not re-seating this run.
+  const frozenAssigns = await prisma.userAssignment.findMany({
+    where: { slot: { conferenceId: confId }, slotId: { notIn: targetSlotIds } },
+    select: { userId: true, slotId: true, submissionId: true },
+  });
   const busyBands = new Map<number, Set<number>>();
   const markBusy = (uid: number, band: number) => {
     let set = busyBands.get(uid);
     if (!set) { set = new Set(); busyBands.set(uid, set); }
     set.add(band);
   };
-  if (nonUnconfSlotIds.length > 0) {
-    const [otherAssigns, mandatoryTracks] = await Promise.all([
-      prisma.userAssignment.findMany({
-        where: { slotId: { in: nonUnconfSlotIds } },
-        select: { userId: true, slotId: true },
-      }),
-      prisma.trackAssignment.findMany({
-        where: { slotId: { in: nonUnconfSlotIds }, mandatory: true },
-        select: { slotId: true },
-      }),
-    ]);
-    for (const a of otherAssigns) markBusy(a.userId, bandOf.get(a.slotId)!);
-    const mandatoryBands = new Set(mandatoryTracks.map((t) => bandOf.get(t.slotId)!));
-    for (const b of mandatoryBands) for (const id of identities) markBusy(id.id, b);
+  const priorAttendance = new Map<number, Set<number>>();
+  const addPrior = (uid: number, submissionId: number) => {
+    let set = priorAttendance.get(uid);
+    if (!set) { set = new Set(); priorAttendance.set(uid, set); }
+    set.add(submissionId);
+  };
+  for (const a of frozenAssigns) {
+    markBusy(a.userId, bandOf.get(a.slotId)!);
+    // Only unconference seats carry a submission the never-twice rule applies to.
+    if (a.submissionId !== null && slotById.get(a.slotId)?.type === "unconference") {
+      addPrior(a.userId, a.submissionId);
+    }
   }
 
-  const result = assignAgenda({ occurrences, stars, fixedAssignments, busyBands });
+  // Derived planned-track attendance (Path C), lifted from the per-slot
+  // `runAssignmentForSlot` priorAssignments build: a user who attends a planned
+  // (normal-slot) `TrackAssignment` session — as a starrer, as the submitter,
+  // or via a mandatory track — must never be re-seated into an unconference
+  // occurrence of that SAME submission ("never shown the same session twice"
+  // spans planned + unconference). Planned tracks live on normal slots (never
+  // targets), so this is always frozen context. Unlike busyBands, soft stars
+  // DO feed priorAttendance (attend-once), but only MANDATORY tracks freeze a
+  // band — soft-starred planned tracks stay non-blocking, matching assignAll's
+  // historical band scope.
+  const plannedTracks = await prisma.trackAssignment.findMany({
+    where: { slot: { conferenceId: confId }, slotId: { notIn: targetSlotIds } },
+    select: {
+      slotId: true, submissionId: true, mandatory: true,
+      submission: { select: { submitterId: true } },
+    },
+  });
+  // A mandatory planned track force-attends the whole conference → freeze its
+  // band for every identity.
+  const mandatoryBands = new Set(
+    plannedTracks.filter((t) => t.mandatory).map((t) => bandOf.get(t.slotId)!),
+  );
+  for (const b of mandatoryBands) for (const id of identities) markBusy(id.id, b);
+  if (plannedTracks.length > 0) {
+    const trackSubIds = [...new Set(plannedTracks.map((t) => t.submissionId))];
+    const trackStars = await prisma.star.findMany({
+      where: { submissionId: { in: trackSubIds } },
+      select: { userId: true, submissionId: true },
+    });
+    // Stars: every starring user attends every tracked offering of the sub.
+    for (const s of trackStars) addPrior(s.userId, s.submissionId);
+    // Submitter: credited as attending their own tracked session.
+    for (const t of plannedTracks) addPrior(t.submission.submitterId, t.submissionId);
+    // Mandatory: every identity attends every mandatory track.
+    for (const t of plannedTracks) {
+      if (!t.mandatory) continue;
+      for (const id of identities) addPrior(id.id, t.submissionId);
+    }
+  }
 
-  // Write ONLY UserAssignment rows, per unconference slot, in one transaction.
-  // Placements are left untouched (mod-authored occurrence set is preserved).
+  const result = assignAgenda({
+    occurrences, stars, fixedAssignments, busyBands, priorAttendance,
+  });
+
+  // Diff notifications: capture the target slots' EXISTING seats BEFORE the
+  // rewrite, then compare each user's (slot:submission) seat set old vs new.
+  const oldTargetAssigns = await prisma.userAssignment.findMany({
+    where: { slotId: { in: targetSlotIds }, submissionId: { not: null } },
+    select: { userId: true, slotId: true, submissionId: true },
+  });
+  const seatKey = (slotId: number, subId: number) => `${slotId}:${subId}`;
+  const oldByUser = new Map<number, Set<string>>();
+  for (const a of oldTargetAssigns) {
+    let set = oldByUser.get(a.userId);
+    if (!set) { set = new Set(); oldByUser.set(a.userId, set); }
+    set.add(seatKey(a.slotId, a.submissionId!));
+  }
+  const newByUser = new Map<number, Set<string>>();
+  for (const a of result.user_assignments) {
+    let set = newByUser.get(a.user_id);
+    if (!set) { set = new Set(); newByUser.set(a.user_id, set); }
+    set.add(seatKey(a.slot_id, a.submission_id));
+  }
+  const changed = new Set<number>();
+  for (const uid of new Set([...oldByUser.keys(), ...newByUser.keys()])) {
+    const o = oldByUser.get(uid) ?? new Set<string>();
+    const n = newByUser.get(uid) ?? new Set<string>();
+    if (o.size !== n.size || [...n].some((k) => !o.has(k))) changed.add(uid);
+  }
+
+  // Write ONLY UserAssignment rows for TARGET slots and clear their stale flag,
+  // in one transaction. Placements + frozen slots are left untouched.
   const bySlot = new Map<number, AgendaUserAssignment[]>();
-  for (const sid of unconfSlotIds) bySlot.set(sid, []);
+  for (const sid of targetSlotIds) bySlot.set(sid, []);
   for (const a of result.user_assignments) bySlot.get(a.slot_id)?.push(a);
   const manualKey = new Set(manualRows.map((m) => `${m.slotId}:${m.userId}:${m.submissionId}`));
-  const ops = unconfSlotIds.flatMap((sid) =>
+  const ops = targetSlotIds.flatMap((sid) =>
     assignmentWriteOps(
       prisma, sid,
       bySlot.get(sid)!.map((a) => ({
@@ -1199,12 +1465,18 @@ async function runAssignmentForAgenda(prisma: PrismaClient, confId: number) {
       })),
     ),
   );
+  ops.push(
+    prisma.agendaSlot.updateMany({
+      where: { id: { in: targetSlotIds } }, data: { seatingStale: false },
+    }),
+  );
   await prisma.$transaction(ops);
 
   return {
     user_assignments: result.user_assignments,
     unplaced_users: result.unplaced_users,
-    slot_ids: unconfSlotIds,
+    slot_ids: targetSlotIds,
+    changed_user_ids: [...changed].sort((a, b) => a - b),
   };
 }
 
@@ -1212,7 +1484,8 @@ export const agendaRouter = {
   get: requireConf("participant").agenda.get.handler(async ({ context }) => {
     const confId = context.conferenceId;
     const userId = actorIdentityId(context);
-    const [slots, series, tracks, placements, myStars, mixerAssigns, unconfCounts, conf] = await Promise.all([
+    const isMod = context.principal.role === "owner" || context.principal.role === "moderator";
+    const [slots, series, tracks, placements, myStars, mixerAssigns, unconfCounts, conf, identityCount] = await Promise.all([
       // Every slot is read with its series + own join rows so
       // `effectiveSlotConfig` can resolve which side owns each field. No
       // separate SlotRoom/SlotSubmission scan is needed — the include covers
@@ -1278,6 +1551,8 @@ export const agendaRouter = {
         where: { id: confId },
         select: { mixerAvoidRepeatsDefault: true },
       }),
+      // Identity count — surfaced only to mods (see `participant_count` below).
+      context.prisma.conferenceIdentity.count({ where: { conferenceId: confId } }),
     ]);
     const starredSubIds = new Set(myStars.map((s) => s.submissionId));
     const siblingsBySeries = new Map<number, number[]>(
@@ -1301,6 +1576,7 @@ export const agendaRouter = {
           series_id: s.seriesId,
           series_offering_index: offeringIndex,
           series_total_offerings: siblings ? siblings.length : null,
+          seating_stale: s.seatingStale,
         };
       }),
       slot_series: series.map((s) => ({
@@ -1347,6 +1623,8 @@ export const agendaRouter = {
           slot_id: m.slotId, room_id: m.roomId as number,
           attendee_count: m._count.userId,
         })),
+      // Mods see the conference size; participants get null (no size leak).
+      participant_count: isMod ? identityCount : null,
     };
   }),
 
@@ -1767,6 +2045,12 @@ export const agendaRouter = {
           await tx.unconferencePlacement.deleteMany({ where: { slotId, submissionId } });
           await tx.userAssignment.deleteMany({ where: { slotId, submissionId } });
         }
+        // Dropping placements changes the occurrence set → the affected slots
+        // need a re-seat on the next "Update seating" run.
+        const staleSlotIds = [...new Set(orphanedPlacementKeys.map((k) => k.slotId))];
+        await tx.agendaSlot.updateMany({
+          where: { id: { in: staleSlotIds } }, data: { seatingStale: true },
+        });
       }
     });
 
@@ -1849,7 +2133,7 @@ export const agendaRouter = {
     // participant, the mod creates a Submission for them first.
     const submission = await context.prisma.submission.findFirst({
       where: { id: input.submission_id, conferenceId: context.conferenceId },
-      select: { id: true },
+      select: { id: true, title: true },
     });
     if (!submission) throw new ORPCError("BAD_REQUEST", { message: "submission_not_in_conference" });
     const speakers = (input.speakers ?? "").trim() || null;
@@ -1859,6 +2143,16 @@ export const agendaRouter = {
     const reqs = input.requirements === undefined
       ? undefined
       : normalizeLabels(input.requirements);
+
+    // Capture what (if anything) already occupies this room so we can tell a
+    // brand-new schedule from a same-submission edit from a replacement.
+    const existing = await context.prisma.trackAssignment.findUnique({
+      where: { slotId_roomId: { slotId: input.slot_id, roomId: input.room_id } },
+      select: {
+        submissionId: true, mandatory: true,
+        submission: { select: { title: true } },
+      },
+    });
 
     await context.prisma.$transaction(async (tx) => {
       const track = await tx.trackAssignment.upsert({
@@ -1887,6 +2181,31 @@ export const agendaRouter = {
         }
       }
     });
+
+    // Notify AFTER commit. A same-submission edit (speakers / mandatory /
+    // requirements) changes nothing schedule-relevant → no notification. A
+    // fresh track is a "scheduled"; replacing a different submission in the
+    // room is "removed" for the old + "scheduled" for the new.
+    if (!existing || existing.submissionId !== input.submission_id) {
+      const room = await context.prisma.room.findFirst({
+        where: { id: input.room_id, conferenceId: context.conferenceId },
+        select: { name: true },
+      });
+      const roomName = room?.name ?? "";
+      const newMandatory = input.mandatory ?? existing?.mandatory ?? false;
+      if (existing) {
+        await notifyPlannedScheduleChange(context.prisma, {
+          conferenceId: context.conferenceId, slotId: input.slot_id,
+          submissionId: existing.submissionId, title: existing.submission.title,
+          mandatory: existing.mandatory, change: { kind: "removed" },
+        });
+      }
+      await notifyPlannedScheduleChange(context.prisma, {
+        conferenceId: context.conferenceId, slotId: input.slot_id,
+        submissionId: input.submission_id, title: submission.title,
+        mandatory: newMandatory, change: { kind: "scheduled", roomName },
+      });
+    }
     return { ok: true as const };
   }),
 
@@ -1895,9 +2214,24 @@ export const agendaRouter = {
       where: { id: input.slot_id, conferenceId: context.conferenceId },
     });
     if (!slot) throw new ORPCError("NOT_FOUND");
+    // Capture the removed track before deleting so we can notify its audience.
+    const track = await context.prisma.trackAssignment.findUnique({
+      where: { slotId_roomId: { slotId: input.slot_id, roomId: input.room_id } },
+      select: {
+        submissionId: true, mandatory: true,
+        submission: { select: { title: true } },
+      },
+    });
     await context.prisma.trackAssignment.deleteMany({
       where: { slotId: input.slot_id, roomId: input.room_id },
     });
+    if (track) {
+      await notifyPlannedScheduleChange(context.prisma, {
+        conferenceId: context.conferenceId, slotId: input.slot_id,
+        submissionId: track.submissionId, title: track.submission.title,
+        mandatory: track.mandatory, change: { kind: "removed" },
+      });
+    }
     return { ok: true as const };
   }),
 
@@ -1928,6 +2262,7 @@ export const agendaRouter = {
       where: { id: input.submission_id, conferenceId: context.conferenceId },
       select: {
         id: true,
+        title: true,
         preAssignedRoomId: true,
         roomRequirements: { select: { value: true } },
       },
@@ -2068,12 +2403,209 @@ export const agendaRouter = {
       return created;
     });
 
+    // Notify the talk's audience AFTER commit that it's now on the schedule.
+    await notifyPlannedScheduleChange(context.prisma, {
+      conferenceId: context.conferenceId, slotId: input.slot_id,
+      submissionId: input.submission_id, title: submission.title,
+      mandatory: input.mandatory ?? false,
+      change: { kind: "scheduled", roomName: chosenRoom.name },
+    });
+
     return {
       kind: "ok" as const,
       track_id: track.id,
       room_id: chosenRoomId!,
       room_name: chosenRoom.name,
     };
+  }),
+
+  // Reassign a PLANNED slot's rooms among its already-scheduled tracks by
+  // popularity: biggest room to the most-starred talk. Honors `preAssignedRoomId`
+  // pins (a pin overrides tag requirements, like scheduleSubmission) and
+  // `roomRequirements`. All-or-nothing: any unmatchable track returns a conflict
+  // with ZERO writes. Mirrors the assignment.ts Phase A zip semantics without
+  // importing it (that module is per-slot attendee placement, not track refit).
+  refitRooms: requireConf("moderator").agenda.refitRooms.handler(async ({ input, context }) => {
+    const slot = await context.prisma.agendaSlot.findFirst({
+      where: { id: input.slot_id, conferenceId: context.conferenceId },
+      include: SLOT_CONFIG_INCLUDE,
+    });
+    if (!slot) throw new ORPCError("NOT_FOUND");
+    if (slot.type !== "normal") {
+      throw new ORPCError("BAD_REQUEST", { message: "not_a_static_slot" });
+    }
+
+    const tracks = await context.prisma.trackAssignment.findMany({
+      where: { slotId: input.slot_id },
+      select: {
+        id: true, roomId: true, submissionId: true, speakers: true, mandatory: true,
+        submission: {
+          select: {
+            id: true, title: true, preAssignedRoomId: true,
+            _count: { select: { stars: true } },
+          },
+        },
+        requirements: { select: { value: true } },
+      },
+    });
+    if (tracks.length === 0) {
+      throw new ORPCError("BAD_REQUEST", { message: "no_tracks_to_refit" });
+    }
+
+    // Room pool = scoped rooms ∪ rooms currently held by this slot's tracks.
+    // (A track may sit in a room that's since been scoped out; it stays a valid
+    // target so a refit never strands it.)
+    const cfg = effectiveSlotConfig(slot);
+    const roomWhere = cfg.unconfUseAllRooms
+      ? { conferenceId: context.conferenceId }
+      : { conferenceId: context.conferenceId, id: { in: cfg.roomIds } };
+    const scopedRooms = await context.prisma.room.findMany({
+      where: roomWhere, select: { id: true, name: true, capacity: true },
+    });
+    const poolById = new Map<number, { id: number; name: string; capacity: number }>();
+    for (const r of scopedRooms) poolById.set(r.id, r);
+    const heldOutside = tracks.map((t) => t.roomId).filter((id) => !poolById.has(id));
+    if (heldOutside.length > 0) {
+      const held = await context.prisma.room.findMany({
+        where: { id: { in: heldOutside }, conferenceId: context.conferenceId },
+        select: { id: true, name: true, capacity: true },
+      });
+      for (const r of held) poolById.set(r.id, r);
+    }
+    const pool = [...poolById.values()];
+
+    // Room tags for requirement matching (mirrors `roomSatisfiesRequirements`).
+    const roomTagRows = pool.length === 0 ? [] : await context.prisma.roomTag.findMany({
+      where: { roomId: { in: pool.map((r) => r.id) } }, select: { roomId: true, value: true },
+    });
+    const tagsByRoom = new Map<number, Set<string>>();
+    for (const r of pool) tagsByRoom.set(r.id, new Set());
+    for (const row of roomTagRows) tagsByRoom.get(row.roomId)?.add(row.value);
+    const satisfies = (roomId: number, reqs: string[]): boolean => {
+      if (reqs.length === 0) return true;
+      const tags = tagsByRoom.get(roomId);
+      return tags ? reqs.every((t) => tags.has(t)) : false;
+    };
+
+    const claimed = new Set<number>();
+    const assignedRoom = new Map<number, number>(); // trackId -> roomId
+
+    // (1) Pins claim their room first (walk by submission id asc for
+    //     deterministic conflict messages). A pin outside the pool → out of
+    //     scope; two pins on one room → taken.
+    const pinnedTracks = tracks
+      .filter((t) => t.submission.preAssignedRoomId !== null)
+      .sort((a, b) => a.submission.id - b.submission.id);
+    for (const t of pinnedTracks) {
+      const pinId = t.submission.preAssignedRoomId;
+      if (pinId === null) continue; // defensive; filtered above
+      const reqTags = t.requirements.map((r) => r.value);
+      if (!poolById.has(pinId)) {
+        const name = (await context.prisma.room.findFirst({
+          where: { id: pinId, conferenceId: context.conferenceId }, select: { name: true },
+        }))?.name ?? "(unknown room)";
+        return {
+          kind: "conflict" as const, reason: "pin_room_out_of_scope" as const,
+          pinned_room: { id: pinId, name }, required_tags: reqTags,
+          candidate_room_names: [],
+          submission: { id: t.submission.id, title: t.submission.title },
+        };
+      }
+      if (claimed.has(pinId)) {
+        return {
+          kind: "conflict" as const, reason: "pin_room_taken" as const,
+          pinned_room: { id: pinId, name: poolById.get(pinId)!.name },
+          required_tags: reqTags, candidate_room_names: [],
+          submission: { id: t.submission.id, title: t.submission.title },
+        };
+      }
+      claimed.add(pinId);
+      assignedRoom.set(t.id, pinId);
+    }
+
+    // (2) Remaining (unpinned) tracks by star count desc / submission id asc
+    //     each take the largest free pool room satisfying their requirements.
+    const sortedPool = [...pool].sort((a, b) =>
+      a.capacity !== b.capacity ? b.capacity - a.capacity : a.id - b.id);
+    const unpinned = tracks
+      .filter((t) => t.submission.preAssignedRoomId === null)
+      .sort((a, b) => {
+        const sa = a.submission._count.stars;
+        const sb = b.submission._count.stars;
+        if (sb !== sa) return sb - sa;
+        return a.submission.id - b.submission.id;
+      });
+    for (const t of unpinned) {
+      const reqs = t.requirements.map((r) => r.value);
+      const room = sortedPool.find((r) => !claimed.has(r.id) && satisfies(r.id, reqs));
+      if (!room) {
+        return {
+          kind: "conflict" as const, reason: "unsatisfiable_requirements" as const,
+          pinned_room: null, required_tags: reqs,
+          candidate_room_names: pool.filter((r) => satisfies(r.id, reqs)).map((r) => r.name),
+          submission: { id: t.submission.id, title: t.submission.title },
+        };
+      }
+      claimed.add(room.id);
+      assignedRoom.set(t.id, room.id);
+    }
+
+    // Changed tracks only. Nothing to do → no writes, no notifications.
+    const moves = tracks
+      .filter((t) => assignedRoom.get(t.id) !== t.roomId)
+      .map((t) => ({
+        submission_id: t.submission.id,
+        title: t.submission.title,
+        from_room: poolById.get(t.roomId)!.name,
+        to_room: poolById.get(assignedRoom.get(t.id)!)!.name,
+      }));
+    if (moves.length === 0) {
+      return { kind: "ok" as const, moves: [] };
+    }
+
+    // The @@unique([slotId, roomId]) makes in-place room swaps collide
+    // transiently, so we delete the slot's tracks and recreate them with the
+    // new roomIds (same submission / speakers / mandatory / requirements).
+    // Track ids change as a result — see the refit caveat in CLAUDE.md (the
+    // ICS VEVENT UID keys off track id).
+    const recreate = tracks.map((t) => ({
+      roomId: assignedRoom.get(t.id)!,
+      submissionId: t.submissionId,
+      speakers: t.speakers,
+      mandatory: t.mandatory,
+      requirements: t.requirements.map((r) => r.value),
+    }));
+    await context.prisma.$transaction(async (tx) => {
+      await tx.trackAssignment.deleteMany({ where: { slotId: input.slot_id } });
+      for (const r of recreate) {
+        const created = await tx.trackAssignment.create({
+          data: {
+            slotId: input.slot_id, roomId: r.roomId, submissionId: r.submissionId,
+            speakers: r.speakers, mandatory: r.mandatory,
+          },
+          select: { id: true },
+        });
+        if (r.requirements.length > 0) {
+          await tx.trackRequirement.createMany({
+            data: r.requirements.map((value) => ({ trackId: created.id, value })),
+          });
+        }
+      }
+    });
+
+    // Notify "moved" per changed track AFTER commit.
+    for (const t of tracks) {
+      const to = assignedRoom.get(t.id)!;
+      if (to === t.roomId) continue;
+      await notifyPlannedScheduleChange(context.prisma, {
+        conferenceId: context.conferenceId, slotId: input.slot_id,
+        submissionId: t.submissionId, title: t.submission.title,
+        mandatory: t.mandatory,
+        change: { kind: "moved", roomName: poolById.get(to)!.name },
+      });
+    }
+
+    return { kind: "ok" as const, moves };
   }),
 
   // Path C: planned-track "stars" no longer exist as a separate concept.
@@ -2092,28 +2624,14 @@ export const agendaRouter = {
         : undefined;
       const r = await runAssignmentForSlot(context.prisma, context.conferenceId, input.slot_id, excludes);
       // Pre-assignment conflicts surface here as a structured result; no
-      // notifications, no DB writes — the moderator resolves the conflict
-      // and re-runs.
+      // DB writes — the moderator resolves the conflict and re-runs.
       if ("kind" in r && r.kind === "conflict") {
         return r;
       }
-      // Notify each assigned participant. The "manual" picks (preserved across
-      // re-runs) re-notify too — harmless and lets the participant know the
-      // round was finalized.
-      const subTitles = new Map<number, string>(
-        (await context.prisma.submission.findMany({
-          where: { id: { in: r.user_assignments.map((a) => a.submission_id) } },
-          select: { id: true, title: true },
-        })).map((s) => [s.id, s.title]),
-      );
-      await createNotifications(context.prisma, r.user_assignments.map((a) => ({
-        identityId: a.user_id,
-        kind: "unconf_assigned" as const,
-        title: "You were assigned to a session",
-        body: subTitles.get(a.submission_id) ?? null,
-        ctaLabel: "Open schedule",
-        ctaHref: "tab:me",
-      })));
+      // Placement-only: no attendee seats are written and no notifications are
+      // sent here. The mod runs "Update seating" (`agenda.assignAll`) to seat
+      // attendees over the placements; that action notifies only people whose
+      // seat actually changed.
       return { kind: "unconference" as const, ...r };
     }
     if (slot.type === "mixer") {
@@ -2154,7 +2672,7 @@ export const agendaRouter = {
     const submission = await context.prisma.submission.findFirst({
       where: { id: input.submission_id, conferenceId: context.conferenceId, status: "published" },
       select: {
-        id: true, submitterId: true, preAssignedRoomId: true,
+        id: true, title: true, submitterId: true, preAssignedRoomId: true,
         allowOverlappingPlacements: true,
         roomRequirements: { select: { value: true } },
       },
@@ -2284,6 +2802,19 @@ export const agendaRouter = {
     }
 
     const room = scopedRooms.find((r) => r.id === chosenRoomId)!;
+    // If this upsert MOVES an existing placement to a different room, capture
+    // the users currently seated in it BEFORE the write so we can tell them the
+    // room changed (their seats aren't touched here — re-seating is a separate
+    // "Update seating" run — but the room they'll walk into just moved).
+    const priorRoomId = existingPlacements
+      .find((p) => p.submissionId === submission.id)?.roomId ?? null;
+    const movedSeatedUserIds: number[] =
+      priorRoomId !== null && priorRoomId !== chosenRoomId
+        ? (await context.prisma.userAssignment.findMany({
+            where: { slotId: input.slot_id, submissionId: submission.id },
+            select: { userId: true },
+          })).map((u) => u.userId)
+        : [];
     // Upsert the placement (re-placing the same session moves its room).
     try {
       await context.prisma.unconferencePlacement.upsert({
@@ -2304,6 +2835,24 @@ export const agendaRouter = {
       }
       throw e;
     }
+    // Placements changed → this slot needs a re-seat on the next "Update
+    // seating" run.
+    await context.prisma.agendaSlot.update({
+      where: { id: input.slot_id }, data: { seatingStale: true },
+    });
+    // Tell currently-seated users their session's room moved (AFTER commit).
+    // Coalesced with the same (slot, submission) key as planned-slot changes.
+    if (movedSeatedUserIds.length > 0) {
+      await createNotifications(context.prisma, movedSeatedUserIds.map((uid) => ({
+        identityId: uid,
+        kind: "schedule_changed" as const,
+        title: "Schedule updated",
+        body: `${submission.title} moved to ${room.name}`,
+        ctaLabel: "Open schedule",
+        ctaHref: "tab:me",
+        dedupeKey: `track:${input.slot_id}:${submission.id}`,
+      })));
+    }
     // `track_id` is vestigial here (placements have no track) — it exists only
     // because this endpoint reuses the `ScheduleSubmissionResult` shape; the
     // client ignores it.
@@ -2316,7 +2865,8 @@ export const agendaRouter = {
       select: { id: true },
     });
     if (!slot) throw new ORPCError("NOT_FOUND");
-    // Remove the placement and any attendee assignments anchored to it.
+    // Remove the placement and any attendee assignments anchored to it, and
+    // flag the slot stale so the next "Update seating" run re-seats it.
     await context.prisma.$transaction([
       context.prisma.userAssignment.deleteMany({
         where: { slotId: input.slot_id, submissionId: input.submission_id },
@@ -2324,26 +2874,32 @@ export const agendaRouter = {
       context.prisma.unconferencePlacement.deleteMany({
         where: { slotId: input.slot_id, submissionId: input.submission_id },
       }),
+      context.prisma.agendaSlot.update({
+        where: { id: input.slot_id }, data: { seatingStale: true },
+      }),
     ]);
     return { ok: true as const };
   }),
 
-  // Route attendees across the WHOLE agenda over the existing placements.
-  // Writes only UserAssignment rows; placements are preserved. Notifies each
-  // assigned participant with a single coalesced "schedule updated" bell row.
-  assignAll: requireConf("moderator").agenda.assignAll.handler(async ({ context }) => {
-    const r = await runAssignmentForAgenda(context.prisma, context.conferenceId);
-    if (r.user_assignments.length > 0) {
-      const recipients = [...new Set(r.user_assignments.map((a) => a.user_id))];
-      await createNotifications(context.prisma, recipients.map((uid) => ({
+  // "Update seating": re-seat attendees over the existing placements. Only
+  // stale future unconference slots are re-seated by default (`include_unchanged`
+  // opts in unchanged future slots); past/started slots are never touched.
+  // Writes only UserAssignment rows for the re-seated slots. Notifies ONLY the
+  // people whose seat actually changed, with a single coalesced bell row.
+  assignAll: requireConf("moderator").agenda.assignAll.handler(async ({ input, context }) => {
+    const r = await runAssignmentForAgenda(context.prisma, context.conferenceId, {
+      includeUnchanged: input.include_unchanged ?? false,
+    });
+    if (r.changed_user_ids.length > 0) {
+      await createNotifications(context.prisma, r.changed_user_ids.map((uid) => ({
         identityId: uid,
         kind: "unconf_assigned" as const,
         title: "Your schedule was updated",
         body: null,
         ctaLabel: "Open schedule",
         ctaHref: "tab:me",
-        // Coalesce: one bell row per participant even though they may have been
-        // placed across several slots in this one run.
+        // Coalesce: one bell row per participant even though their seat may have
+        // changed across several slots in this one run.
         dedupeKey: `assign:${context.conferenceId}`,
       })));
     }

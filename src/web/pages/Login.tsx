@@ -5,6 +5,7 @@ import {
 import { useToast } from "../design-system/hooks";
 import { api, errorCode, errorFields } from "../api";
 import { useForm } from "../useForm";
+import { useRoute } from "../router";
 import {
   LoginSchema, SignupSchema, RequestPasswordResetSchema, safeParse,
 } from "../../shared/schemas";
@@ -12,6 +13,45 @@ import { TurnstileWidget, type TurnstileWidgetHandle } from "../components/Turns
 
 const REPO_URL = "https://github.com/enyineer/simple-unconference";
 const REPO_API = "https://api.github.com/repos/enyineer/simple-unconference";
+
+// Pull the optional post-login `?next=` target. Used to bounce conference
+// owners back to the conference they came from after they sign in with their
+// organizer account. Two places to look: the hash-router path covers directly
+// opened links like `/#/?next=…`, while wouter's hash navigate() hoists any
+// `?query` out of the fragment into the real URL search (`/?next=…#/`), so
+// in-app navigation from the conference login lands there instead.
+function readNext(path: string): string | null {
+  const qIdx = path.indexOf("?");
+  const fromHash = qIdx === -1
+    ? null
+    : new URLSearchParams(path.slice(qIdx + 1)).get("next");
+  return fromHash ?? new URLSearchParams(window.location.search).get("next");
+}
+
+// Drop a consumed (or abandoned) `?next=` from the real URL search so it
+// doesn't linger and re-trigger a redirect on a later, unrelated sign-in.
+function clearNextSearchParam() {
+  if (!window.location.search) return;
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has("next")) return;
+  params.delete("next");
+  const rest = params.toString();
+  history.replaceState(
+    null, "",
+    window.location.pathname + (rest ? `?${rest}` : "") + window.location.hash,
+  );
+}
+
+// Only honor internal, relative destinations. Reject protocol-relative
+// (`//host`), any scheme (`https://…`, `javascript:…`), and backslash tricks
+// so a crafted `next` can never redirect off-site.
+function safeNext(raw: string | null): string | null {
+  if (!raw) return null;
+  if (!raw.startsWith("/")) return null;
+  if (raw.startsWith("//") || raw.startsWith("/\\")) return null;
+  if (raw.includes("://") || raw.includes("\\")) return null;
+  return raw;
+}
 
 // Page-scoped styles. Inlined here so the landing owns its identity without
 // leaking into the rest of the app. All colors flow through DS CSS vars
@@ -313,6 +353,11 @@ function Features() {
 
 export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
   const toast = useToast();
+  const { path, navigate } = useRoute();
+  // Where to land after a successful sign-in (e.g. the conference an owner was
+  // trying to open). Ignored for unverified accounts so the email-verification
+  // wall still takes over at `/`.
+  const nextTarget = safeNext(readNext(path));
   const [mode, setMode] = useState<"login" | "signup" | "forgot">("login");
   const [busy, setBusy] = useState(false);
   // Set after a forgot-password request so we can show the (deliberately
@@ -396,11 +441,19 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
     setBusy(true);
     try {
       if (mode === "login") {
-        await api.auth.login(r.data as { email: string; password: string; turnstile_token?: string });
+        const me = await api.auth.login(r.data as { email: string; password: string; turnstile_token?: string });
+        onLoggedIn();
+        // Honor `next` only for verified accounts. Unverified owners must hit
+        // the verification wall at `/`, so we leave the route untouched and let
+        // App render it. Either way the param is spent — clear it from the URL
+        // search (wouter keeps existing search on navigation) so it can't
+        // re-trigger on a later sign-in.
+        clearNextSearchParam();
+        if (me.email_verified && nextTarget) navigate(nextTarget);
       } else {
         await api.auth.signup(r.data as { email: string; password: string; name?: string; turnstile_token?: string });
+        onLoggedIn();
       }
-      onLoggedIn();
     } catch (e) {
       const fields = errorFields(e);
       if (fields) form.setErrors(fields);
@@ -524,8 +577,10 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
                   </Stack>
                   {mode === "login" && (
                     <Text muted>
-                      Invited to a conference? Open the link from your invitation
-                      to sign in there. Each conference has its own sign-in.
+                      Joining a conference as a participant? Conferences have their
+                      own sign-in - open your invitation or join link, or the
+                      conference&apos;s sign-in page. This page is for organizer
+                      accounts (people who run conferences).
                     </Text>
                   )}
                 </Form>
@@ -540,7 +595,7 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
 
 function humanError(code: string): string {
   return {
-    invalid_credentials: "Wrong email or password.",
+    invalid_credentials: "Wrong email or password for an organizer account. Conference passwords don't work here - each conference has its own sign-in.",
     email_taken: "Email is already registered.",
     signup_disabled: "Signup is disabled on this instance.",
     account_locked: "Too many failed attempts. Try again in a few minutes.",

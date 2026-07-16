@@ -18,6 +18,7 @@ export function UnconferenceBody({
   timeZone,
   onChange,
   isMod,
+  myIdentityId,
 }: {
   slug: string;
   slot: Slot;
@@ -38,6 +39,9 @@ export function UnconferenceBody({
   timeZone: string;
   onChange: () => Promise<void>;
   isMod: boolean;
+  /** The viewer's conference identity id. Used to recognize "you submitted a
+   *  session placed here" before any seating run has assigned them a seat. */
+  myIdentityId: number;
 }) {
   const [myAssignment, setMyAssignment] = useState<{
     submission_id: number | null;
@@ -111,6 +115,15 @@ export function UnconferenceBody({
   const currentSubTitle = currentSub
     ? subById.get(currentSub)?.title ?? `#${currentSub}`
     : null;
+  // Before a seating run has assigned any seat, a submitter whose session is
+  // placed here already knows where they'll be: seating pins them into their
+  // own session (unless they manually pick another). Show that instead of a
+  // misleading "Not assigned yet".
+  const hostedSub = currentSub === null
+    ? placements
+        .map((p) => subById.get(p.submission_id))
+        .find((s) => s !== undefined && s.submitter_id === myIdentityId) ?? null
+    : null;
 
   return (
     <Stack gap="condensed">
@@ -168,7 +181,7 @@ export function UnconferenceBody({
               Your session
             </span>
             <span style={{ fontSize: 14, wordBreak: "break-word" }}>
-              {currentSubTitle ?? "Not assigned yet"}
+              {currentSubTitle ?? hostedSub?.title ?? "Not assigned yet"}
               {myAssignment?.manual && (
                 <span
                   style={{
@@ -181,14 +194,27 @@ export function UnconferenceBody({
                   · chose this
                 </span>
               )}
+              {!currentSub && hostedSub && (
+                <span
+                  style={{
+                    marginLeft: 6,
+                    color: "var(--fgColor-accent, #2563eb)",
+                    fontSize: 11,
+                    fontWeight: 600,
+                  }}
+                  title="You submitted this session, so seating will place you in it as the host - unless you pick a different session yourself."
+                >
+                  · you host this
+                </span>
+              )}
             </span>
           </div>
           <Button
             size="small"
-            variant={currentSub ? "default" : "primary"}
+            variant={currentSub || hostedSub ? "default" : "primary"}
             onClick={() => setPickerOpen(true)}
           >
-            {currentSub ? "Change session" : "Pick a session"}
+            {currentSub || hostedSub ? "Change session" : "Pick a session"}
           </Button>
         </div>
       )}
@@ -219,7 +245,7 @@ export function UnconferenceBody({
         >
           No sessions placed here yet.{" "}
           {isMod
-            ? "Use “Place sessions in this slot”, or “Auto-fill this slot from stars”."
+            ? "Use “Place sessions from stars” above, or place a session by hand below."
             : "Check back once the moderator sets up this slot."}
         </div>
       ) : (
@@ -227,6 +253,7 @@ export function UnconferenceBody({
           {placements.map((p) => {
             const sub = subById.get(p.submission_id);
             const room = roomById.get(p.room_id);
+            const recTimes = recurrenceTimes.get(p.submission_id) ?? [];
             return (
               <div
                 key={p.submission_id}
@@ -258,6 +285,9 @@ export function UnconferenceBody({
                     textTransform: "uppercase",
                     letterSpacing: 0.4,
                     width: "fit-content",
+                    // Never wrap inside the pill — when space runs out, the
+                    // badge cluster on the right wraps whole pills instead.
+                    whiteSpace: "nowrap",
                   }}
                 >
                   <span
@@ -292,7 +322,7 @@ export function UnconferenceBody({
                     title={
                       p.manual
                         ? "You placed this session into this room by hand."
-                        : "The per-slot auto-fill placed this session by star ranking."
+                        : "“Place sessions from stars” placed this session by star ranking."
                     }
                     style={{
                       display: "inline-flex",
@@ -313,35 +343,6 @@ export function UnconferenceBody({
                   >
                     {p.manual ? "placed by you" : "by stars"}
                   </span>
-                  {(recurrenceTimes.get(p.submission_id)?.length ?? 0) > 0 && (
-                    <span
-                      title="The same session is placed on other slots — it recurs."
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        padding: "2px 8px",
-                        borderRadius: 999,
-                        background:
-                          "var(--bgColor-muted, var(--uncon-bg-subtle, rgba(0,0,0,0.05)))",
-                        color: muted,
-                        fontSize: 11,
-                        fontWeight: 600,
-                      }}
-                    >
-                      also at{" "}
-                      {(() => {
-                        const times = recurrenceTimes.get(p.submission_id)!;
-                        // Show the day too when this session's occurrences span
-                        // more than one day (otherwise 9:00 vs 9:00 is ambiguous).
-                        const withDay = spansMultipleDays(
-                          [slot.starts_at, ...times], timeZone,
-                        );
-                        return times
-                          .map((t) => fmtTimeMaybeDay(t, timeZone, withDay))
-                          .join(", ");
-                      })()}
-                    </span>
-                  )}
                   {p.star_count > p.room_capacity && (
                     <span
                       title={`${p.star_count} people starred this session — the room holds ${p.room_capacity}. The algorithm placed ${p.attendee_count}; the remaining ${p.star_count - p.attendee_count} starrers are unplaced or in another starred session.`}
@@ -361,6 +362,35 @@ export function UnconferenceBody({
                       }}
                     >
                       ⚠ Room may be full ({p.star_count}/{p.room_capacity})
+                    </span>
+                  )}
+                  {sub && sub.priority !== "normal" && (
+                    <span
+                      title={
+                        sub.priority === "high"
+                          ? "High priority — the algorithm places and fills this session first."
+                          : "Low priority — the algorithm places and fills this session last."
+                      }
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        padding: "2px 8px",
+                        borderRadius: 999,
+                        background:
+                          sub.priority === "high"
+                            ? "var(--bgColor-attention-muted, rgba(212,167,44,0.16))"
+                            : "var(--bgColor-muted, var(--uncon-bg-subtle, rgba(0,0,0,0.05)))",
+                        color:
+                          sub.priority === "high"
+                            ? "var(--fgColor-attention, #9a6700)"
+                            : muted,
+                        fontSize: 11,
+                        fontWeight: 600,
+                        textTransform: "uppercase",
+                        letterSpacing: 0.4,
+                      }}
+                    >
+                      {sub.priority === "high" ? "High priority" : "Low priority"}
                     </span>
                   )}
                   {isMod && (
@@ -404,13 +434,38 @@ export function UnconferenceBody({
                     </ProfileLink>
                   </div>
                 )}
+                {recTimes.length > 0 && (
+                  <div
+                    title="The same session is placed on other slots — it recurs."
+                    style={{
+                      gridColumn: "1 / -1",
+                      gridRow: 4,
+                      color: muted,
+                      fontSize: 12,
+                      lineHeight: "18px",
+                    }}
+                  >
+                    <span aria-hidden style={{ marginRight: 6 }}>↻</span>
+                    Also runs{" "}
+                    {(() => {
+                      // Show the day too when this session's occurrences span
+                      // more than one day (otherwise 9:00 vs 9:00 is ambiguous).
+                      const withDay = spansMultipleDays(
+                        [slot.starts_at, ...recTimes], timeZone,
+                      );
+                      return recTimes
+                        .map((t) => fmtTimeMaybeDay(t, timeZone, withDay))
+                        .join(" · ");
+                    })()}
+                  </div>
+                )}
                 {sub &&
                   (sub.pre_assigned_room_id !== null ||
                     sub.room_requirements.length > 0) && (
                     <div
                       style={{
                         gridColumn: "1 / -1",
-                        gridRow: 4,
+                        gridRow: recTimes.length > 0 ? 5 : 4,
                         display: "flex",
                         gap: 6,
                         flexWrap: "wrap",

@@ -101,7 +101,7 @@ export const BUILD_STEPS: BuildStep[] = [
   {
     key: "assign",
     title: "Place your sessions",
-    blurb: "On each unconference slot, place sessions into rooms (or auto-fill from stars). Then seat everyone with the Assign panel.",
+    blurb: "On each unconference slot, place sessions into rooms (by hand or from stars). Then seat everyone with Update seating in the Assign panel.",
   },
 ];
 
@@ -111,14 +111,15 @@ export const ASSIGN_STEPS = {
   place: {
     title: "1 · Place sessions",
     blurb:
-      "Decide which session runs in which room, on each unconference slot. Place the same session " +
-      "on more than one slot to make it recurring. (You can also let a single slot auto-fill from stars.)",
+      "Decide which session runs in which room, on each unconference slot - by hand, or with " +
+      "\"Place sessions from stars\". Place the same session on more than one slot to make it " +
+      "recurring. Placing never changes anyone's seat.",
   },
   assign: {
-    title: "2 · Assign attendees",
+    title: "2 · Update seating",
     blurb:
-      "Seat everyone across all unconference slots at once. Recurring sessions are split evenly across " +
-      "their times, and the app avoids double-booking. Your manual placements and people's own picks are kept.",
+      "Seat people across the slots whose placements changed since their last seating. Unchanged and " +
+      "already-started slots keep their seats. Run it whenever the panel says seating is out of date.",
   },
 } as const;
 
@@ -140,6 +141,7 @@ export const GLOSSARY: GlossaryTerm[] = [
   { term: "Star", definition: "An attendee marking a session \"I want this\". One star both signals interest for the unconference ranking and adds the session to their schedule." },
   { term: "Required", definition: "A session flagged to land on everyone's schedule regardless of stars — for keynotes, opening, and closing." },
   { term: "Reserved room (pinning)", definition: "Holding a specific room for a session so assignment always puts it there, ignoring stars and features. Set on the Sessions tab." },
+  { term: "Re-fit rooms", definition: "On a Planned slot, reassigning its rooms among the scheduled talks by star count - the most-starred talk gets the biggest room. Reserved rooms stay put; anyone who starred a moved talk is notified." },
   { term: "Room scope", definition: "Which rooms (and which sessions) a single unconference slot is allowed to use. Defaults to all of them." },
   { term: "Recurring session", definition: "The same session placed on more than one slot, so it runs more than once. Attendees are split across the times." },
 ];

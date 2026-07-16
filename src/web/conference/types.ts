@@ -114,6 +114,11 @@ export interface AgendaData {
   /** For mixer slots: per-room headcount after assignment. Privacy-safe
    * aggregate (no user identities). */
   mixer_placements: { slot_id: number; room_id: number; attendee_count: number }[];
+  /** Number of conference identities. Moderator-only — `null` for participants
+   *  so the conference's size isn't leaked to non-mods. Drives the mandatory
+   *  overfill badge on planned tracks (every participant attends a required
+   *  talk, so the room must seat all of them). */
+  participant_count: number | null;
 }
 
 import type { MyAssignmentsOut } from "../../shared/contract";

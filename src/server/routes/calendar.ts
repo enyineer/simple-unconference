@@ -196,7 +196,13 @@ async function buildIdentityEvents(
     const roomName = t.room?.name;
     const confName = slot.conference.name;
     events.push({
-      uid: `static-${t.id}-${identityId}@simple-unconference`,
+      // Key the UID on the STABLE (slot, submission, identity) triple, not on
+      // the TrackAssignment.id — planned-track ids are recreated (and thus
+      // change) by `agenda.refitRooms`, and a UID that shifted on every refit
+      // would make calendar clients drop + re-add the event instead of
+      // updating it in place. (slot, submission) uniquely identifies a planned
+      // track: at most one track per submission per slot on a subscriber's feed.
+      uid: `static-${t.slotId}-${t.submissionId}-${identityId}@simple-unconference`,
       startMs: slot.startsAt.getTime(),
       endMs: slot.endsAt.getTime(),
       summary: roomName ? `${title} (${roomName})` : title,

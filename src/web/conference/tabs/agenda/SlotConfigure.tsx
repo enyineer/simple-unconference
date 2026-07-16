@@ -3,7 +3,6 @@ import { Button, Card, Stack, Text } from "../../../design-system";
 import { useToast } from "../../../design-system/hooks";
 import { api, errorCode } from "../../../api";
 import type { Room, Slot, Submission } from "../../types";
-import { Tip } from "../../ui/Tip";
 
 export function SlotConfigure({
   slug,
@@ -21,7 +20,6 @@ export function SlotConfigure({
   const isMixer = slot.type === "mixer";
   const [useAllRooms, setUseAllRooms] = useState(slot.unconf_use_all_rooms);
   const [useAllSubs, setUseAllSubs] = useState(slot.unconf_use_all_submissions);
-  const [avoidRepeats, setAvoidRepeats] = useState(slot.unconf_avoid_repeats);
   const [pickedRooms, setPickedRooms] = useState<Set<number>>(
     () =>
       new Set(
@@ -49,7 +47,6 @@ export function SlotConfigure({
         id: slot.id,
         unconf_use_all_rooms: useAllRooms,
         unconf_use_all_submissions: useAllSubs,
-        unconf_avoid_repeats: avoidRepeats,
         unconf_room_ids: useAllRooms ? [] : [...pickedRooms],
         unconf_submission_ids: useAllSubs ? [] : [...pickedSubs],
       });
@@ -149,35 +146,6 @@ export function SlotConfigure({
                 )}
               </Stack>
             )}
-          </Stack>
-        )}
-
-        {!isMixer && (
-          <Stack gap="condensed">
-            <Text>
-              <strong>Repeat avoidance</strong>
-            </Text>
-            <Tip>
-              When on, attendees won&apos;t be assigned to a session they&apos;ve already
-              been placed in. Session creators always lead their own session
-              regardless.
-            </Tip>
-            <Stack direction="row" gap="condensed">
-              <Button
-                size="small"
-                variant={avoidRepeats ? "primary" : "default"}
-                onClick={() => setAvoidRepeats(true)}
-              >
-                Avoid repeats
-              </Button>
-              <Button
-                size="small"
-                variant={!avoidRepeats ? "primary" : "default"}
-                onClick={() => setAvoidRepeats(false)}
-              >
-                Allow repeats
-              </Button>
-            </Stack>
           </Stack>
         )}
 

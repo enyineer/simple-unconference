@@ -19,6 +19,25 @@ async function signupAndLogin(c: Client, email: string, password = "secret123", 
   return await c.rpc.auth.signup({ email, password, name });
 }
 
+// Seating model: per-slot `agenda.assign` is PLACEMENT-ONLY; attendee seats are
+// written by the one global "Update seating" action (`agenda.assignAll`), which
+// only re-seats FUTURE unconference slots. Seating-focused tests therefore
+// create their slots in the future via `soon()` and seat with `assignAll`.
+function soon(offsetMs = 0) {
+  return Date.now() + 24 * 60 * 60 * 1000 + offsetMs;
+}
+
+// The old `agenda.assign` both placed AND seated in one call. The seating model
+// split that: `assign` authors placements, `assignAll` ("Update seating") seats
+// attendees over them (future slots only). This helper reproduces the old
+// place-then-seat for tests that assert on seats; the slot(s) must be future
+// (use `soon()`). Returns the per-slot placement result.
+async function placeAndSeat(client: Client, slug: string, slotId: number) {
+  const r = await client.rpc.agenda.assign({ slug, slot_id: slotId });
+  await client.rpc.agenda.assignAll({ slug });
+  return r;
+}
+
 describe("auth flow (global owner)", () => {
   let ctx: TestApp;
   beforeAll(() => { ctx = setupTestApp(); });
@@ -630,6 +649,51 @@ describe("submissions + stars + publish", () => {
     })).rejects.toBeInstanceOf(ORPCError);
   });
 
+  test("mod can set + change submission priority; participant priority is ignored", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "priorityowner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Priority" });
+
+    // Mod sets priority=high at create; it round-trips through listAll.
+    await owner.rpc.submissions.create({
+      slug: conf.slug,
+      title: "High priority session",
+      priority: "high",
+    });
+    let list = await owner.rpc.submissions.listAll({ slug: conf.slug });
+    const created = list.find((s) => s.title === "High priority session")!;
+    expect(created.priority).toBe("high");
+
+    // Mod can lower it, then restore it, via update.
+    await owner.rpc.submissions.update({
+      slug: conf.slug, id: created.id, priority: "low",
+    });
+    list = await owner.rpc.submissions.listAll({ slug: conf.slug });
+    expect(list.find((s) => s.id === created.id)!.priority).toBe("low");
+
+    await owner.rpc.submissions.update({
+      slug: conf.slug, id: created.id, priority: "high",
+    });
+    list = await owner.rpc.submissions.listAll({ slug: conf.slug });
+    expect(list.find((s) => s.id === created.id)!.priority).toBe("high");
+
+    // Participants can't smuggle priority through create or update — the
+    // server silently drops it and the session stays at the default "normal".
+    const { client: part } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "prioritypart@example.com");
+    const partSub = await part.rpc.submissions.create({
+      slug: conf.slug, title: "Sneaky priority create", priority: "high",
+    });
+    list = await owner.rpc.submissions.listAll({ slug: conf.slug });
+    expect(list.find((s) => s.id === partSub.id)!.priority).toBe("normal");
+
+    await part.rpc.submissions.update({
+      slug: conf.slug, id: partSub.id, priority: "high",
+    });
+    list = await owner.rpc.submissions.listAll({ slug: conf.slug });
+    expect(list.find((s) => s.id === partSub.id)!.priority).toBe("normal");
+  });
+
   test("participants submit; only mods can publish; stars require published", async () => {
     const owner = new Client(ctx.app);
     await signupAndLogin(owner, "subown@example.com");
@@ -766,10 +830,11 @@ describe("rooms + agenda + unconference assignment", () => {
     const slot = await owner.rpc.agenda.createSlot({
       slug: conf.slug,
       type: "unconference",
-      starts_at: Date.now(),
-      ends_at: Date.now() + 60 * 60 * 1000,
+      starts_at: soon(),
+      ends_at: soon(60 * 60 * 1000),
     });
 
+    // Per-slot assign authors the placements only (no seats).
     const result = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot.id });
     if (result.kind !== "unconference") throw new Error("expected unconference result");
 
@@ -778,14 +843,30 @@ describe("rooms + agenda + unconference assignment", () => {
     const placeForB = result.placements.find((p) => p.submission_id === subB.id);
     expect(placeForB!.room_id).toBe(smallRoom.id);
 
-    expect(result.user_assignments.length + result.unplaced_users.length).toBe(6); // 5 parts + owner
+    // No attendee seats written by placement.
+    const seatsBefore = await ctx.prisma.userAssignment.findMany({ where: { slotId: slot.id } });
+    expect(seatsBefore).toHaveLength(0);
 
-    const p1Assign = result.user_assignments.find((a) => a.user_id === partIds[1]);
-    expect(p1Assign?.submission_id).toBe(subB.id);
+    // Seat attendees with the global "Update seating" action.
+    const seatRes = await owner.rpc.agenda.assignAll({ slug: conf.slug });
+    expect(seatRes.slot_ids).toContain(slot.id);
 
+    // p2 starred only Session A → seated into A in the big room.
     const meBody = await partClients[2]!.rpc.agenda.myAssignments({ slug: conf.slug });
     expect(meBody.assignments[0]!.submission_id).toBe(subA.id);
     expect(meBody.assignments[0]!.room_id).toBe(bigRoom.id);
+
+    // Every seat lands in one of the two placed sessions; nobody is left
+    // with a dangling (null-session) seat.
+    const seats = await ctx.prisma.userAssignment.findMany({ where: { slotId: slot.id } });
+    expect(seats.length).toBeGreaterThan(0);
+    for (const seat of seats) {
+      expect([subA.id, subB.id].includes(seat.submissionId ?? -1)).toBe(true);
+    }
+    // p1 starred both sessions → seated into one of them.
+    const p1Seat = seats.find((seat) => seat.userId === partIds[1]);
+    expect(p1Seat).toBeTruthy();
+    expect([subA.id, subB.id].includes(p1Seat!.submissionId ?? -1)).toBe(true);
   });
 
   test("static-slot track always links a Submission; title comes from the submission", async () => {
@@ -1037,13 +1118,15 @@ describe("rooms + agenda + unconference assignment", () => {
     const slot = await owner.rpc.agenda.createSlot({
       slug: conf.slug,
       type: "unconference",
-      starts_at: Date.now(), ends_at: Date.now() + 3600_000,
+      starts_at: soon(), ends_at: soon(3600_000),
     });
     const res = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot.id });
     if (res.kind !== "unconference") throw new Error("expected unconference result");
+    expect(res.placements.find((p) => p.submission_id === sub.id)).toBeTruthy();
 
-    const hostAssign = res.user_assignments.find((a) => a.submission_id === sub.id);
-    expect(hostAssign).toBeTruthy();
+    // Seat attendees — submitter-host seats the submitter into their own placed
+    // session even though they didn't star it.
+    await owner.rpc.agenda.assignAll({ slug: conf.slug });
     const me = await host.rpc.agenda.myAssignments({ slug: conf.slug });
     expect(me.assignments[0]!.submission_id).toBe(sub.id);
   });
@@ -1067,21 +1150,23 @@ describe("rooms + agenda + unconference assignment", () => {
 
     const slot1 = await owner.rpc.agenda.createSlot({
       slug: conf.slug,
-      type: "unconference", starts_at: Date.now(), ends_at: Date.now() + 3600_000,
+      type: "unconference", starts_at: soon(), ends_at: soon(3600_000),
     });
     await owner.rpc.agenda.updateSlot({
       slug: conf.slug, id: slot1.id,
       unconf_use_all_submissions: false, unconf_submission_ids: [subA.id],
     });
-    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot1.id });
-
     const slot2 = await owner.rpc.agenda.createSlot({
       slug: conf.slug,
       type: "unconference",
-      starts_at: Date.now() + 2 * 3600_000, ends_at: Date.now() + 3 * 3600_000,
+      starts_at: soon(2 * 3600_000), ends_at: soon(3 * 3600_000),
     });
-    const res2 = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot2.id });
-    if (res2.kind !== "unconference") throw new Error("expected unconference result");
+    // Place both slots, then seat globally. Global seating attends each session
+    // at most once, so the participant gets subA in slot 1 and subB in slot 2
+    // rather than subA twice.
+    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot1.id });
+    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot2.id });
+    await owner.rpc.agenda.assignAll({ slug: conf.slug });
 
     const me = await part.rpc.agenda.myAssignments({ slug: conf.slug });
     const slot2Entry = me.assignments.find((a) => a.slot_id === slot2.id);
@@ -1253,6 +1338,150 @@ describe("rooms + agenda + unconference assignment", () => {
     const s = agenda.slots.find((x) => x.id === slot.id);
     expect(s?.mixer_avoid_repeats).toBe(null);                 // inherit
     expect(s?.mixer_avoid_repeats_effective).toBe(false);      // resolves to fresh
+  });
+
+  test("hand-placed sessions survive per-slot assign, then seat via Update seating (regression: no wipe)", async () => {
+    // A slot authored ENTIRELY by hand: the mod places two sessions via
+    // agenda.placeSubmission, participants star them. Per-slot `agenda.assign`
+    // must PRESERVE those manual placements (never wipe them) and emit no new
+    // ones. The global "Update seating" (`assignAll`) then seats the starrers
+    // into those manual placements.
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "manualassignowner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Manual Assign" });
+    const roomA = await owner.rpc.rooms.create({ slug: conf.slug, name: "Room A", capacity: 10 });
+    const roomB = await owner.rpc.rooms.create({ slug: conf.slug, name: "Room B", capacity: 10 });
+
+    const { client: sp } = await inviteAndClaim(ctx.app, owner, conf.slug, "manualassign-sp@example.com");
+    const subA = await sp.rpc.submissions.create({ slug: conf.slug, title: "Manual A" });
+    const subB = await sp.rpc.submissions.create({ slug: conf.slug, title: "Manual B" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: subA.id });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: subB.id });
+
+    const starA: number[] = [];
+    const starB: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const { client, identity_id } = await inviteAndClaim(ctx.app, owner, conf.slug, `manualassign-a${i}@example.com`);
+      await client.rpc.submissions.star({ slug: conf.slug, id: subA.id });
+      starA.push(identity_id);
+    }
+    for (let i = 0; i < 2; i++) {
+      const { client, identity_id } = await inviteAndClaim(ctx.app, owner, conf.slug, `manualassign-b${i}@example.com`);
+      await client.rpc.submissions.star({ slug: conf.slug, id: subB.id });
+      starB.push(identity_id);
+    }
+
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: soon(), ends_at: soon(3_600_000),
+    });
+
+    // Hand-place BOTH sessions.
+    const pA = await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: slot.id, submission_id: subA.id, room_id: roomA.id });
+    expect(pA.kind).toBe("ok");
+    const pB = await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: slot.id, submission_id: subB.id, room_id: roomB.id });
+    expect(pB.kind).toBe("ok");
+
+    const res = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot.id });
+    if (res.kind !== "unconference") throw new Error("expected unconference result");
+
+    // The algorithm emits NO new placements (both are manual) and writes NO
+    // seats (placement-only).
+    expect(res.placements).toEqual([]);
+    const seatsAfterAssign = await ctx.prisma.userAssignment.findMany({ where: { slotId: slot.id } });
+    expect(seatsAfterAssign).toHaveLength(0);
+
+    // Manual placement rows are intact: still manual:true, same rooms.
+    const placements = await ctx.prisma.unconferencePlacement.findMany({ where: { slotId: slot.id } });
+    expect(placements).toHaveLength(2);
+    expect(placements.every((p) => p.manual)).toBe(true);
+    expect(placements.find((p) => p.submissionId === subA.id)?.roomId).toBe(roomA.id);
+    expect(placements.find((p) => p.submissionId === subB.id)?.roomId).toBe(roomB.id);
+
+    // Now seat attendees globally.
+    await owner.rpc.agenda.assignAll({ slug: conf.slug });
+
+    // Every starrer is seated into the session they starred, in the manual room.
+    const rowsA = await ctx.prisma.userAssignment.findMany({ where: { slotId: slot.id, submissionId: subA.id } });
+    expect(rowsA.every((r) => r.roomId === roomA.id)).toBe(true);
+    const seatedA = new Set(rowsA.map((r) => r.userId));
+    for (const uid of starA) expect(seatedA.has(uid)).toBe(true);
+    const rowsB = await ctx.prisma.userAssignment.findMany({ where: { slotId: slot.id, submissionId: subB.id } });
+    expect(rowsB.every((r) => r.roomId === roomB.id)).toBe(true);
+    const seatedB = new Set(rowsB.map((r) => r.userId));
+    for (const uid of starB) expect(seatedB.has(uid)).toBe(true);
+
+    // Re-running placement is idempotent AND never wipes the manual placements
+    // or the still-valid seats (both sessions remain placed).
+    const res2 = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot.id });
+    if (res2.kind !== "unconference") throw new Error("expected unconference result");
+    expect(res2.placements).toEqual([]);
+    const placements2 = await ctx.prisma.unconferencePlacement.findMany({ where: { slotId: slot.id } });
+    expect(placements2).toHaveLength(2);
+    expect(placements2.every((p) => p.manual)).toBe(true);
+    const seatsSurvive = await ctx.prisma.userAssignment.findMany({ where: { slotId: slot.id, submissionId: subA.id } });
+    for (const uid of starA) expect(seatsSurvive.some((r) => r.userId === uid)).toBe(true);
+  });
+
+  test("per-slot assign: mixed hand-placed + auto session runs without unique-constraint errors", async () => {
+    // One session is hand-placed (manual) into room A; another eligible
+    // session is left for the auto-assigner, which must place it in room B
+    // (room A is reserved) and seat attendees into both.
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "mixedassignowner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Mixed Assign" });
+    const roomA = await owner.rpc.rooms.create({ slug: conf.slug, name: "Room A", capacity: 10 });
+    const roomB = await owner.rpc.rooms.create({ slug: conf.slug, name: "Room B", capacity: 10 });
+
+    const { client: sp } = await inviteAndClaim(ctx.app, owner, conf.slug, "mixedassign-sp@example.com");
+    const subManual = await sp.rpc.submissions.create({ slug: conf.slug, title: "Manual" });
+    const subAuto = await sp.rpc.submissions.create({ slug: conf.slug, title: "Auto" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: subManual.id });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: subAuto.id });
+
+    const manualStarrers: number[] = [];
+    const autoStarrers: number[] = [];
+    for (let i = 0; i < 2; i++) {
+      const { client, identity_id } = await inviteAndClaim(ctx.app, owner, conf.slug, `mixedassign-m${i}@example.com`);
+      await client.rpc.submissions.star({ slug: conf.slug, id: subManual.id });
+      manualStarrers.push(identity_id);
+    }
+    for (let i = 0; i < 2; i++) {
+      const { client, identity_id } = await inviteAndClaim(ctx.app, owner, conf.slug, `mixedassign-a${i}@example.com`);
+      await client.rpc.submissions.star({ slug: conf.slug, id: subAuto.id });
+      autoStarrers.push(identity_id);
+    }
+
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference",
+      starts_at: soon(), ends_at: soon(3_600_000),
+    });
+
+    // Hand-place only the manual session into room A.
+    const placed = await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: slot.id, submission_id: subManual.id, room_id: roomA.id });
+    expect(placed.kind).toBe("ok");
+
+    const res = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot.id });
+    if (res.kind !== "unconference") throw new Error("expected unconference result");
+
+    // The auto session is newly placed (in the remaining room B); the manual
+    // session is NOT re-emitted.
+    expect(res.placements).toHaveLength(1);
+    expect(res.placements[0]!.submission_id).toBe(subAuto.id);
+    expect(res.placements[0]!.room_id).toBe(roomB.id);
+
+    // Both sessions have exactly one placement row (no unique-constraint blowup).
+    const placements = await ctx.prisma.unconferencePlacement.findMany({ where: { slotId: slot.id } });
+    expect(placements).toHaveLength(2);
+    expect(placements.find((p) => p.submissionId === subManual.id)?.manual).toBe(true);
+    expect(placements.find((p) => p.submissionId === subAuto.id)?.manual).toBe(false);
+
+    // Seat attendees globally: starrers land in both the manual and auto sessions.
+    await owner.rpc.agenda.assignAll({ slug: conf.slug });
+    const seats = await ctx.prisma.userAssignment.findMany({ where: { slotId: slot.id } });
+    const seatOf = new Map(seats.map((r) => [r.userId, r.submissionId]));
+    for (const uid of manualStarrers) expect(seatOf.get(uid)).toBe(subManual.id);
+    for (const uid of autoStarrers) expect(seatOf.get(uid)).toBe(subAuto.id);
   });
 });
 
@@ -1462,7 +1691,7 @@ describe("room requirements (tag-based pre-assignment)", () => {
     }
     const slot = await owner.rpc.agenda.createSlot({
       slug: conf.slug, type: "unconference",
-      starts_at: Date.now(), ends_at: Date.now() + 3600_000,
+      starts_at: soon(), ends_at: soon(3600_000),
     });
     return { owner, conf, rooms, subs, parts, slot };
   }
@@ -1758,7 +1987,21 @@ describe("room requirements (tag-based pre-assignment)", () => {
     const r2 = await s.owner.rpc.agenda.assign({ slug: s.conf.slug, slot_id: s.slot.id });
     if (r1.kind !== "unconference" || r2.kind !== "unconference") throw new Error("expected unconference");
     expect(r1.placements).toEqual(r2.placements);
-    expect(r1.user_assignments).toEqual(r2.user_assignments);
+
+    // Seating is deterministic too: two identical seating runs over the same
+    // placements produce byte-identical seats.
+    const seatSnapshot = async () =>
+      (await ctx.prisma.userAssignment.findMany({
+        where: { slotId: s.slot.id },
+        select: { userId: true, submissionId: true, roomId: true },
+        orderBy: [{ userId: "asc" }],
+      }));
+    await s.owner.rpc.agenda.assignAll({ slug: s.conf.slug });
+    const seats1 = await seatSnapshot();
+    await s.owner.rpc.agenda.assignAll({ slug: s.conf.slug, include_unchanged: true });
+    const seats2 = await seatSnapshot();
+    expect(seats1).toEqual(seats2);
+    expect(seats1.length).toBeGreaterThan(0);
   });
 
   test("multi-tag requirement: only rooms with ALL tags qualify", async () => {
@@ -2220,15 +2463,15 @@ describe("overlapping slot exclusions", () => {
     });
     await p.rpc.submissions.star({ slug: f.conf.slug, id: sA.id });
     await p.rpc.submissions.star({ slug: f.conf.slug, id: sB.id });
-    // Run slot A — places the participant.
+    // Run slot A — places session A (the participant is committed there via
+    // their star on the now-placed sA; per-slot assign is placement-only).
     const rA = await f.owner.rpc.agenda.assign({ slug: f.conf.slug, slot_id: f.slotA.id });
     if (rA.kind !== "unconference") throw new Error("expected unconference");
     const me = await p.rpc.conferences.me({ slug: f.conf.slug });
-    expect(rA.user_assignments.some((u) => u.user_id === me.id)).toBe(true);
-    // Slot B — participant is busy in A → excluded.
+    expect(rA.placements.some((pl) => pl.submission_id === sA.id)).toBe(true);
+    // Slot B — participant is busy in overlapping slot A → reported excluded.
     const rB = await f.owner.rpc.agenda.assign({ slug: f.conf.slug, slot_id: f.slotB.id });
     if (rB.kind !== "unconference") throw new Error("expected unconference");
-    expect(rB.user_assignments.some((u) => u.user_id === me.id)).toBe(false);
     expect(rB.overlap_exclusions.user_ids).toContain(me.id);
   });
 
@@ -2326,7 +2569,6 @@ describe("overlapping slot exclusions: Path C derived attendance", () => {
 
     const r = await f.owner.rpc.agenda.assign({ slug: f.conf.slug, slot_id: f.slotUnconf.id });
     if (r.kind !== "unconference") throw new Error("expected unconference");
-    expect(r.user_assignments.some((u) => u.user_id === pid)).toBe(false);
     expect(r.overlap_exclusions.user_ids).toContain(pid);
   });
 
@@ -2354,7 +2596,6 @@ describe("overlapping slot exclusions: Path C derived attendance", () => {
 
     const r = await f.owner.rpc.agenda.assign({ slug: f.conf.slug, slot_id: f.slotUnconf.id });
     if (r.kind !== "unconference") throw new Error("expected unconference");
-    expect(r.user_assignments.some((u) => u.user_id === pid)).toBe(false);
     expect(r.overlap_exclusions.user_ids).toContain(pid);
   });
 
@@ -2381,11 +2622,16 @@ describe("overlapping slot exclusions: Path C derived attendance", () => {
 
     const r = await f.owner.rpc.agenda.assign({ slug: f.conf.slug, slot_id: f.slotUnconf.id });
     if (r.kind !== "unconference") throw new Error("expected unconference");
-    expect(r.user_assignments.some((u) => u.user_id === speakerId)).toBe(false);
     expect(r.overlap_exclusions.user_ids).toContain(speakerId);
   });
 
-  test("derived planned-track attendance counts toward avoid-repeats across non-overlapping slots", async () => {
+  test("Update seating never re-attends a session already attended in a frozen slot", async () => {
+    // Seating is the single global "Update seating" action. Its avoid-repeats
+    // guarantee is enforced across the freeze boundary via `priorAttendance`
+    // built from FROZEN unconference seats — a participant already seated in
+    // submission S in a frozen slot is never re-seated into S in a stale slot.
+    // (Planned-track attendance is also honored — see the dedicated
+    // planned-track test in agenda-assign-all.test.ts.)
     const owner = new Client(ctx.app);
     await signupAndLogin(owner, "repeats-owner@example.com");
     const conf = await owner.rpc.conferences.create({ name: "Repeats" });
@@ -2394,43 +2640,49 @@ describe("overlapping slot exclusions: Path C derived attendance", () => {
     });
     const room = await owner.rpc.rooms.create({ slug: conf.slug, name: "Hall", capacity: 50 });
     const subShared = await owner.rpc.submissions.create({ slug: conf.slug, title: "Shared" });
-    // Mark it as allowing overlapping placements so the algo doesn't refuse it
-    // on "same_session" grounds when it could be placed in slot 2.
     await owner.rpc.submissions.publish({ slug: conf.slug, id: subShared.id });
+    // Runs in two non-overlapping unconference slots (same content, twice).
     await owner.rpc.submissions.update({
       slug: conf.slug, id: subShared.id, allow_overlapping_placements: true,
     });
     const t = Date.now();
-    // Slot 1 (planned) at 10:00, slot 2 (unconference) at 11:00 — NOT overlapping.
-    const slotPlanned = await owner.rpc.agenda.createSlot({
-      slug: conf.slug, type: "normal", title: "First offering",
-      starts_at: t, ends_at: t + 60 * 60 * 1000,
+    // Slot 1 in the PAST (frozen), slot 2 in the FUTURE (a stale re-seat target).
+    const slotFrozen = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", title: "First offering",
+      starts_at: t - 2 * 60 * 60 * 1000, ends_at: t - 60 * 60 * 1000,
     });
-    const slotUnconf = await owner.rpc.agenda.createSlot({
-      slug: conf.slug, type: "unconference",
-      starts_at: t + 60 * 60 * 1000, ends_at: t + 120 * 60 * 1000,
+    const slotFuture = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", title: "Second offering",
+      starts_at: soon(), ends_at: soon(60 * 60 * 1000),
     });
-    await owner.rpc.agenda.setTrack({
-      slug: conf.slug, slot_id: slotPlanned.id,
-      room_id: room.id, submission_id: subShared.id,
-    });
-    await owner.rpc.agenda.updateSlot({
-      slug: conf.slug, id: slotUnconf.id,
-      unconf_use_all_submissions: false, unconf_submission_ids: [subShared.id],
-      unconf_avoid_repeats: true,
-    });
+    for (const id of [slotFrozen.id, slotFuture.id]) {
+      await owner.rpc.agenda.updateSlot({
+        slug: conf.slug, id,
+        unconf_use_all_submissions: false, unconf_submission_ids: [subShared.id],
+        unconf_avoid_repeats: true,
+      });
+    }
+    // Place the session into both slots.
+    await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: slotFrozen.id, submission_id: subShared.id, room_id: room.id });
+    await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: slotFuture.id, submission_id: subShared.id, room_id: room.id });
 
-    // Participant stars only this shared submission. Avoid-repeats should
-    // notice they "already attended" via the planned track and leave them
-    // unplaced in the unconference slot.
+    // Participant stars the shared submission and is already seated in the
+    // FROZEN (past) offering.
     const { client: p, identity_id: pid } =
       await inviteAndClaim(ctx.app, owner, conf.slug, `repeats-${Math.random()}@x.com`);
     await p.rpc.submissions.star({ slug: conf.slug, id: subShared.id });
+    await ctx.prisma.userAssignment.create({
+      data: { slotId: slotFrozen.id, userId: pid, submissionId: subShared.id, roomId: room.id },
+    });
 
-    const r = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slotUnconf.id });
-    if (r.kind !== "unconference") throw new Error("expected unconference");
-    expect(r.user_assignments.some((u) => u.user_id === pid)).toBe(false);
-    expect(r.unplaced_users).toContain(pid);
+    // Update seating: the future offering is a target, the past one is frozen.
+    const res = await owner.rpc.agenda.assignAll({ slug: conf.slug });
+    expect(res.slot_ids).toEqual([slotFuture.id]);
+    // Avoid-repeats: p already attended subShared (frozen) → not re-seated.
+    const futureSeat = await ctx.prisma.userAssignment.findFirst({
+      where: { slotId: slotFuture.id, userId: pid },
+    });
+    expect(futureSeat).toBeNull();
   });
 });
 
@@ -2459,7 +2711,7 @@ describe("manual session switching", () => {
 
     const slot = await owner.rpc.agenda.createSlot({
       slug: conf.slug,
-      type: "unconference", starts_at: Date.now(), ends_at: Date.now() + 3600_000,
+      type: "unconference", starts_at: soon(), ends_at: soon(3600_000),
     });
     return { owner, conf, roomA, roomB, subA, subB, parts, slot };
   }
@@ -2471,7 +2723,7 @@ describe("manual session switching", () => {
     for (const p of parts) {
       await p.rpc.submissions.star({ slug: conf.slug, id: subA.id });
     }
-    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot.id });
+    await placeAndSeat(owner, conf.slug, slot.id);
 
     let unplaced: Client | null = null;
     for (const p of parts) {
@@ -2497,7 +2749,7 @@ describe("manual session switching", () => {
       capA: 1, capB: 1, participants: 3, tag: "pickfull",
     });
     await parts[0]!.rpc.submissions.star({ slug: conf.slug, id: subA.id });
-    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot.id });
+    await placeAndSeat(owner, conf.slug, slot.id);
 
     try {
       await parts[1]!.rpc.agenda.pickAssignment({
@@ -2536,7 +2788,7 @@ describe("manual session switching", () => {
       capA: 5, capB: 5, participants: 1, tag: "switchplaced",
     });
     await parts[0]!.rpc.submissions.star({ slug: conf.slug, id: subA.id });
-    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot.id });
+    await placeAndSeat(owner, conf.slug, slot.id);
     let me = await parts[0]!.rpc.agenda.myAssignments({ slug: conf.slug });
     expect(me.assignments[0]!.submission_id).toBe(subA.id);
     expect(me.assignments[0]!.manual).toBe(false);
@@ -2556,11 +2808,13 @@ describe("manual session switching", () => {
       capA: 5, capB: 5, participants: 1, tag: "rerunlock",
     });
     await parts[0]!.rpc.submissions.star({ slug: conf.slug, id: subA.id });
-    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot.id });
+    await placeAndSeat(owner, conf.slug, slot.id);
     await parts[0]!.rpc.agenda.pickAssignment({
       slug: conf.slug, slot_id: slot.id, submission_id: subB.id,
     });
-    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot.id });
+    // Force a full re-seat of this (now-unchanged) future slot; the manual
+    // pick must survive it.
+    await owner.rpc.agenda.assignAll({ slug: conf.slug, include_unchanged: true });
 
     const me = await parts[0]!.rpc.agenda.myAssignments({ slug: conf.slug });
     expect(me.assignments[0]!.submission_id).toBe(subB.id);
@@ -2573,12 +2827,14 @@ describe("manual session switching", () => {
       capA: 5, capB: 5, participants: 1, tag: "unlock",
     });
     await parts[0]!.rpc.submissions.star({ slug: conf.slug, id: subA.id });
-    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot.id });
+    await placeAndSeat(owner, conf.slug, slot.id);
     await parts[0]!.rpc.agenda.pickAssignment({
       slug: conf.slug, slot_id: slot.id, submission_id: subB.id,
     });
     await parts[0]!.rpc.agenda.unpickAssignment({ slug: conf.slug, slot_id: slot.id });
-    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot.id });
+    // Re-seat: with the manual pick cleared, the participant is re-shuffled
+    // back into their starred session.
+    await owner.rpc.agenda.assignAll({ slug: conf.slug, include_unchanged: true });
     const me = await parts[0]!.rpc.agenda.myAssignments({ slug: conf.slug });
     expect(me.assignments[0]!.submission_id).toBe(subA.id);
     expect(me.assignments[0]!.manual).toBe(false);
@@ -2611,10 +2867,16 @@ describe("manual session switching", () => {
     for (const p of parts) {
       await p.rpc.submissions.star({ slug: conf.slug, id: subA.id });
     }
-    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot.id });
+    await placeAndSeat(owner, conf.slug, slot.id);
     const agenda = await owner.rpc.agenda.get({ slug: conf.slug });
     const pA = agenda.placements.find((p) => p.submission_id === subA.id);
-    expect(pA!.attendee_count).toBe(4);
+    // attendee_count reflects the actual seated rows: the 3 starrers (and
+    // possibly the submitter via submitter-host).
+    const seatsA = await ctx.prisma.userAssignment.count({
+      where: { slotId: slot.id, submissionId: subA.id },
+    });
+    expect(pA!.attendee_count).toBe(seatsA);
+    expect(seatsA).toBeGreaterThanOrEqual(3);
   });
 });
 
@@ -2694,13 +2956,16 @@ describe("per-conference calendar feed", () => {
     await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
     await owner.rpc.submissions.star({ slug: conf.slug, id: sub.id });
 
+    // Future so global seating ("Update seating") re-seats it; the exact time
+    // isn't asserted below (only the static slot's DTSTART is).
     const unconfSlot = await owner.rpc.agenda.createSlot({
       slug: conf.slug,
       type: "unconference",
-      starts_at: Date.UTC(2026, 5, 1, 10, 0, 0),
-      ends_at:   Date.UTC(2026, 5, 1, 11, 0, 0),
+      starts_at: soon(),
+      ends_at:   soon(3600_000),
     });
     await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: unconfSlot.id });
+    await owner.rpc.agenda.assignAll({ slug: conf.slug });
 
     const mixerSlot = await owner.rpc.agenda.createSlot({
       slug: conf.slug,
@@ -2741,7 +3006,9 @@ describe("per-conference calendar feed", () => {
     expect(body).toContain("Welcome");
     expect(body).toMatch(/UID:unconference-\d+-\d+@simple-unconference\r\n/);
     expect(body).toMatch(/UID:mixer-\d+-\d+@simple-unconference\r\n/);
-    expect(body).toMatch(/UID:static-\d+-\d+@simple-unconference\r\n/);
+    // Planned-track UID keys on the STABLE (slot, submission, identity) triple
+    // so it survives an `agenda.refitRooms` (which recreates track ids).
+    expect(body).toMatch(/UID:static-\d+-\d+-\d+@simple-unconference\r\n/);
     expect(body).toContain("DTSTART:20260601T090000Z");
   });
 
@@ -3388,7 +3655,7 @@ describe("notifications", () => {
     expect(after.unread_count).toBe(0);
   });
 
-  test("assign notifies every placed participant", async () => {
+  test("Update seating notifies every newly-seated participant", async () => {
     const owner = new Client(ctx.app);
     await signupAndLogin(owner, "asnown@example.com");
     const conf = await owner.rpc.conferences.create({ name: "Assign Notify" });
@@ -3409,9 +3676,12 @@ describe("notifications", () => {
     }
     const slot = await owner.rpc.agenda.createSlot({
       slug: conf.slug, type: "unconference",
-      starts_at: Date.now(), ends_at: Date.now() + 60 * 60 * 1000,
+      starts_at: soon(), ends_at: soon(60 * 60 * 1000),
     });
+    // Placement-only assign sends no notifications; "Update seating" notifies
+    // the people whose seat changed.
     await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: slot.id });
+    await owner.rpc.agenda.assignAll({ slug: conf.slug });
 
     for (const c of parts) {
       const inbox = await c.rpc.notifications.list({ slug: conf.slug });
@@ -3575,6 +3845,353 @@ describe("public-instance defenses: quotas + lockout", () => {
         attacker.rpc.auth.login({ email: "reset-me@example.com", password: "nope" }),
       ).rejects.toMatchObject({ message: "invalid_credentials" });
     }
+  });
+});
+
+describe("conferences.login: targeted failure codes", () => {
+  let ctx: TestApp;
+  beforeAll(() => { ctx = setupTestApp(); });
+  afterAll(async () => { await ctx.cleanup(); });
+
+  test("owner with an auto-minted identity is told to use the main login", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "codes-minted-owner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Login Codes Minted" });
+    // Touch a conference-scoped endpoint so resolveConferencePrincipal mints
+    // the owner's null-password identity row (ownerUserId set).
+    await owner.rpc.conferences.get({ slug: conf.slug });
+    const row = await ctx.prisma.conferenceIdentity.findUnique({
+      where: {
+        conferenceId_email: { conferenceId: conf.id, email: "codes-minted-owner@example.com" },
+      },
+      select: { passwordHash: true, ownerUserId: true },
+    });
+    expect(row?.passwordHash).toBeNull();
+    expect(row?.ownerUserId).not.toBeNull();
+
+    await expect(new Client(ctx.app).rpc.conferences.login({
+      slug: conf.slug, email: "codes-minted-owner@example.com", password: "whatever",
+    })).rejects.toMatchObject({ message: "owner_use_main_login" });
+  });
+
+  test("owner who never touched the conference falls back via the owner's User email", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "codes-nomint-owner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Login Codes NoMint" });
+    // No conference-scoped endpoint was touched, so no identity was minted.
+    // Belt-and-suspenders: ensure there is genuinely no row for the owner, so
+    // this exercises the User-email fallback rather than the identity branch.
+    await ctx.prisma.conferenceIdentity.deleteMany({ where: { conferenceId: conf.id } });
+
+    await expect(new Client(ctx.app).rpc.conferences.login({
+      slug: conf.slug, email: "codes-nomint-owner@example.com", password: "whatever",
+    })).rejects.toMatchObject({ message: "owner_use_main_login" });
+  });
+
+  test("a null-password non-owner identity is reported as invite_not_claimed", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "codes-unclaimed-owner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Login Codes Unclaimed" });
+    // createInvite does NOT pre-create an identity row in this codebase, so we
+    // seed the exact precondition the branch guards: a password-less identity
+    // that is NOT the owner (ownerUserId null).
+    await ctx.prisma.conferenceIdentity.create({
+      data: {
+        conferenceId: conf.id,
+        email: "codes-invitee@example.com",
+        passwordHash: null,
+        role: "participant",
+      },
+    });
+
+    await expect(new Client(ctx.app).rpc.conferences.login({
+      slug: conf.slug, email: "codes-invitee@example.com", password: "whatever",
+    })).rejects.toMatchObject({ message: "invite_not_claimed" });
+  });
+
+  test("a real unclaimed invite (no identity row) is reported as invite_not_claimed", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "codes-plaininvite-owner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Login Codes Plain Invite" });
+    await owner.rpc.conferences.createInvite({
+      slug: conf.slug, email: "codes-plain-invitee@example.com",
+    });
+
+    await expect(new Client(ctx.app).rpc.conferences.login({
+      slug: conf.slug, email: "codes-plain-invitee@example.com", password: "whatever",
+    })).rejects.toMatchObject({ message: "invite_not_claimed" });
+  });
+
+  test("an EXPIRED unclaimed invite is still reported as invite_not_claimed", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "codes-expinvite-owner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Login Codes Expired Invite" });
+    await owner.rpc.conferences.createInvite({
+      slug: conf.slug, email: "codes-expired-invitee@example.com",
+    });
+    // Push the invite's expiry into the past; it stays unclaimed (claimedAt null),
+    // which is all the login hint keys on.
+    await ctx.prisma.conferenceInvite.updateMany({
+      where: { conferenceId: conf.id, email: "codes-expired-invitee@example.com" },
+      data: { expiresAt: new Date(Date.now() - 60_000) },
+    });
+
+    await expect(new Client(ctx.app).rpc.conferences.login({
+      slug: conf.slug, email: "codes-expired-invitee@example.com", password: "whatever",
+    })).rejects.toMatchObject({ message: "invite_not_claimed" });
+  });
+
+  test("unknown email stays invalid_credentials", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "codes-unknown-owner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Login Codes Unknown" });
+
+    await expect(new Client(ctx.app).rpc.conferences.login({
+      slug: conf.slug, email: "nobody-here@example.com", password: "whatever",
+    })).rejects.toMatchObject({ message: "invalid_credentials" });
+  });
+
+  test("claimed identity with a wrong password stays invalid_credentials", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "codes-wrongpw-owner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Login Codes Wrong PW" });
+    await inviteAndClaim(ctx.app, owner, conf.slug, "codes-claimed@example.com", "right-password");
+
+    await expect(new Client(ctx.app).rpc.conferences.login({
+      slug: conf.slug, email: "codes-claimed@example.com", password: "wrong-password",
+    })).rejects.toMatchObject({ message: "invalid_credentials" });
+  });
+
+  test("the new owner_use_main_login path is throttled by the same lockout budget", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "codes-lockout-owner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Login Codes Lockout" });
+    await owner.rpc.conferences.get({ slug: conf.slug }); // mint the owner identity
+
+    const attacker = new Client(ctx.app);
+    // Every attempt takes the new owner_use_main_login branch, which must record
+    // a failed attempt exactly like a wrong-password guess.
+    for (let i = 0; i < LIMITS.loginFailLimit; i++) {
+      await expect(attacker.rpc.conferences.login({
+        slug: conf.slug, email: "codes-lockout-owner@example.com", password: "whatever",
+      })).rejects.toMatchObject({ message: "owner_use_main_login" });
+    }
+    // Budget exhausted: the next attempt is rejected as locked before the
+    // credential branch runs — identical throttling to password guessing.
+    await expect(attacker.rpc.conferences.login({
+      slug: conf.slug, email: "codes-lockout-owner@example.com", password: "whatever",
+    })).rejects.toMatchObject({ message: "account_locked" });
+  });
+
+  test("conference member who types their GLOBAL organizer password gets organizer_password_used", async () => {
+    // Same email owns a global organizer account AND is a member of someone
+    // else's conference, with two different passwords.
+    const org = new Client(ctx.app);
+    await signupAndLogin(org, "org-pw-member@example.com", "global-pass-1");
+    const host = new Client(ctx.app);
+    await signupAndLogin(host, "org-pw-member-host@example.com");
+    const conf = await host.rpc.conferences.create({ name: "Org PW Member" });
+    // Claim from a fresh (non-global) client so the identity carries its own
+    // conference password, distinct from the global one.
+    await inviteAndClaim(ctx.app, host, conf.slug, "org-pw-member@example.com", "conf-pass-1");
+
+    await expect(new Client(ctx.app).rpc.conferences.login({
+      slug: conf.slug, email: "org-pw-member@example.com", password: "global-pass-1",
+    })).rejects.toMatchObject({ message: "organizer_password_used" });
+  });
+
+  test("non-member global user who types their correct global password gets organizer_password_used", async () => {
+    const org = new Client(ctx.app);
+    await signupAndLogin(org, "org-pw-nonmember@example.com", "global-pass-2");
+    const host = new Client(ctx.app);
+    await signupAndLogin(host, "org-pw-nonmember-host@example.com");
+    const conf = await host.rpc.conferences.create({ name: "Org PW NonMember" });
+
+    await expect(new Client(ctx.app).rpc.conferences.login({
+      slug: conf.slug, email: "org-pw-nonmember@example.com", password: "global-pass-2",
+    })).rejects.toMatchObject({ message: "organizer_password_used" });
+  });
+
+  test("a global account existing but the wrong password still yields invalid_credentials", async () => {
+    const org = new Client(ctx.app);
+    await signupAndLogin(org, "org-pw-wrong@example.com", "global-pass-3");
+    const host = new Client(ctx.app);
+    await signupAndLogin(host, "org-pw-wrong-host@example.com");
+    const conf = await host.rpc.conferences.create({ name: "Org PW Wrong" });
+
+    await expect(new Client(ctx.app).rpc.conferences.login({
+      slug: conf.slug, email: "org-pw-wrong@example.com", password: "neither-password",
+    })).rejects.toMatchObject({ message: "invalid_credentials" });
+  });
+
+  test("failed global-hash checks here are cross-recorded against the global auth.login lockout", async () => {
+    const org = new Client(ctx.app);
+    await signupAndLogin(org, "org-pw-cross@example.com", "global-pass-4");
+    const host = new Client(ctx.app);
+    await signupAndLogin(host, "org-pw-cross-host@example.com");
+    const conf = await host.rpc.conferences.create({ name: "Org PW Cross" });
+
+    // Each wrong-password conference login (not the global password, no identity)
+    // reaches the organizer probe, fails the global verify, and records a global
+    // failure under the bare-email key auth.login uses.
+    const attacker = new Client(ctx.app);
+    for (let i = 0; i < LIMITS.loginFailLimit; i++) {
+      await expect(attacker.rpc.conferences.login({
+        slug: conf.slug, email: "org-pw-cross@example.com", password: "wrong-guess",
+      })).rejects.toMatchObject({ message: "invalid_credentials" });
+    }
+    // The global key is now locked even though the victim never touched
+    // auth.login — proves the cross-recording. Even the correct global password
+    // is refused with the global lockout error.
+    await expect(new Client(ctx.app).rpc.auth.login({
+      email: "org-pw-cross@example.com", password: "global-pass-4",
+    })).rejects.toMatchObject({ message: "account_locked" });
+  });
+
+  test("a globally locked-out account is not used as an oracle: correct global password stays invalid_credentials", async () => {
+    const org = new Client(ctx.app);
+    await signupAndLogin(org, "org-pw-locked@example.com", "global-pass-5");
+    const host = new Client(ctx.app);
+    await signupAndLogin(host, "org-pw-locked-host@example.com");
+    const conf = await host.rpc.conferences.create({ name: "Org PW Locked" });
+
+    // Lock the GLOBAL account via auth.login itself.
+    const attacker = new Client(ctx.app);
+    for (let i = 0; i < LIMITS.loginFailLimit; i++) {
+      await expect(attacker.rpc.auth.login({
+        email: "org-pw-locked@example.com", password: "wrong-guess",
+      })).rejects.toMatchObject({ message: "invalid_credentials" });
+    }
+    // Conference login uses a different (conference) lockout key, so it isn't
+    // itself locked — it proceeds to the probe, sees the global lock, and SKIPS
+    // detection. Even the CORRECT global password collapses to the generic error
+    // (no account_locked leak, no oracle).
+    await expect(new Client(ctx.app).rpc.conferences.login({
+      slug: conf.slug, email: "org-pw-locked@example.com", password: "global-pass-5",
+    })).rejects.toMatchObject({ message: "invalid_credentials" });
+  });
+});
+
+describe("claim/join auto-links a new identity to a verified global account", () => {
+  let ctx: TestApp;
+  beforeAll(() => { ctx = setupTestApp(); });
+  afterAll(async () => { await ctx.cleanup(); });
+
+  test("claimInvite while signed in globally with a matching verified email links", async () => {
+    // Visitor holds a global account (auto-verified in tests, no email transport).
+    const visitor = new Client(ctx.app);
+    const visitorUser = await signupAndLogin(visitor, "autolink-visitor@example.com");
+    // A separate host runs a conference and invites the visitor's email.
+    const host = new Client(ctx.app);
+    await signupAndLogin(host, "autolink-host@example.com");
+    const conf = await host.rpc.conferences.create({ name: "AutoLink Claim" });
+    const invite = await host.rpc.conferences.createInvite({
+      slug: conf.slug, email: "autolink-visitor@example.com",
+    });
+    // The visitor's client still carries its global owner cookie during the claim.
+    const me = await visitor.rpc.conferences.claimInvite({
+      slug: conf.slug, token: invite.token, password: "conf-pw-123",
+    });
+    const row = await ctx.prisma.conferenceIdentity.findUnique({
+      where: { id: me.id }, select: { linkedUserId: true },
+    });
+    expect(row?.linkedUserId).toBe(visitorUser.id);
+  });
+
+  test("claimInvite with a global session whose email differs does not link", async () => {
+    const visitor = new Client(ctx.app);
+    await signupAndLogin(visitor, "autolink-diff-visitor@example.com");
+    const host = new Client(ctx.app);
+    await signupAndLogin(host, "autolink-diff-host@example.com");
+    const conf = await host.rpc.conferences.create({ name: "AutoLink Diff" });
+    const invite = await host.rpc.conferences.createInvite({
+      slug: conf.slug, email: "autolink-diff-invitee@example.com",
+    });
+    const me = await visitor.rpc.conferences.claimInvite({
+      slug: conf.slug, token: invite.token, password: "conf-pw-123",
+    });
+    const row = await ctx.prisma.conferenceIdentity.findUnique({
+      where: { id: me.id }, select: { linkedUserId: true },
+    });
+    expect(row?.linkedUserId).toBeNull();
+  });
+
+  test("claimInvite with an unverified global session does not link", async () => {
+    const visitor = new Client(ctx.app);
+    const visitorUser = await signupAndLogin(visitor, "autolink-unverified@example.com");
+    // Force the global account back to unverified (tests auto-verify on signup).
+    await ctx.prisma.user.update({
+      where: { id: visitorUser.id }, data: { emailVerifiedAt: null },
+    });
+    const host = new Client(ctx.app);
+    await signupAndLogin(host, "autolink-unverified-host@example.com");
+    const conf = await host.rpc.conferences.create({ name: "AutoLink Unverified" });
+    const invite = await host.rpc.conferences.createInvite({
+      slug: conf.slug, email: "autolink-unverified@example.com",
+    });
+    const me = await visitor.rpc.conferences.claimInvite({
+      slug: conf.slug, token: invite.token, password: "conf-pw-123",
+    });
+    const row = await ctx.prisma.conferenceIdentity.findUnique({
+      where: { id: me.id }, select: { linkedUserId: true },
+    });
+    expect(row?.linkedUserId).toBeNull();
+  });
+
+  test("signupViaLink with a matching verified global session links", async () => {
+    const visitor = new Client(ctx.app);
+    const visitorUser = await signupAndLogin(visitor, "autolink-join@example.com");
+    const host = new Client(ctx.app);
+    await signupAndLogin(host, "autolink-join-host@example.com");
+    const conf = await host.rpc.conferences.create({ name: "AutoLink Join" });
+    const link = await host.rpc.conferences.setJoinLink({ slug: conf.slug, enabled: true });
+    if (!link.token) throw new Error("join link token not minted");
+    const me = await visitor.rpc.conferences.signupViaLink({
+      slug: conf.slug, token: link.token,
+      email: "autolink-join@example.com", password: "conf-pw-123",
+    });
+    const row = await ctx.prisma.conferenceIdentity.findUnique({
+      where: { id: me.id }, select: { linkedUserId: true },
+    });
+    expect(row?.linkedUserId).toBe(visitorUser.id);
+  });
+
+  test("claimInvite with no global session leaves linkedUserId null (existing behavior)", async () => {
+    const host = new Client(ctx.app);
+    await signupAndLogin(host, "autolink-none-host@example.com");
+    const conf = await host.rpc.conferences.create({ name: "AutoLink None" });
+    // inviteAndClaim claims from a brand-new client that carries no global cookie.
+    const { identity_id } = await inviteAndClaim(
+      ctx.app, host, conf.slug, "autolink-none@example.com",
+    );
+    const row = await ctx.prisma.conferenceIdentity.findUnique({
+      where: { id: identity_id }, select: { linkedUserId: true },
+    });
+    expect(row?.linkedUserId).toBeNull();
+  });
+
+  test("an auto-linked identity resolves through the linked-account branch of resolveConferencePrincipal", async () => {
+    const visitor = new Client(ctx.app);
+    await signupAndLogin(visitor, "autolink-resolve@example.com");
+    const host = new Client(ctx.app);
+    await signupAndLogin(host, "autolink-resolve-host@example.com");
+    const conf = await host.rpc.conferences.create({ name: "AutoLink Resolve" });
+    const invite = await host.rpc.conferences.createInvite({
+      slug: conf.slug, email: "autolink-resolve@example.com",
+    });
+    await visitor.rpc.conferences.claimInvite({
+      slug: conf.slug, token: invite.token, password: "conf-pw-123",
+    });
+    // Fresh client carrying ONLY the visitor's global cookie (no per-conference
+    // identity cookie). Opening a conference endpoint must resolve via the
+    // linked identity and act with its role.
+    const globalOnly = new Client(ctx.app);
+    await globalOnly.rpc.auth.login({
+      email: "autolink-resolve@example.com", password: "secret123",
+    });
+    const me = await globalOnly.rpc.conferences.me({ slug: conf.slug });
+    expect(me.email).toBe("autolink-resolve@example.com");
+    expect(me.role).toBe("participant");
   });
 });
 
@@ -4230,11 +4847,10 @@ describe("slot series (linked offerings)", () => {
     expect(agenda.slots.map((s) => s.id)).toEqual([b.slot_id]);
   });
 
-  test("avoid_repeats_across_siblings=true: starred user is placed in only one sibling", async () => {
-    // Default series setup (avoid_repeats_across_siblings defaults to true).
-    // A participant stars one session that's eligible in both siblings; the
-    // algorithm places them in sibling A, then sibling B sees the prior
-    // assignment and skips the user.
+  test("global seating attends a starred session at most once across siblings", async () => {
+    // A participant stars one session placed in both siblings. Global seating
+    // ("Update seating") enforces attend-each-submission-at-most-once, so the
+    // participant is seated in exactly ONE of the two sibling occurrences.
     const owner = new Client(ctx.app);
     await signupAndLogin(owner, "series-sibling-on@example.com");
     const conf = await owner.rpc.conferences.create({ name: "Series Avoid On" });
@@ -4247,14 +4863,13 @@ describe("slot series (linked offerings)", () => {
       await inviteAndClaim(ctx.app, owner, conf.slug, "p-on@example.com");
     await part.rpc.submissions.star({ slug: conf.slug, id: sub.id });
 
-    // Submissions have a default per-conference placement cap of 1 (see
-    // Conference.submissionMaxPlacementsDefault). For this test we want the
-    // same submission to be eligible in both siblings, so lift the cap.
+    // Lift the default per-conference placement cap of 1 so the session is
+    // eligible in both siblings.
     await owner.rpc.submissions.update({
       slug: conf.slug, id: sub.id, max_placements: 10,
     });
 
-    const t0 = Date.now();
+    const t0 = soon();
     const a = await owner.rpc.agenda.createSlot({
       slug: conf.slug, type: "unconference",
       starts_at: t0, ends_at: t0 + 3600_000,
@@ -4264,22 +4879,23 @@ describe("slot series (linked offerings)", () => {
       new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
     });
 
-    const ra = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: a.id });
-    if (ra.kind !== "unconference") throw new Error("expected unconference result");
-    expect(ra.user_assignments.find((u) => u.user_id === partId)?.submission_id).toBe(sub.id);
+    // Place the session into both siblings, then seat globally.
+    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: a.id });
+    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: b.slot_id });
+    await owner.rpc.agenda.assignAll({ slug: conf.slug });
 
-    const rb = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: b.slot_id });
-    if (rb.kind !== "unconference") throw new Error("expected unconference result");
-    // The participant doesn't get the same session in sibling B — they have
-    // no other stars and end up unplaced.
-    expect(rb.user_assignments.find((u) => u.user_id === partId)).toBeUndefined();
-    expect(rb.unplaced_users).toContain(partId);
+    const seatsA = await ctx.prisma.userAssignment.count({ where: { slotId: a.id, userId: partId } });
+    const seatsB = await ctx.prisma.userAssignment.count({ where: { slotId: b.slot_id, userId: partId } });
+    expect(seatsA + seatsB).toBe(1);
   });
 
-  test("avoid_repeats_across_siblings=false: sibling is exempt even when unconf_avoid_repeats is on", async () => {
-    // unconf_avoid_repeats=true (default) means the conference-wide
-    // avoidance is on. But the series-level toggle explicitly exempts
-    // siblings, so a participant CAN attend the same session in both.
+  test("global seating attends-once even with avoid_repeats_across_siblings=false", async () => {
+    // MODEL NOTE: the per-series `avoid_repeats_across_siblings` flag (and the
+    // per-slot `unconf_avoid_repeats` flag) shaped the OLD per-slot seating
+    // algorithm. The consolidated global seating always enforces
+    // attend-each-submission-at-most-once, so flipping the flag off no longer
+    // produces a repeat. The flag still persists as config; it just doesn't
+    // change seating. (Flagged in the changeset / report.)
     const owner = new Client(ctx.app);
     await signupAndLogin(owner, "series-sibling-off@example.com");
     const conf = await owner.rpc.conferences.create({ name: "Series Avoid Off" });
@@ -4295,7 +4911,7 @@ describe("slot series (linked offerings)", () => {
       slug: conf.slug, id: sub.id, max_placements: 10,
     });
 
-    const t0 = Date.now();
+    const t0 = soon();
     const a = await owner.rpc.agenda.createSlot({
       slug: conf.slug, type: "unconference",
       starts_at: t0, ends_at: t0 + 3600_000,
@@ -4304,25 +4920,27 @@ describe("slot series (linked offerings)", () => {
       slug: conf.slug, id: a.id,
       new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
     });
-    // Flip the sibling-exempt flag.
+    // Flip the sibling-exempt flag off — no longer affects global seating.
     await owner.rpc.agenda.updateSeries({
       slug: conf.slug, id: b.series_id,
       avoid_repeats_across_siblings: false,
     });
 
     await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: a.id });
-    const rb = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: b.slot_id });
-    if (rb.kind !== "unconference") throw new Error("expected unconference result");
-    // With siblings exempt, the participant lands on the same session again.
-    expect(rb.user_assignments.find((u) => u.user_id === partId)?.submission_id).toBe(sub.id);
+    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: b.slot_id });
+    await owner.rpc.agenda.assignAll({ slug: conf.slug });
+
+    const seatsA = await ctx.prisma.userAssignment.count({ where: { slotId: a.id, userId: partId } });
+    const seatsB = await ctx.prisma.userAssignment.count({ where: { slotId: b.slot_id, userId: partId } });
+    // Still attend-once despite the flag.
+    expect(seatsA + seatsB).toBe(1);
   });
 
-  test("siblings honor avoidRepeatsAcrossSiblings independently from unconfAvoidRepeats on non-siblings", async () => {
-    // Two siblings + one standalone slot, all sharing the same eligible
-    // session. The series has avoid_repeats_across_siblings=true,
-    // unconf_avoid_repeats=false. Expected: a participant placed in
-    // sibling A is NOT re-placed in sibling B, but IS re-placed in the
-    // standalone (since conference-wide avoidance is off).
+  test("global seating attends-once across a whole series plus a standalone slot", async () => {
+    // MODEL NOTE: with global seating the per-slot / per-series avoid-repeats
+    // flags no longer steer seating. A participant who stars one session placed
+    // across two siblings AND a standalone slot is seated in exactly one of the
+    // three occurrences — regardless of the flags below.
     const owner = new Client(ctx.app);
     await signupAndLogin(owner, "series-mixed@example.com");
     const conf = await owner.rpc.conferences.create({ name: "Series Mixed" });
@@ -4338,7 +4956,7 @@ describe("slot series (linked offerings)", () => {
       slug: conf.slug, id: sub.id, max_placements: 10,
     });
 
-    const t0 = Date.now();
+    const t0 = soon();
     const a = await owner.rpc.agenda.createSlot({
       slug: conf.slug, type: "unconference",
       starts_at: t0, ends_at: t0 + 3600_000,
@@ -4347,9 +4965,6 @@ describe("slot series (linked offerings)", () => {
       slug: conf.slug, id: a.id,
       new_starts_at: t0 + 7200_000, new_ends_at: t0 + 10800_000,
     });
-    // Series: keep cross-sibling on, but turn off the per-slot
-    // conference-wide avoidance (this propagates to both siblings via the
-    // resolver).
     await owner.rpc.agenda.updateSeries({
       slug: conf.slug, id: b.series_id,
       avoid_repeats_across_siblings: true,
@@ -4361,32 +4976,15 @@ describe("slot series (linked offerings)", () => {
       starts_at: t0 + 14400_000, ends_at: t0 + 18000_000,
     });
 
-    const ra = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: a.id });
-    if (ra.kind !== "unconference") throw new Error("expected unconference result");
-    expect(ra.user_assignments.find((u) => u.user_id === partId)?.submission_id).toBe(sub.id);
+    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: a.id });
+    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: b.slot_id });
+    await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: standalone.id });
+    await owner.rpc.agenda.assignAll({ slug: conf.slug });
 
-    const rb = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: b.slot_id });
-    if (rb.kind !== "unconference") throw new Error("expected unconference result");
-    // Sibling avoidance applies regardless of the unconf flag.
-    expect(rb.user_assignments.find((u) => u.user_id === partId)).toBeUndefined();
-
-    const rs = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: standalone.id });
-    if (rs.kind !== "unconference") throw new Error("expected unconference result");
-    // Conference-wide avoidance is off on the standalone (own unconf flag
-    // defaults to true, but the participant's earlier non-sibling
-    // assignments would be excluded only if we'd set it false too — this
-    // standalone keeps its default of true). With true, the standalone WILL
-    // see siblings A and B as prior assignments and skip the user.
-    //
-    // To prove the inverse (standalone allows the repeat), turn its
-    // unconf_avoid_repeats off as well.
-    await owner.rpc.agenda.updateSlot({
-      slug: conf.slug, id: standalone.id,
-      unconf_avoid_repeats: false,
+    const total = await ctx.prisma.userAssignment.count({
+      where: { userId: partId, slotId: { in: [a.id, b.slot_id, standalone.id] } },
     });
-    const rs2 = await owner.rpc.agenda.assign({ slug: conf.slug, slot_id: standalone.id });
-    if (rs2.kind !== "unconference") throw new Error("expected unconference result");
-    expect(rs2.user_assignments.find((u) => u.user_id === partId)?.submission_id).toBe(sub.id);
+    expect(total).toBe(1);
   });
 
   test("deleting a sibling that leaves the series with one member auto-detaches the survivor", async () => {

@@ -3,7 +3,7 @@
 //
 // Single source of truth for the plain-language explanation of how the
 // unconference / mixer assignment algorithm works. Surfaced via a help link
-// next to "Auto-fill this slot from stars" in the slot detail, and via a
+// next to "Place sessions from stars" in the slot detail, and via a
 // "How it works" link in the Agenda tab header.
 //
 // LAYOUT: The modal leads with a non-technical "Start here" summary (the 4
@@ -30,7 +30,8 @@
 // =============================================================================
 
 import { useState } from "react";
-import { Badge, Button, Sheet, Text } from "../../design-system";
+import { Button, Sheet, Text } from "../../design-system";
+import { Disclosure } from "./Disclosure";
 import { ASSIGN_STEPS, BUILD_STEPS, GLOSSARY } from "./agendaGuide";
 
 export function AssignmentRulesModal({
@@ -103,11 +104,20 @@ export function AssignmentRulesModal({
         <Disclosure summary="Which sessions get a room">
         <Section index={1} title="Which sessions get a room">
           <Rule>
-            Sessions are ranked by <strong>star count</strong> — how many
-            attendees have starred them. If there are more sessions than
-            rooms, the least-starred drop out for this slot. Ties break
-            by submission order (oldest first).
+            Sessions are ranked by <strong>priority tier first</strong> (high
+            before normal before low), then by <strong>star count</strong>{" "}
+            within a tier — how many attendees have starred them. If there are
+            more sessions than rooms, the lowest-ranked drop out for this slot.
+            Ties break by submission order (oldest first).
           </Rule>
+          {isMod && (
+            <Rule modOnly>
+              A mod sets a session&apos;s priority (low / normal / high) from
+              the Sessions tab. High places and fills ahead of star count; low
+              is placed and filled last. It never assigns anyone to a session
+              they didn&apos;t star and never overrides a reserved room.
+            </Rule>
+          )}
           {isMod && (
             <Rule modOnly>
               Sessions tagged <em>Fully scheduled</em> (placement cap reached)
@@ -163,6 +173,13 @@ export function AssignmentRulesModal({
             remaining capacity.
           </Rule>
           <Rule>
+            <strong>Priority tips the balance.</strong> Among your starred
+            options, high-priority sessions are filled first and low-priority
+            last; the even split applies within the same priority. Priority
+            never assigns you to a session you didn&apos;t star, and never
+            overrides a manual placement or a room&apos;s capacity.
+          </Rule>
+          <Rule>
             The submitter of a session is always assigned to host it (when
             the session is placed). You can&apos;t be auto-placed somewhere
             else if you&apos;re hosting.
@@ -213,16 +230,17 @@ export function AssignmentRulesModal({
         </Section>
         </Disclosure>
 
-        <Disclosure summary="Avoiding repeated sessions">
-        <Section index={5} title="Avoiding repeated sessions">
+        <Disclosure summary="You're never scheduled the same session twice">
+        <Section index={5} title="You're never scheduled the same session twice">
           <Rule>
-            When a slot has <em>avoid repeats</em> enabled, the system
-            won&apos;t put you in a session you&apos;ve already attended in an
-            earlier slot of this conference. That includes derived
-            planned-track attendance — if you starred a session that ran
-            earlier as a planned track, it counts as already attended.
-            Hosts (the submitter) are exempt — leading your own session
-            always wins.
+            <strong>The schedule never seats you in the same session twice.</strong>{" "}
+            When a session runs more than once, seating sends you to just one of
+            its times — it will never double-book you on the same content. This
+            is always on; there&apos;s no setting to turn it off.
+          </Rule>
+          <Rule>
+            Leading your own session (as its submitter) always wins — hosting
+            duties are never skipped to avoid a repeat.
           </Rule>
         </Section>
         </Disclosure>
@@ -248,6 +266,16 @@ export function AssignmentRulesModal({
               <em>Room may be full</em>) when stars exceed capacity.
               Consider moving the session to a bigger room or duplicating
               the slot as a sibling offering.
+            </Rule>
+          )}
+          {isMod && (
+            <Rule modOnly>
+              <strong>Re-fit rooms by interest</strong> reassigns a planned
+              slot&apos;s rooms among its scheduled talks at any time - the
+              most-starred talk gets the biggest room, the next-most-starred
+              the next biggest, and so on. Talks with a reserved room stay
+              put, room requirements are honored, and anyone who starred a
+              talk that moved is notified automatically.
             </Rule>
           )}
           {isMod && (
@@ -323,21 +351,40 @@ export function AssignmentRulesModal({
               once.
             </Rule>
             <Rule modOnly>
-              Placements you author are kept — re-running a single slot&apos;s
-              auto-assignment won&apos;t wipe them. <em>Remove</em> a placement to
-              take that session out of the slot.
+              Placements you author are kept — running <em>Place sessions from
+              stars</em> won&apos;t wipe them. <em>Remove</em> a placement to take
+              that session out of the slot.
+            </Rule>
+            <Rule modOnly>
+              <strong>Placing never seats anyone.</strong> Both hand-placing a
+              session and <em>Place sessions from stars</em> only decide which
+              session runs in which room. Nobody is seated until you run{" "}
+              <em>Update seating</em> — until then the slot shows a{" "}
+              <em>Seating out of date</em> flag.
             </Rule>
           </Section>
           </Disclosure>
         )}
 
-        <Disclosure summary="Assigning attendees across the whole agenda">
-        <Section title="Assigning attendees across the whole agenda">
+        <Disclosure summary="Updating seating across the agenda">
+        <Section title="Updating seating across the agenda">
           <Rule>
-            <strong>Assign attendees</strong> (in the Agenda header) routes
-            everyone across <em>all</em> unconference sessions at once, rather
-            than one slot at a time. Because it sees the whole agenda, it can
-            make smarter choices a single-slot run can&apos;t.
+            <strong>Update seating</strong> (in the Assign panel on the Agenda
+            tab) seats everyone across the unconference slots whose placements
+            changed since they were last seated. Because it sees the whole
+            agenda at once, it makes smarter choices than seating one slot at a
+            time.
+          </Rule>
+          <Rule>
+            <strong>Only changed slots move.</strong> A slot whose placements
+            haven&apos;t changed keeps its seats untouched. Tick <em>Also re-seat
+            unchanged future slots</em> in the confirm dialog to re-seat those
+            too.
+          </Rule>
+          <Rule>
+            <strong>Started slots freeze.</strong> A slot that has already
+            started (or is in the past) is never re-seated, so people mid-session
+            aren&apos;t moved.
           </Rule>
           <Rule>
             <strong>Split across repeats.</strong> When a session runs more
@@ -353,7 +400,8 @@ export function AssignmentRulesModal({
           <Rule>
             The hard rules still hold: never two sessions at once, never over a
             room&apos;s capacity, never the same session twice, and your manual
-            picks and hosting duties are always respected.
+            picks and hosting duties are always respected. Only people whose
+            seat actually changes are notified.
           </Rule>
         </Section>
         </Disclosure>
@@ -361,9 +409,11 @@ export function AssignmentRulesModal({
         <Disclosure summary="Re-running">
         <Section title="Re-running">
           <Rule>
-            A moderator can re-run the assignment at any time. Manual
-            picks are preserved. Anyone who wasn&apos;t manually pinned might
-            be moved around as stars change.
+            A moderator can re-place and run <em>Update seating</em> at any
+            time. Manual picks are preserved, and slots that have already
+            started are left frozen. Anyone who wasn&apos;t manually pinned in a
+            still-future slot might be moved around as stars and placements
+            change.
           </Rule>
           <Rule>
             The algorithm is <strong>deterministic</strong>: same stars +
@@ -659,71 +709,8 @@ function StartHere() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Disclosure — a styled native <details>/<summary>. Keeps every deep rule in
-// the document but collapsed by default so the modal isn't a wall of text.
-// `modOnly` adds the same "Moderator" pill the Section header uses.
-// ---------------------------------------------------------------------------
-function Disclosure({
-  summary, children, modOnly, defaultOpen,
-}: {
-  summary: string;
-  children: React.ReactNode;
-  modOnly?: boolean;
-  defaultOpen?: boolean;
-}) {
-  const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
-  // Track open state so the chevron can rotate — native <details> doesn't let
-  // us style the marker from inline styles alone. `defaultOpen` still seeds the
-  // element's own `open` attribute so it works even before any toggle event.
-  const [open, setOpen] = useState(defaultOpen ?? false);
-  return (
-    <details
-      open={defaultOpen}
-      onToggle={(e) => setOpen(e.currentTarget.open)}
-      style={{
-        borderRadius: 8,
-        border: "1px solid var(--borderColor-muted, var(--uncon-border-muted, #e5e7eb))",
-        background: "var(--bgColor-default, var(--uncon-bg, transparent))",
-      }}
-    >
-      <summary
-        style={{
-          listStyle: "none",
-          cursor: "pointer",
-          padding: "12px 14px",
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          fontSize: 14,
-          fontWeight: 600,
-          lineHeight: 1.3,
-          userSelect: "none",
-        }}
-      >
-        <span
-          aria-hidden
-          style={{
-            flexShrink: 0,
-            color: muted,
-            fontSize: 11,
-            transition: "transform .15s ease",
-            transform: open ? "rotate(90deg)" : "rotate(0deg)",
-          }}
-        >
-          ▸
-        </span>
-        {/* dangerouslySetInnerHTML avoided — the summary strings here may carry
-            an HTML entity ("&amp;"); decode it for plain text rendering. */}
-        <span style={{ flex: 1 }}>{summary.replace(/&amp;/g, "&")}</span>
-        {modOnly && <Badge variant="attention">Moderator</Badge>}
-      </summary>
-      <div style={{ padding: "0 14px 14px" }}>
-        {children}
-      </div>
-    </details>
-  );
-}
+// Disclosure lives in ./Disclosure — a styled native <details>/<summary>
+// shared with other surfaces (e.g. the by-hand placement author).
 
 // ---------------------------------------------------------------------------
 // Glossary — renders the shared GLOSSARY term/definition list. Plain dl so the

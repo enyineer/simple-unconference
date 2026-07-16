@@ -1,4 +1,5 @@
 import { DragScrollRow } from "../../ui/DragScrollRow";
+import { MICRO_MAX_HEIGHT_PX } from "./constants";
 import type { CalMixerPlacement, CalPlacement, CalRoom, CalSlot, CalSubmission, CalTrack } from "./types";
 import { fmtTime } from "./helpers";
 import { SubEventCard } from "./SubEventCard";
@@ -129,6 +130,10 @@ export function SlotEvent({
           };
         });
 
+  // Below MICRO_MAX_HEIGHT_PX there's no room even for the compact sub-event
+  // strip — drop into a single-line "micro" variant that shows only the slot
+  // label and its time range. Details stay in the click-to-open sheet.
+  const micro = heightPx < MICRO_MAX_HEIGHT_PX;
   // For slots shorter than ~44 px we can't afford a separate header row
   // (the header alone is ~20 px and the body needs ~18 px to show anything).
   // Drop into a "compact" mode that puts the slot label, sub-events, and
@@ -152,8 +157,8 @@ export function SlotEvent({
         opacity: dragging ? 0.85 : 1,
         cursor: isMod ? "grab" : "pointer",
         display: "flex",
-        flexDirection: compact ? "row" : "column",
-        alignItems: compact ? "center" : undefined,
+        flexDirection: micro || compact ? "row" : "column",
+        alignItems: micro || compact ? "center" : undefined,
         overflow: "hidden",
       }}
     >
@@ -169,7 +174,32 @@ export function SlotEvent({
         />
       )}
 
-      {compact ? (
+      {micro ? (
+        // ---- Micro single-line layout for very short slots (<28 px) ----
+        // Only the slot title + time range fit; everything else lives in the
+        // click-to-open sheet. NO sub-event strip so a 15 px block stays legible.
+        <>
+          <div
+            onPointerDown={isMod ? onPointerDownBody : undefined}
+            style={{
+              flex: 1, minWidth: 0,
+              padding: "0 8px",
+              fontSize: 11, fontWeight: 600,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            }}
+            title={title}
+          >
+            {title}
+          </div>
+          <span style={{
+            flex: "0 0 auto",
+            padding: "0 8px",
+            fontSize: 10, color: muted, whiteSpace: "nowrap",
+          }}>
+            {fmtTime(liveStart, timeZone)}–{fmtTime(liveEnd, timeZone)}
+          </span>
+        </>
+      ) : compact ? (
         // ---- Compact single-row layout for short slots ----
         // Header label (title) on the left, sub-events in the middle, time
         // on the right — everything on one row.

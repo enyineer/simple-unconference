@@ -19,6 +19,24 @@ something the next session would need to know.
   showed `submitter_email`, use that helper.
 - The permissions table in [README.md](README.md) is the source of truth.
   Keep it in sync with [src/server/lib/permissions.ts](src/server/lib/permissions.ts).
+- **`conferences.login` deliberately breaks error-collapsing for three cases**
+  (user-approved enumeration tradeoffs): `owner_use_main_login` (email is the
+  conference owner's organizer account / password-less auto-minted identity),
+  `invite_not_claimed` (unclaimed invite or password-less identity), and
+  `organizer_password_used` (typed password verifies against the global
+  `User.passwordHash` for that email — safe because it only fires for a
+  caller already holding valid organizer credentials). Everything else stays
+  `invalid_credentials`. All special paths MUST keep calling
+  `recordLoginFailure` first (lockout key `conf:<slug>:<email>`), and the
+  global-hash verification MUST double-book failures against the GLOBAL
+  lockout key auth.login uses (and skip detection entirely while that account
+  is locked) so the conference endpoint can never bypass the global
+  brute-force limit. Do NOT add any hint that merely reveals "a global User
+  exists with this email" without a verified password — that would let anyone
+  enumerate organizer accounts; that case is handled client-side
+  (own-session email match in `ConferenceLogin.tsx`) and via copy only. `claimInvite`/`signupViaLink` auto-link the new identity
+  (`linkedUserId`) when the request carries a verified global session with
+  the same email — the Join page shows an upfront note when that will happen.
 - **Expert bookings: never expose other bookers to non-mods.**
   `experts.list` returns `booker_name` / `booker_email` as `null` for every
   slot except (a) the viewer's own booking or (b) when the viewer is mod+.
@@ -153,6 +171,19 @@ something the next session would need to know.
   references row state that's actually visible to other readers, and a
   rollback won't leave a phantom bell entry. See `experts.book` for the
   pattern.
+- **Planned-slot schedule changes go through one helper.**
+  `notifyPlannedScheduleChange` in [src/server/rpc/agenda.ts](src/server/rpc/agenda.ts)
+  is the single place that fans out `schedule_changed` notifications when a
+  talk is scheduled into / moved within / removed from a PLANNED (type
+  "normal") slot. Recipients = the submission's starrers ∪ its submitter;
+  for a `mandatory` track it's EVERY conference identity. Always coalesced
+  per `(slot, submission)` via `dedupeKey: "track:<slotId>:<submissionId>"`
+  so a burst of edits (scheduled → moved → …) collapses into one bell row.
+  Wired into `scheduleSubmission`, `setTrack` (replace only — a same-
+  submission edit sends nothing), `clearTrack`, and `refitRooms`. The
+  unconference `placeSubmission` room-move reuses the same kind + dedupeKey
+  but targets the currently-SEATED users (UserAssignment rows), not starrers.
+  Call it AFTER the surrounding transaction commits (the standard rule above).
 
 ## Architecture choices that look weird unless you know them
 
@@ -164,29 +195,88 @@ something the next session would need to know.
   and is the most heavily tested piece (15 unit + 3 scale + integration). DB
   wiring lives in `runAssignmentForSlot` in `rpc/agenda.ts`. This pure fn does
   BOTH per-slot placement (which session → which room) AND user routing.
-- **Two assignment modes — don't confuse them:**
-  - *Per-slot* (`assignUnconferenceSlot` + `runAssignmentForSlot`, `agenda.assign`
-    RPC, "Run assignment" button): one slot, greedy, places sessions AND routes
-    users. Unchanged, still the most-tested module — never weaken its tests.
-  - *Whole-agenda* (`assignAgenda` in
+- **Placing and seating are SEPARATE actions — don't confuse them:**
+  - *Per-slot PLACEMENT* (`assignUnconferenceSlot` + `runAssignmentForSlot`,
+    `agenda.assign` RPC, per-slot "Run assignment"): PLACEMENT-ONLY. It decides
+    which session runs in which room for ONE slot and writes only
+    `UnconferencePlacement` rows. It NEVER seats attendees. The pure
+    `assignUnconferenceSlot` still emits a candidate seating internally (and is
+    the most-tested module — never weaken its tests), but the route DROPS that
+    output: it writes placements, flags the slot `seatingStale = true`, and
+    deletes only the seats whose session is no longer placed (still-placed
+    sessions keep their seats). It still receives the slot's `manual:true`
+    placements as `fixedPlacements` (never re-placed, rooms reserved) and still
+    runs the conflict gates + overlap-exclusion reporting.
+  - *Global SEATING* (`assignAgenda` in
     [src/server/assignment-agenda.ts](src/server/assignment-agenda.ts) +
-    `runAssignmentForAgenda`, `agenda.assignAll` RPC, "Assign attendees"
-    header button): routes USERS across every slot at once over a FIXED
-    occurrence set (`UnconferencePlacement` rows), writing ONLY `UserAssignment`
-    — it never creates/moves placements. Gets cross-slot lookahead + even split
-    of a recurring session's starrers across its occurrences. It's an integer
-    min-cost flow (Dijkstra + Johnson potentials); a moderator BATCH action, not
-    a hot path (~seconds at conference scale). The ≤1-per-band gate is the LAST
-    per-user node (band-faithful) so it can't double-book; per-submission-once
-    is enforced upstream + a deterministic dedup so a user is never shown the
-    same session twice. The full ≤1/band + ≤1/sub + capacity problem is
-    NP-hard (multi-commodity), so it's a high-quality deterministic heuristic,
-    not provably optimal at scale — bounded re-solve rounds keep it fast.
+    `runAssignmentForAgenda`, `agenda.assignAll` RPC, "Update seating" button):
+    the ONE seating action. Writes only `UserAssignment`; never touches
+    placements. Targets = unconference slots that HAVE placements, start in the
+    FUTURE (server clock), and are `seatingStale` (or `include_unchanged:true`
+    opts in unchanged future slots). Past/started slots are NEVER re-seated.
+    Every OTHER slot with `UserAssignment` rows is FROZEN as a hard constraint:
+    its seats add their band to `busyBands` (mandatory planned tracks freeze the
+    whole conference into their band) and its unconference seats build
+    `priorAttendance` — so a user is never re-seated into a session they already
+    attend in a frozen slot, across the freeze boundary. `priorAttendance` ALSO
+    absorbs DERIVED planned-track (Path-C) attendance — stars on a tracked
+    submission, its submitter, and mandatory tracks (all identities), lifted
+    from `runAssignmentForSlot` — so nobody is seated into an unconference
+    occurrence of a session they already attend as a planned talk. Only
+    MANDATORY planned tracks add to `busyBands`; soft-starred planned tracks
+    stay non-blocking for bands. Bands are computed over ALL slots. Writes clear
+    the re-seated slots' `seatingStale` in the same transaction. Notifications
+    DIFF: capture target slots' old seats BEFORE the tx, then notify only
+    identities whose `(slot→submission)` seat set changed (coalesced
+    `dedupeKey assign:<confId>`); untouched users are never notified.
+    It's an integer min-cost flow (Dijkstra + Johnson potentials); the
+    ≤1-per-band gate is the LAST per-user node so it can't double-book;
+    per-submission-once is enforced upstream + a deterministic dedup. NP-hard at
+    full generality → a high-quality deterministic heuristic, not provably
+    optimal.
+  - **Staleness lifecycle:** any placement mutation flags the affected slot
+    stale — per-slot `agenda.assign`, `placeSubmission`, `unplaceSubmission`,
+    `updateSeries` orphan cleanup, and `submissions.delete` / `rooms.delete`
+    (which collect the affected slots before cascading). Mixer writes never
+    flag stale. `SlotOut.seating_stale` surfaces it to the UI.
+  - **Note:** the per-slot `unconf_avoid_repeats` / series
+    `avoid_repeats_across_siblings` flags shaped the OLD per-slot seating only.
+    Global seating always enforces attend-each-submission-at-most-once and does
+    NOT consult those flags — they persist as config but no longer steer
+    seating. (Planned-track derived attendance IS honored, unconditionally — see
+    `priorAttendance` above.)
+- **Session priority** (`Submission.priority`: `high`/`normal`/`low`, mod-only
+  override like `maxPlacements`): the LEADING sort key for the per-slot top-N
+  placement cut (before star count), plus a routing bias so high-priority
+  sessions fill first / low fill last — only among a user's starred options;
+  it never overrides manual placements, fixed picks, submitter-host pinning,
+  or capacity. The priority→stars→id ordering lives in TWO mirrored sorts
+  that must stay in sync: `submissionsByPopularity` in `assignment.ts` and
+  the route-side `subsByPopularity` in `rpc/agenda.ts`. The whole-agenda
+  bias is `PRIORITY_BONUS` in `assignment-agenda.ts`, which must stay above
+  `SEAT_STEP·maxCapacity` but well below `USER_DIMINISH`. Enum→weight mapping
+  goes through `priorityWeight()` exported from `assignment.ts` — don't
+  re-implement it.
 - **Placement authoring:** mods author the occurrence set via
   `agenda.placeSubmission` / `unplaceSubmission` (UI: `PlacementAuthor` in the
   unconference slot body). `UnconferencePlacement.manual=true` marks
   mod-authored placements so the per-slot auto-assign preserves them
   (`placementWriteOps` deletes only `manual:false`).
+- **Planned-slot room refit** (`agenda.refitRooms`) reassigns a normal slot's
+  rooms among its scheduled tracks by star count (biggest room → most-starred),
+  honoring `preAssignedRoomId` pins (a pin overrides tag requirements) and
+  `roomRequirements`. It mirrors the `assignment.ts` Phase A zip semantics but
+  does NOT import that module (that's per-slot attendee placement). All-or-
+  nothing: an unmatchable track returns a conflict with ZERO writes. **Caveat:
+  `TrackAssignment.id` is NOT stable across a refit** — the `@@unique([slotId,
+  roomId])` makes in-place room swaps collide transiently, so the write is
+  delete-all-tracks + recreate with new roomIds (requirements re-created too).
+  That's fine because nothing persists track ids: the ICS/VEVENT calendar
+  export ([src/server/routes/calendar.ts](src/server/routes/calendar.ts)) keys
+  its planned-track UID on the STABLE `(slotId, submissionId, identityId)`
+  triple — NOT the track id — so a refit updates a moved talk's calendar event
+  in place instead of dropping + re-adding it. Keep any new consumer off the
+  track id for the same reason.
 - **Per-slot unconference scope:** an `AgendaSlot` has
   `unconfUseAllRooms` / `unconfUseAllSubmissions` flags + `SlotRoom` /
   `SlotSubmission` join tables. The assignment respects these so a slot can
@@ -194,7 +284,12 @@ something the next session would need to know.
 - **Calendar layout:** overlapping slots get side-by-side columns (sweep-line
   algorithm). Within a slot, tracks/placements are sub-columns. Both layers
   enable mobile horizontal scroll once columns drop below their min widths
-  (`MIN_SLOT_COL_WIDTH`, `MIN_TRACK_SUBCOL_WIDTH`).
+  (`MIN_SLOT_COL_WIDTH`, `MIN_TRACK_SUBCOL_WIDTH`). Block height floors at
+  `MIN_SLOT_HEIGHT_PX` (= `SNAP_MIN`) with a micro one-line variant under
+  `MICRO_MAX_HEIGHT_PX`, and `layoutSlots` (extracted to
+  [src/web/conference/tabs/calendar/layoutSlots.ts](src/web/conference/tabs/calendar/layoutSlots.ts))
+  treats the rendered height as the effective end so clamped short blocks get
+  side-by-side columns instead of painting over their neighbors.
 - **`NowIndicator`** in `Calendar.tsx` only renders when the day being drawn
   is today. Aligned to whole-minute ticks via `setTimeout` then `setInterval`.
 

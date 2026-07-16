@@ -8,9 +8,15 @@
 // Two algorithms live here, sharing input shape conventions so the caller can
 // branch by slot type without juggling unrelated structures:
 //
-//  - `assignUnconferenceSlot`: most-starred submissions get rooms, users get
-//    one of their starred placed sessions, balanced across rooms.
-//    Two extra rules layered on top of star matching:
+//  - `assignUnconferenceSlot`: submissions get rooms ranked by priority first
+//    then star count; users get one of their starred placed sessions, balanced
+//    across rooms and biased so higher-priority starred sessions fill first.
+//    Moderator-authored "fixed placements" (see `fixedPlacements`) are seated
+//    into but never created, moved, re-placed, or emitted by the algorithm —
+//    their rooms are reserved out of the placement pool and their sessions are
+//    excluded from top-N selection, but users still get routed into them by
+//    the same star / submitter / priority rules. Two extra rules layered on
+//    top of star matching:
 //
 //      1. Submitter-as-host: when a submission is placed, its submitter is
 //         force-assigned to lead it, overriding their stars entirely. If the
@@ -44,10 +50,27 @@ export interface AssignmentRoom {
   capacity: number;
 }
 
+/**
+ * Maps a submission's priority band to the numeric weight used as the LEADING
+ * ordering/routing key: `high` → +1, `normal` → 0, `low` → -1. Null/undefined
+ * (no priority set) is treated as `normal`. The RPC layer uses this same
+ * helper so the route and the algorithm agree on ordering.
+ */
+export function priorityWeight(p: "low" | "normal" | "high" | null | undefined): number {
+  return p === "high" ? 1 : p === "low" ? -1 : 0;
+}
+
 export interface AssignmentSubmission {
   id: ID;
   /** The user who submitted this. Used for the submitter-as-host rule. */
   submitter_id: ID;
+  /**
+   * Priority weight (see `priorityWeight`): +1 high / 0 normal / -1 low. The
+   * LEADING key for both the top-N placement cut and the user-routing bias —
+   * a higher-priority session wins a room over a more-starred one and fills
+   * first. Defaults to 0 (normal) so existing callers are behavior-identical.
+   */
+  priority?: number;
 }
 
 export interface AssignmentInput {
@@ -82,6 +105,29 @@ export interface AssignmentInput {
   // surfaces a structured conflict error to the moderator before getting
   // here, so a runtime throw indicates a caller bug.
   preAssignments?: Map<ID, ID>;
+  // Moderator-authored placements for THIS slot (`UnconferencePlacement`
+  // rows with `manual=true`). The algorithm must never move, re-place, or
+  // emit them — it only seats users into them. Their rooms are reserved out
+  // of Phase A's assignable room pool and their submissions are excluded
+  // from top-N selection; Phase B then treats them as first-class placed
+  // sessions (submitter-as-host, fixed picks, and star routing all apply).
+  //
+  // Each entry is self-contained: `capacity` is carried here (not looked up
+  // in `rooms`) because a manual placement's room may lie OUTSIDE the slot's
+  // effective room scope, and `submitter_id` / `priority` are carried so the
+  // fixed session need not appear in `submissions` at all. `priority` uses
+  // `priorityWeight` semantics (+1 high / 0 normal / -1 low); defaults to 0.
+  //
+  // Fixed submissions are never returned in `result.placements` (those are
+  // only the newly computed placements). `result.user_assignments` covers
+  // users seated into fixed AND newly-placed sessions alike.
+  fixedPlacements?: Array<{
+    submission_id: ID;
+    room_id: ID;
+    capacity: number;
+    submitter_id: ID;
+    priority?: number;
+  }>;
 }
 
 /**
@@ -91,12 +137,23 @@ export function assignUnconferenceSlot(input: AssignmentInput): AssignmentResult
   const { rooms, submissions, stars } = input;
   const priorAssignments = input.priorAssignments ?? new Map<ID, Set<ID>>();
   const avoidRepeats = input.avoidRepeats ?? true;
+  const fixedPlacements = input.fixedPlacements ?? [];
+
+  // Fixed (moderator-authored) placements are seated into but never (re-)placed
+  // by the algorithm. Their submissions are excluded from top-N selection and
+  // their rooms are held out of the assignable pool; Phase B merges them back
+  // in as first-class placed sessions before routing users.
+  const fixedSubIds = new Set<ID>(fixedPlacements.map((f) => f.submission_id));
+  const fixedRoomIds = new Set<ID>(fixedPlacements.map((f) => f.room_id));
+  const assignableSubmissions = submissions.filter((s) => !fixedSubIds.has(s.id));
+  const assignableRooms = rooms.filter((r) => !fixedRoomIds.has(r.id));
 
   // ----- Phase A: pick which submissions run, and place them in rooms. -----
 
-  // Star count per submission.
+  // Star count per submission (only over assignable submissions — fixed ones
+  // are placed regardless of stars and never enter the popularity cut).
   const submissionStarCount = new Map<ID, number>();
-  for (const sub of submissions) submissionStarCount.set(sub.id, 0);
+  for (const sub of assignableSubmissions) submissionStarCount.set(sub.id, 0);
   for (const set of stars.values()) {
     for (const subId of set) {
       if (submissionStarCount.has(subId)) {
@@ -105,19 +162,33 @@ export function assignUnconferenceSlot(input: AssignmentInput): AssignmentResult
     }
   }
 
-  // Most-starred first; stable tie-break by id ascending.
-  const submissionsByPopularity = [...submissions].sort((a, b) => {
+  // Priority first (high beats more stars, low loses to fewer), then
+  // most-starred, then stable tie-break by id ascending. This intentionally
+  // drives both the top-N placement cut and the popularity → largest-room zip.
+  // Fixed placements contribute their own priority (for Phase B routing) but
+  // never take part in the popularity sort.
+  const submissionPriority = new Map<ID, number>();
+  for (const sub of assignableSubmissions) submissionPriority.set(sub.id, sub.priority ?? 0);
+  for (const f of fixedPlacements) submissionPriority.set(f.submission_id, f.priority ?? 0);
+  const submissionsByPopularity = [...assignableSubmissions].sort((a, b) => {
+    const pa = a.priority ?? 0;
+    const pb = b.priority ?? 0;
+    if (pb !== pa) return pb - pa;
     const sa = submissionStarCount.get(a.id) ?? 0;
     const sb = submissionStarCount.get(b.id) ?? 0;
     if (sb !== sa) return sb - sa;
     return a.id - b.id;
   });
 
-  // Largest capacity first; tie-break by id ascending.
-  const roomsByCapacity = [...rooms].sort((a, b) => {
+  // Largest capacity first; tie-break by id ascending. Fixed rooms are held
+  // out of the assignable pool.
+  const roomsByCapacity = [...assignableRooms].sort((a, b) => {
     if (b.capacity !== a.capacity) return b.capacity - a.capacity;
     return a.id - b.id;
   });
+  // `roomById` keeps EVERY input room (incl. fixed) so a pre-assignment pin
+  // that targets a fixed-occupied room is detected as a reserved-room
+  // conflict below rather than an out-of-scope one.
   const roomById = new Map<ID, AssignmentRoom>();
   for (const r of rooms) roomById.set(r.id, r);
 
@@ -139,10 +210,14 @@ export function assignUnconferenceSlot(input: AssignmentInput): AssignmentResult
   // catching duplicate rooms / out-of-scope rooms BEFORE calling us, using
   // the same top-N restriction; throws here indicate a caller bug.
   const preAssignments = input.preAssignments;
-  const reservedRoomIds = new Set<ID>();
+  // Seed with fixed rooms so a pin targeting a manually occupied room throws
+  // the same "room requested by multiple submissions" conflict as two pins on
+  // one room (the route's conflict gate catches this first — a throw here
+  // means a caller bug).
+  const reservedRoomIds = new Set<ID>(fixedRoomIds);
   if (preAssignments && preAssignments.size > 0) {
     const submissionsById = new Map<ID, AssignmentSubmission>();
-    for (const sub of submissions) submissionsById.set(sub.id, sub);
+    for (const sub of assignableSubmissions) submissionsById.set(sub.id, sub);
     // Walk in (submission id, room id) ascending order for deterministic
     // error messages.
     const preEntries = [...preAssignments.entries()].sort((a, b) =>
@@ -183,6 +258,16 @@ export function assignUnconferenceSlot(input: AssignmentInput): AssignmentResult
     placedSubmitterOf.set(sub.id, sub.submitter_id);
   }
 
+  // Merge the moderator-authored fixed placements in as first-class placed
+  // sessions BEFORE routing. From here on Phase B treats them exactly like
+  // auto-placed sessions (submitter-as-host, fixed picks, star routing). Their
+  // room capacity is self-contained (the room may lie outside the slot scope).
+  for (const f of fixedPlacements) {
+    placedSubmissionRoom.set(f.submission_id, f.room_id);
+    roomCapacity.set(f.submission_id, f.capacity);
+    placedSubmitterOf.set(f.submission_id, f.submitter_id);
+  }
+
   // ----- Phase B: assign users. -----
 
   const userIds = [...stars.keys()].sort((a, b) => a - b);
@@ -220,12 +305,23 @@ export function assignUnconferenceSlot(input: AssignmentInput): AssignmentResult
   // If one user submitted multiple placed sessions in this slot, they lead
   // the most-starred (popularity order, id-asc tiebreak). Build per-user
   // submitter assignments deterministically.
-  const submitterChoice = new Map<ID, ID>(); // user_id -> submission_id (their pick)
+  //
+  // Iterate auto-placed sessions in popularity order first, then fixed
+  // placements (id-asc) so the choice is deterministic; `placedSubmitterOf`
+  // carries the submitter for both kinds.
+  const placedForSubmitter: ID[] = [];
   for (const sub of submissionsByPopularity) {
-    if (!placedSubmissionRoom.has(sub.id)) continue;
-    if (!stars.has(sub.submitter_id)) continue; // not a conference member
-    if (submitterChoice.has(sub.submitter_id)) continue; // already picked
-    submitterChoice.set(sub.submitter_id, sub.id);
+    if (placedSubmissionRoom.has(sub.id)) placedForSubmitter.push(sub.id);
+  }
+  for (const f of [...fixedPlacements].sort((a, b) => a.submission_id - b.submission_id)) {
+    placedForSubmitter.push(f.submission_id);
+  }
+  const submitterChoice = new Map<ID, ID>(); // user_id -> submission_id (their pick)
+  for (const subId of placedForSubmitter) {
+    const submitterId = placedSubmitterOf.get(subId)!;
+    if (!stars.has(submitterId)) continue; // not a conference member
+    if (submitterChoice.has(submitterId)) continue; // already picked
+    submitterChoice.set(submitterId, subId);
   }
   // Apply in user-id-asc order for stable output.
   for (const uid of userIds) {
@@ -279,9 +375,12 @@ export function assignUnconferenceSlot(input: AssignmentInput): AssignmentResult
 
     // Pick the candidate that:
     //  - has remaining capacity, AND
-    //  - has the lowest current load (most balanced choice),
-    //  - tie-broken by largest remaining capacity, then smallest id.
+    //  - has the highest priority (a starred high-priority session fills
+    //    before a lower-priority one — priority is the leading key), then
+    //  - within that priority tier, the lowest current load (most balanced
+    //    choice), tie-broken by largest remaining capacity, then smallest id.
     let best: ID | null = null;
+    let bestPriority = -Infinity;
     let bestLoad = Infinity;
     let bestRemaining = -1;
 
@@ -290,12 +389,16 @@ export function assignUnconferenceSlot(input: AssignmentInput): AssignmentResult
       const load = currentLoad.get(subId)!;
       const remaining = cap - load;
       if (remaining <= 0) continue;
+      const prio = submissionPriority.get(subId) ?? 0;
       if (
-        load < bestLoad ||
-        (load === bestLoad && remaining > bestRemaining) ||
-        (load === bestLoad && remaining === bestRemaining && (best === null || subId < best))
+        best === null ||
+        prio > bestPriority ||
+        (prio === bestPriority && load < bestLoad) ||
+        (prio === bestPriority && load === bestLoad && remaining > bestRemaining) ||
+        (prio === bestPriority && load === bestLoad && remaining === bestRemaining && subId < best)
       ) {
         best = subId;
+        bestPriority = prio;
         bestLoad = load;
         bestRemaining = remaining;
       }
@@ -317,7 +420,11 @@ export function assignUnconferenceSlot(input: AssignmentInput): AssignmentResult
   }
   unplaced.sort((a, b) => a - b);
 
+  // Only NEWLY computed placements are emitted — fixed placements already
+  // exist as `manual:true` rows; re-emitting them would make the caller
+  // recreate them as `manual:false` and collide on the unique keys.
   const placements = [...placedSubmissionRoom.entries()]
+    .filter(([submission_id]) => !fixedSubIds.has(submission_id))
     .map(([submission_id, room_id]) => ({
       slot_id: 0, // caller fills this in when persisting
       submission_id,

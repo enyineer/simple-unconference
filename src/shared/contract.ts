@@ -98,6 +98,7 @@ import {
   type ProfileOut,
   type ProfileSummaryOut,
   type PublicConfigOut,
+  type RefitRoomsResult,
   type RoomOut,
   type ScheduleSubmissionResult,
   type SubmissionCreated,
@@ -357,6 +358,13 @@ export const contract = {
     scheduleSubmission: oc
       .input(v.object({ slug: Slug, slot_id: Id, ...ScheduleSubmissionSchema.entries }))
       .output(type<ScheduleSubmissionResult>()),
+    // Reassign a PLANNED slot's rooms among its scheduled tracks by star count
+    // (biggest room → most-starred), honoring `preAssignedRoomId` pins and
+    // `roomRequirements`. All-or-nothing: an unmatchable track returns a
+    // conflict with no writes. See `RefitRoomsResult`.
+    refitRooms: oc
+      .input(v.object({ slug: Slug, slot_id: Id }))
+      .output(type<RefitRoomsResult>()),
     clearTrack: oc
       .input(v.object({ slug: Slug, slot_id: Id, room_id: Id }))
       .output(type<Ok>()),
@@ -384,9 +392,14 @@ export const contract = {
     unplaceSubmission: oc
       .input(v.object({ slug: Slug, slot_id: Id, submission_id: Id }))
       .output(type<Ok>()),
-    // Route attendees across the WHOLE agenda at once over the existing
-    // placements (writes only UserAssignment rows; never moves placements).
-    assignAll: oc.input(InConf).output(type<AssignAllResult>()),
+    // "Update seating": re-seat attendees over the existing placements. By
+    // default only STALE future unconference slots are re-seated (everything
+    // else stays frozen as a hard constraint); `include_unchanged: true` also
+    // re-seats unchanged future slots. Past/started slots are never re-seated.
+    // Writes only UserAssignment rows; never moves placements.
+    assignAll: oc
+      .input(v.object({ slug: Slug, include_unchanged: v.optional(v.boolean()) }))
+      .output(type<AssignAllResult>()),
     myAssignments: oc.input(InConf).output(type<MyAssignmentsOut>()),
     pickAssignment: oc
       .input(v.object({ slug: Slug, slot_id: Id, submission_id: Id }))

@@ -51,7 +51,14 @@ export interface SlotBlockProps {
    *  so each placement card can show an "also at HH:MM" recurrence hint.
    *  Forwarded straight to `UnconferenceBody`. */
   recurrenceTimes: Map<number, number[]>;
+  /** Conference identity count (mod-only; `null` for participants). Threaded
+   *  to `StaticBody` so a required planned track can warn when it overfills
+   *  its room — everyone attends required talks, so the room must seat all. */
+  participantCount: number | null;
   isMod: boolean;
+  /** The viewer's conference identity id — lets UnconferenceBody show
+   *  submitter-derived state ("you host this session") before seating runs. */
+  myIdentityId: number;
   timeZone: string;
   onChange: () => Promise<void>;
   onClose?: () => void;
@@ -73,7 +80,9 @@ export function SlotBlock({
   tracks,
   placements,
   recurrenceTimes,
+  participantCount,
   isMod,
+  myIdentityId,
   timeZone,
   onChange,
   onClose,
@@ -117,7 +126,7 @@ export function SlotBlock({
         : "No rooms in scope. Add rooms in the Rooms tab or include some via Configure.";
     }
     if (isUnconf && effectiveSubs.length === 0) {
-      return "No published, non-finished sessions in scope. Publish a session in the Sessions tab.";
+      return "No published, non-finished sessions in scope to place. Publish a session, or place one by hand below.";
     }
     return null;
   })();
@@ -170,9 +179,6 @@ export function SlotBlock({
       // Success — clear any stale conflict panel from a previous attempt.
       setConflicts(null);
       const noun = isMixer ? "attendee" : "participant";
-      const unmatched = isMixer
-        ? "they couldn't fit in a room (capacity)."
-        : "they need to pick another session.";
       // Build the overlap-exclusions footer when present. Mods see this so
       // they understand why some rooms/sessions/users were filtered out —
       // it's expected behavior, not a problem.
@@ -195,12 +201,32 @@ export function SlotBlock({
         exParts.length === 0
           ? ""
           : ` Excluded due to overlapping slots: ${exParts.join(", ")}.`;
-      if (r.unplaced_users.length === 0) {
-        toast.success("Assignment complete — everyone placed." + overlapNote);
-      } else {
-        toast.warning(
-          `${r.unplaced_users.length} ${noun}(s) could not be placed — ${unmatched}${overlapNote}`,
+      if (r.kind === "unconference") {
+        // Placement-only: this authors which session runs in which room and
+        // does NOT seat anyone. Seating is the separate "Update seating"
+        // action in the Assign panel — so nudge the mod there whenever this
+        // slot now has placements.
+        const n = r.placements.length;
+        const staleNote =
+          n > 0
+            ? " Seating not updated yet - use Update seating in the Assign panel."
+            : "";
+        toast.success(
+          `Placed ${n} session${n === 1 ? "" : "s"} into rooms.` +
+            overlapNote +
+            staleNote,
         );
+      } else {
+        // Mixers still seat attendees into rooms, so they keep unplaced
+        // messaging (unconference no longer seats here).
+        const unplacedCount = r.unplaced_users.length;
+        if (unplacedCount === 0) {
+          toast.success("Assignment complete — everyone placed." + overlapNote);
+        } else {
+          toast.warning(
+            `${unplacedCount} ${noun}(s) could not be placed — they couldn't fit in a room (capacity).${overlapNote}`,
+          );
+        }
       }
       await onChange();
     } catch (e) {
@@ -319,6 +345,32 @@ export function SlotBlock({
         {isAssignable && <AssignmentRulesTrigger isMod={isMod} />}
       </Stack>
 
+      {/* Staleness chip — this slot's placements changed since it was last
+          seated, so "Update seating" would re-seat it. Warning-toned, sits
+          under the meta row so it reads as a status on the slot. */}
+      {isUnconf && slot.seating_stale && placements.length > 0 && (
+        <span
+          title="This slot's placements changed since it was last seated. Run Update seating in the Assign panel to re-seat it."
+          style={{
+            alignSelf: "flex-start",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "2px 10px",
+            borderRadius: 999,
+            background:
+              "var(--bgColor-attention-muted, var(--uncon-bg-subtle, rgba(212,167,44,0.16)))",
+            color: "var(--fgColor-attention, var(--uncon-fg-muted, #9a6700))",
+            fontSize: 11,
+            fontWeight: 600,
+            textTransform: "uppercase",
+            letterSpacing: 0.4,
+          }}
+        >
+          ⚠ Seating out of date
+        </span>
+      )}
+
       {/* Action row — primary actions (Edit / Configure / Run) on the
           left, destructive / chrome (Delete / Close) right-aligned via a
           flex spacer so the row reads as two intentional clusters. */}
@@ -329,30 +381,13 @@ export function SlotBlock({
               {editing ? "Close edit" : "Edit"}
             </Button>
           )}
-          {isMod && isAssignable && (
-            <>
-              {/* Mixer slots configure rooms inline in MixerBody; no separate
-               * Configure panel needed. Unconference slots still have one for
-               * eligible submissions + avoid-repeats. */}
-              {!isMixer && (
-                <Button onClick={() => setConfiguring((v) => !v)} size="small">
-                  {configuring ? "Close configure" : "Configure"}
-                </Button>
-              )}
-              <Button
-                variant="default"
-                onClick={() => runAssignment()}
-                size="small"
-                disabled={runDisabledReason !== null}
-              >
-                {isMixer ? "Assign rooms" : "Auto-fill this slot from stars"}
-              </Button>
-              {runDisabledReason && (
-                <Text muted>
-                  <span title={runDisabledReason}>{runDisabledReason}</span>
-                </Text>
-              )}
-            </>
+          {/* Mixer slots configure rooms inline in MixerBody; no separate
+           * Configure panel needed. Unconference slots still have one for
+           * room + eligible-session scope. */}
+          {isMod && isAssignable && !isMixer && (
+            <Button onClick={() => setConfiguring((v) => !v)} size="small">
+              {configuring ? "Close configure" : "Configure"}
+            </Button>
           )}
           {isMod && (
             <Button onClick={() => setDuplicating(true)} size="small">
@@ -362,6 +397,16 @@ export function SlotBlock({
           {isMod && inSeries && (
             <Button onClick={detach} size="small">
               Detach offering
+            </Button>
+          )}
+          {isMod && isAssignable && (
+            <Button
+              variant="primary"
+              onClick={() => runAssignment()}
+              size="small"
+              disabled={runDisabledReason !== null}
+            >
+              {isMixer ? "Assign rooms" : "Place sessions from stars"}
             </Button>
           )}
           {/* Spacer pushes Delete / Close to the far right. */}
@@ -377,6 +422,13 @@ export function SlotBlock({
             </Button>
           )}
         </Stack>
+      )}
+      {/* The run button's disabled reason gets its own full-width line so it
+          never wraps the action row itself. */}
+      {isMod && isAssignable && runDisabledReason && (
+        <Text muted>
+          <span title={runDisabledReason}>{runDisabledReason}</span>
+        </Text>
       )}
 
       {isMod && duplicating && (
@@ -460,6 +512,7 @@ export function SlotBlock({
           timeZone={timeZone}
           onChange={onChange}
           isMod={isMod}
+          myIdentityId={myIdentityId}
         />
       )}
       {isMixer && (
@@ -478,6 +531,7 @@ export function SlotBlock({
           rooms={rooms}
           subs={subs}
           tracks={tracks}
+          participantCount={participantCount}
           isMod={isMod}
           onChange={onChange}
         />

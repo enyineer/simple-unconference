@@ -7,11 +7,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  Button, Card, Form, Heading, Link, PageLayout, Stack, Text, TextInput,
+  Banner, Button, Card, Form, Heading, Link, PageLayout, Stack, Text, TextInput,
 } from "../design-system";
 import { useToast } from "../design-system/hooks";
 import { api, errorCode, errorFields } from "../api";
 import { useForm } from "../useForm";
+import { useRoute } from "../router";
+import { Tip } from "../conference/ui/Tip";
 import {
   ConfLoginSchema, RequestPasswordResetSchema, safeParse,
 } from "../../shared/schemas";
@@ -37,6 +39,19 @@ export function ConferenceLoginPage({
   const [accountEmail, setAccountEmail] = useState<string | null>(null);
   const [linkable, setLinkable] = useState<boolean | null>(null);
   const [showPasswordLogin, setShowPasswordLogin] = useState(false);
+  // Inline notice shown above the login form for failures that need more than
+  // a toast: the email belongs to the owner's organizer account, an identity
+  // exists but was never claimed, or the typed password matched the visitor's
+  // organizer account password. `orgEmailHint` is the client-side
+  // (own-session-only) nudge when the typed email matches the signed-in
+  // organizer account after a plain wrong-password failure.
+  const [loginNotice, setLoginNotice] =
+    useState<"owner_use_main_login" | "invite_not_claimed" | "organizer_password_used" | null>(null);
+  const [orgEmailHint, setOrgEmailHint] = useState(false);
+  const { navigate } = useRoute();
+  // Carry the target conference through the main-page sign-in so the owner
+  // lands back here after authenticating. Validated as an internal path there.
+  const mainLoginHref = `/?next=/conferences/${slug}`;
 
   useEffect(() => {
     let cancelled = false;
@@ -120,13 +135,34 @@ export function ConferenceLoginPage({
     const r = safeParse(ConfLoginSchema, form.values);
     if (!r.ok) { form.setErrors(r.errors); return; }
     setBusy(true);
+    setLoginNotice(null);
+    setOrgEmailHint(false);
     try {
       await api.conferences.login({ slug, ...r.data });
       onLoggedIn();
     } catch (err) {
-      const fields = errorFields(err);
-      if (fields) form.setErrors(fields);
-      else toast.error(humanError(errorCode(err)));
+      const code = errorCode(err);
+      if (
+        code === "owner_use_main_login"
+        || code === "invite_not_claimed"
+        || code === "organizer_password_used"
+      ) {
+        setLoginNotice(code);
+      } else {
+        // A plain wrong-password failure where the typed email matches the
+        // organizer account already signed in on this browser gets an extra
+        // inline nudge. Uses only the visitor's own session — no enumeration.
+        if (
+          code === "invalid_credentials"
+          && accountEmail
+          && (r.data.email ?? "").trim().toLowerCase() === accountEmail.trim().toLowerCase()
+        ) {
+          setOrgEmailHint(true);
+        }
+        const fields = errorFields(err);
+        if (fields) form.setErrors(fields);
+        else toast.error(humanError(code));
+      }
     } finally {
       setBusy(false);
     }
@@ -182,12 +218,56 @@ export function ConferenceLoginPage({
               </Stack>
             </Stack>
           ) : (
-            <>
+            <Stack gap="normal">
               <Text muted>
                 {mode === "login"
-                  ? "Sign in with the email and password you set when you joined this conference."
+                  ? "Each conference has its own sign-in. Use the email and password you set when you joined this conference - not an organizer account password."
                   : "Enter the email you joined this conference with and we'll send you a link to choose a new password."}
               </Text>
+              {mode === "login" && loginNotice === "owner_use_main_login" && (
+                <Banner variant="warning">
+                  This email belongs to an organizer account. Organizer accounts
+                  sign in from the main page.
+                  <div style={{ marginTop: 12 }}>
+                    <Button variant="primary" onClick={() => navigate(mainLoginHref)}>
+                      Go to organizer sign-in
+                    </Button>
+                  </div>
+                </Banner>
+              )}
+              {mode === "login" && loginNotice === "invite_not_claimed" && (
+                <Banner variant="warning">
+                  You haven&apos;t set a password for this conference yet. Open your
+                  invite link to finish setting up - or ask an organizer for a new
+                  invite.
+                </Banner>
+              )}
+              {mode === "login" && loginNotice === "organizer_password_used" && (
+                <Banner variant="warning">
+                  That&apos;s your organizer account password - this conference has
+                  its own password.
+                  <div style={{
+                    marginTop: 12, display: "flex", flexWrap: "wrap",
+                    gap: 12, alignItems: "center",
+                  }}>
+                    <Button variant="primary" onClick={() => switchMode("forgot")}>
+                      Reset your conference password
+                    </Button>
+                    <Link href="#" onClick={(e) => { e.preventDefault(); navigate(mainLoginHref); }}>
+                      or sign in from the main page and add this conference to your
+                      organizer account
+                    </Link>
+                  </div>
+                </Banner>
+              )}
+              {mode === "login" && orgEmailHint && (
+                <Banner variant="info">
+                  You&apos;re signed in to an organizer account with this email, but
+                  this conference has its own password - the one you set when you
+                  joined. You can also add this conference to your organizer account
+                  from your dashboard.
+                </Banner>
+              )}
               <Form onSubmit={submit}>
                 <TextInput
                   label="Email" type="email" required
@@ -225,14 +305,17 @@ export function ConferenceLoginPage({
                 </Stack>
               </Form>
               {mode === "login" && (
-                <Text muted>
-                  Run this conference yourself?{" "}
-                  <Link href="#" onClick={(e) => { e.preventDefault(); onCancel(); }}>
-                    Sign in from the main page
+                <Tip>
+                  Organizing this conference?{" "}
+                  <Link
+                    href="#"
+                    onClick={(e) => { e.preventDefault(); navigate(mainLoginHref); }}
+                  >
+                    Organizer accounts sign in from the main page.
                   </Link>
-                </Text>
+                </Tip>
               )}
-            </>
+            </Stack>
           )}
         </Card>
       </Stack>
@@ -242,7 +325,7 @@ export function ConferenceLoginPage({
 
 function humanError(code: string): string {
   return ({
-    invalid_credentials: "Wrong email or password.",
+    invalid_credentials: "That's not the password for this conference. This conference has its own password, separate from any organizer account - if you've forgotten it, use \"Forgot password?\" below.",
     conference_not_found: "We couldn't find that conference.",
     captcha_required: "Please complete the verification challenge.",
     captcha_failed: "Verification failed. Refresh and try again.",

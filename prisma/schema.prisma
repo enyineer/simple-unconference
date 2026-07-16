@@ -283,6 +283,12 @@ enum SubmissionStatus {
   rejected
 }
 
+enum SubmissionPriority {
+  low
+  normal
+  high
+}
+
 model Submission {
   id           Int              @id @default(autoincrement())
   conferenceId Int              @map("conference_id")
@@ -318,6 +324,8 @@ model Submission {
   // an overlapping slot. Mods flip this on for sessions designed to run
   // multiple times in parallel (e.g. a recurring workshop).
   allowOverlappingPlacements Boolean @default(false) @map("allow_overlapping_placements")
+  // Moderator-only: assignment fill priority. high = place & fill first, low = last.
+  priority SubmissionPriority @default(normal)
   createdAt    DateTime         @default(now()) @map("created_at")
 
   conference          Conference              @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
@@ -456,6 +464,9 @@ model AgendaSlot {
   // placements measure actual room-time used, not unique content. Mod UI
   // must surface this clearly.
   seriesId Int? @map("series_id")
+
+  // Unconference placements changed since this slot's last seating run.
+  seatingStale Boolean @default(false) @map("seating_stale")
 
   conference              Conference              @relation(fields: [conferenceId], references: [id], onDelete: Cascade)
   series                  SlotSeries?             @relation(fields: [seriesId], references: [id], onDelete: SetNull)
@@ -805,7 +816,7 @@ model Notification {
   // Known kinds: "submission_published", "submission_rejected",
   // "submission_received" (mod-side), "unconf_assigned", "mixer_assigned",
   // "expert_booked", "expert_booking_cancelled", "chat_message", "chat_report",
-  // "chat_warning".
+  // "chat_warning", "schedule_changed".
   kind       String
   title      String
   body       String?

@@ -63,6 +63,7 @@ function toSubmissionOut(
     manually_finished: s.manuallyFinished,
     pre_assigned_room_id: s.preAssignedRoomId,
     allow_overlapping_placements: s.allowOverlappingPlacements,
+    priority: s.priority,
     placement_count: placementCount,
     is_finished,
     scheduled_in: s.trackAssignments.map((t) => ({
@@ -205,7 +206,7 @@ export const submissionsRouter = {
     // render them anyway; we double-enforce role here).
     const modData: Pick<
       Prisma.SubmissionUncheckedCreateInput,
-      "maxPlacements" | "manuallyFinished" | "allowOverlappingPlacements" | "preAssignedRoomId"
+      "maxPlacements" | "manuallyFinished" | "allowOverlappingPlacements" | "preAssignedRoomId" | "priority"
     > = {};
     let submitterId = actorIdentityId(context);
     if (isMod) {
@@ -217,6 +218,9 @@ export const submissionsRouter = {
       }
       if (input.allow_overlapping_placements !== undefined) {
         modData.allowOverlappingPlacements = input.allow_overlapping_placements;
+      }
+      if (input.priority !== undefined) {
+        modData.priority = input.priority;
       }
       if (input.pre_assigned_room_id !== undefined && input.pre_assigned_room_id !== null) {
         const room = await context.prisma.room.findFirst({
@@ -329,6 +333,9 @@ export const submissionsRouter = {
       if (input.allow_overlapping_placements !== undefined) {
         modPatch.allowOverlappingPlacements = input.allow_overlapping_placements;
       }
+      if (input.priority !== undefined) {
+        modPatch.priority = input.priority;
+      }
       if (input.submitter_id !== undefined) {
         // Validate the identity belongs to this conference. The picker
         // only offers in-conference identities, so a mismatch is a
@@ -397,11 +404,29 @@ export const submissionsRouter = {
         throw new ORPCError("CONFLICT", { message: "already_decided" });
       }
     }
+    // Any unconference slot this submission is placed in loses that placement
+    // (UnconferencePlacement.submission cascades) → those slots need a re-seat.
+    // Flag them stale before the delete. UserAssignment.submissionId is
+    // onDelete: SetNull, so seats for this session would otherwise dangle with
+    // a null submission — delete them explicitly.
+    const placements = await context.prisma.unconferencePlacement.findMany({
+      where: { submissionId: input.id, slot: { conferenceId: context.conferenceId } },
+      select: { slotId: true },
+    });
+    const staleSlotIds = [...new Set(placements.map((p) => p.slotId))];
     // FK cascades handle stars / tags / requirements / slot memberships /
-    // placements / user assignments. TrackAssignment.submissionId is nullable
-    // with onDelete: SetNull, so any static track linked to this submission
-    // keeps its row (the mod can re-pick a submission for it).
-    await context.prisma.submission.delete({ where: { id: input.id } });
+    // placements. TrackAssignment.submissionId is nullable with onDelete:
+    // SetNull, so any static track linked to this submission keeps its row (the
+    // mod can re-pick a submission for it).
+    await context.prisma.$transaction([
+      context.prisma.userAssignment.deleteMany({
+        where: { submissionId: input.id, slot: { conferenceId: context.conferenceId } },
+      }),
+      context.prisma.agendaSlot.updateMany({
+        where: { id: { in: staleSlotIds } }, data: { seatingStale: true },
+      }),
+      context.prisma.submission.delete({ where: { id: input.id } }),
+    ]);
     return { ok: true as const };
   }),
 

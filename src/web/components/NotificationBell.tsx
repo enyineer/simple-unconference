@@ -23,7 +23,8 @@ type NotificationKind =
   | "quota_threshold"
   | "chat_message"
   | "chat_report"
-  | "chat_warning";
+  | "chat_warning"
+  | "schedule_changed";
 
 interface NotificationItem {
   id: number;
@@ -442,6 +443,7 @@ function KindIcon({ kind }: { kind: NotificationKind }) {
     chat_message: "var(--bgColor-accent-muted, rgba(64,132,246,0.16))",
     chat_report: "var(--bgColor-attention-muted, rgba(187,128,9,0.16))",
     chat_warning: "var(--bgColor-danger-muted, rgba(207,34,46,0.14))",
+    schedule_changed: "var(--bgColor-accent-muted, rgba(64,132,246,0.16))",
   };
   const fgByKind: Record<NotificationKind, string> = {
     submission_published: "var(--fgColor-success, #1f883d)",
@@ -455,6 +457,7 @@ function KindIcon({ kind }: { kind: NotificationKind }) {
     chat_message: "var(--fgColor-accent, #2563eb)",
     chat_report: "var(--fgColor-attention, #9a6700)",
     chat_warning: "var(--fgColor-danger, #cf222e)",
+    schedule_changed: "var(--fgColor-accent, #2563eb)",
   };
   const glyph: Record<NotificationKind, string> = {
     submission_published: "✓",
@@ -468,6 +471,7 @@ function KindIcon({ kind }: { kind: NotificationKind }) {
     chat_message: "✉",
     chat_report: "⚑",
     chat_warning: "!",
+    schedule_changed: "→",
   };
   return (
     <span

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  Badge, Button, Form, Heading, Sheet, Spinner, Stack, TextInput, Textarea, Text,
+  Badge, Button, Form, Heading, Link, Sheet, Spinner, Stack, TextInput, Textarea, Text,
 } from "../../design-system";
 import { useToast } from "../../design-system/hooks";
 import { api, errorCode } from "../../api";
@@ -142,6 +142,20 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
           </Button>
         )}
       </Stack>
+
+      {isMod && (
+        <Tip>
+          {isOwner ? (
+            <>
+              Don&apos;t want to invite everyone manually? Enable the join link in{" "}
+              <Link href={`#/conferences/${encodeURIComponent(slug)}/settings`}>Settings</Link>
+              {" "}- a shared URL anyone can use to sign up themselves.
+            </>
+          ) : (
+            "The conference owner can enable a join link in Settings - a shared URL people use to sign up without manual invites."
+          )}
+        </Tip>
+      )}
 
       <Sheet open={inviteSheetOpen} onClose={() => setInviteSheetOpen(false)} title="Invite people">
         <Tip>

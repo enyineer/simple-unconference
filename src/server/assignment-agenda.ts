@@ -25,8 +25,9 @@
 //     into one band),
 //   - fixed (manual) picks and submitter-as-host placements are pre-pinned.
 //
-// Optimized objective: maximize starred-occurrence attendance, then balance
-// the load across occurrences of the same submission. Modeled as an integer
+// Optimized objective: maximize starred-occurrence attendance (biasing a
+// user's higher-priority starred sessions to fill first), then balance the
+// load across occurrences of the same submission. Modeled as an integer
 // min-cost flow; deterministic (all collections canonicalized by id, all
 // tie-breaks lexicographic) so re-running identical inputs is byte-identical.
 //
@@ -57,6 +58,14 @@ export interface AgendaOccurrence {
    * bands. Two occurrences in the SAME slot share that slot's band.
    */
   band_id: ID;
+  /**
+   * Priority weight (+1 high / 0 normal / -1 low; see `priorityWeight` in
+   * assignment.ts). Higher-priority occurrences attract flow so a user's
+   * higher-priority starred sessions fill first and low-priority ones fill
+   * last — only among sessions the user already starred, never overriding
+   * capacity, pins, or submitter-host. Defaults to 0 (normal).
+   */
+  priority?: number;
 }
 
 export interface AgendaAssignmentInput {
@@ -111,10 +120,18 @@ export interface AgendaAssignmentResult {
 //   optimizer prefer giving many users their FIRST session over giving one
 //   user several — i.e. coverage/fairness, and the cross-slot "lookahead"
 //   (a scarce session goes to the user who has no later alternative).
+// - PRIORITY_BONUS: a starred occurrence's reward is nudged by
+//   PRIORITY_BONUS·priority, so among a user's OWN starred options the
+//   optimizer fills higher-priority sessions first and low-priority ones last.
+//   Sized to exceed the largest realistic seat-cost delta (SEAT_STEP × room
+//   capacity) but stay well under USER_DIMINISH, so priority only ever steers
+//   a user between their starred sessions — it never costs another user their
+//   first session.
 // - SEAT_STEP: the k-th seat of an occurrence costs k·SEAT_STEP, so equal
 //   demand splits evenly across occurrences of the same submission.
 const ATTEND_REWARD = 1_000_000_000;
 const USER_DIMINISH = 1_000_000;
+const PRIORITY_BONUS = 100_000;
 const SEAT_STEP = 1;
 
 // ---------------------------------------------------------------------------
@@ -355,6 +372,9 @@ export function assignAgenda(input: AgendaAssignmentInput): AgendaAssignmentResu
       for (const sid of set) starCount.set(sid, (starCount.get(sid) ?? 0) + 1);
     }
     const hostOrder = [...occurrences].sort((a, b) => {
+      const pa = a.priority ?? 0;
+      const pb = b.priority ?? 0;
+      if (pb !== pa) return pb - pa;
       const sa = starCount.get(a.submission_id) ?? 0;
       const sb = starCount.get(b.submission_id) ?? 0;
       if (sb !== sa) return sb - sa;
@@ -436,7 +456,10 @@ export function assignAgenda(input: AgendaAssignmentInput): AgendaAssignmentResu
         for (const band of bandsForSub) flow.addEdge(usNode, bandNode(band).inNode, 1, 0);
         for (const o of occs) {
           const outNode = bandNode(o.band_id).outNode;
-          const idx = flow.addEdge(outNode, occNode.get(o.id)!, 1, -ATTEND_REWARD);
+          const idx = flow.addEdge(
+            outNode, occNode.get(o.id)!, 1,
+            -(ATTEND_REWARD + PRIORITY_BONUS * (o.priority ?? 0)),
+          );
           rewardEdges.push({ uid, occ: o, tail: outNode, idx });
         }
       }

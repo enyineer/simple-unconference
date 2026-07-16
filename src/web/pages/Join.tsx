@@ -14,6 +14,7 @@ import {
 import { useToast } from "../design-system/hooks";
 import { api, errorCode, errorFields } from "../api";
 import { useForm } from "../useForm";
+import { useRoute } from "../router";
 import { InviteClaimSchema, SignupViaLinkSchema, safeParse } from "../../shared/schemas";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "../components/TurnstileWidget";
 import { quotaErrorMessage } from "../quotaErrors";
@@ -40,11 +41,50 @@ export function JoinPage({
   onCancel: () => void;
 }) {
   const token = readToken();
+  const { navigate } = useRoute();
   const [mode, setMode] = useState<Mode>(() =>
     token ? { kind: "loading" } : { kind: "error", reason: "missing_token" },
   );
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+  // True once we've found an existing per-conference session and are bouncing
+  // straight into the conference — avoids flashing the signup form.
+  const [redirecting, setRedirecting] = useState(false);
+  // Set when the server rejects a signup because the email already has an
+  // identity in this conference — rendered inline with a sign-in link instead
+  // of a dead-end toast.
+  const [emailExists, setEmailExists] = useState(false);
+  // The organizer account signed in on this browser, if any. The server
+  // auto-links a newly created conference identity to it when the emails match
+  // and the organizer email is verified, so we surface that upfront.
+  const [organizer, setOrganizer] = useState<{ email: string; email_verified: boolean } | null>(null);
+
+  // Note whether an organizer account is signed in (own session only). Any
+  // failure just means "not signed in" — no auto-link note then.
+  useEffect(() => {
+    let cancelled = false;
+    api.auth.me()
+      .then((me) => {
+        if (!cancelled) setOrganizer({ email: me.email, email_verified: me.email_verified });
+      })
+      .catch(() => { /* not signed in as an organizer */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Already signed in to this conference? Skip the form and go straight in.
+  // Errors (no session, expired cookie) just fall through to the normal flow.
+  useEffect(() => {
+    let cancelled = false;
+    api.conferences.me({ slug })
+      .then(() => {
+        if (cancelled) return;
+        setRedirecting(true);
+        onJoined();
+      })
+      .catch(() => { /* not signed in for this conference; show the form */ });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug]);
   // Only required for the join_link flow (open-link signup). Invite claims
   // are gated by the invite token itself, so we leave them un-Turnstile'd
   // to avoid friction-blocking legitimate invitees.
@@ -97,6 +137,7 @@ export function JoinPage({
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!token) return;
+    setEmailExists(false);
 
     // Read straight from the widget at submit time — avoids any race between
     // Cloudflare's callback and React state.
@@ -121,9 +162,11 @@ export function JoinPage({
         await api.conferences.claimInvite({ slug, ...r.data });
         onJoined();
       } catch (err) {
+        const code = errorCode(err);
         const fields = errorFields(err);
         if (fields) form.setErrors(fields);
-        else toast.error(quotaErrorMessage(err) ?? humanError(errorCode(err)));
+        else if (code === "email_already_in_conference") setEmailExists(true);
+        else toast.error(quotaErrorMessage(err) ?? humanError(code));
         turnstileRef.current?.reset();
       } finally { setBusy(false); }
       return;
@@ -144,14 +187,20 @@ export function JoinPage({
         await api.conferences.signupViaLink({ slug, ...r.data });
         onJoined();
       } catch (err) {
+        const code = errorCode(err);
         const fields = errorFields(err);
         if (fields) form.setErrors(fields);
-        else toast.error(quotaErrorMessage(err) ?? humanError(errorCode(err)));
+        else if (code === "email_already_in_conference") setEmailExists(true);
+        else toast.error(quotaErrorMessage(err) ?? humanError(code));
         // Turnstile tokens are single-use; reset so the widget mints a fresh
         // one for the retry.
         turnstileRef.current?.reset();
       } finally { setBusy(false); }
     }
+  }
+
+  if (redirecting) {
+    return <PageLayout><Spinner label="Opening conference…" /></PageLayout>;
   }
 
   if (mode.kind === "loading") {
@@ -180,6 +229,9 @@ export function JoinPage({
   const title = isInvite
     ? `Join ${mode.conferenceName}`
     : "Join conference";
+  // Which email the new identity will use: the locked invite email, or the
+  // live typed value in join-link mode. Drives the auto-link note.
+  const relevantEmail = mode.kind === "invite" ? mode.email : (form.values.email ?? "");
 
   return (
     <PageLayout>
@@ -187,55 +239,97 @@ export function JoinPage({
         <Heading level={1}>{title}</Heading>
 
         <Card title={isInvite ? "Claim your invite" : "Create your account"}>
-          {isInvite && (
-            <Text muted>
-              You were invited as <strong>{mode.email}</strong>. Pick a password to claim it.
-            </Text>
-          )}
-          {!isInvite && (
-            <Text muted>
-              Your identity is scoped to this conference only. It won&apos;t be visible in any other.
-            </Text>
-          )}
-          <Form onSubmit={submit}>
-            <TextInput
-              label="Email"
-              type="email"
-              required
-              disabled={isInvite}
-              value={form.values.email ?? ""}
-              onChange={(e) => form.setValue("email", e.target.value)}
-              error={form.fieldError("email")}
-            />
-            <TextInput
-              label="Name (optional)"
-              value={form.values.name ?? ""}
-              onChange={(e) => form.setValue("name", e.target.value)}
-              error={form.fieldError("name")}
-            />
-            <TextInput
-              label="Password"
-              type="password"
-              required
-              value={form.values.password ?? ""}
-              onChange={(e) => form.setValue("password", e.target.value)}
-              error={form.fieldError("password")}
-            />
-            {turnstileSiteKey !== null && (
-              <TurnstileWidget
-                ref={turnstileRef}
-                siteKey={turnstileSiteKey}
-              />
+          <Stack gap="normal">
+            {isInvite && (
+              <Text muted>
+                You were invited as <strong>{mode.email}</strong>. Pick a password to claim it.
+              </Text>
             )}
-            <Stack direction="row" gap="condensed" align="center">
-              <Button type="submit" variant="primary" disabled={busy}>
-                {isInvite ? "Join conference" : "Sign up"}
-              </Button>
-              <Link href="#" onClick={(e) => { e.preventDefault(); onCancel(); }}>
-                Cancel
-              </Link>
-            </Stack>
-          </Form>
+            {!isInvite && (
+              <Text muted>
+                This creates a new sign-in for this conference only, separate from
+                any organizer account. It won&apos;t be visible in any other conference.
+              </Text>
+            )}
+            {emailExists && (
+              <Banner variant="warning">
+                An account with that email already exists in this conference.{" "}
+                <Link
+                  href="#"
+                  onClick={(e) => { e.preventDefault(); navigate(`/c/${slug}/login`); }}
+                >
+                  Sign in to this conference
+                </Link>
+                .
+              </Banner>
+            )}
+            <Form onSubmit={submit}>
+              <TextInput
+                label="Email"
+                type="email"
+                required
+                disabled={isInvite}
+                value={form.values.email ?? ""}
+                onChange={(e) => form.setValue("email", e.target.value)}
+                error={form.fieldError("email")}
+              />
+              <TextInput
+                label="Name (optional)"
+                value={form.values.name ?? ""}
+                onChange={(e) => form.setValue("name", e.target.value)}
+                error={form.fieldError("name")}
+              />
+              <TextInput
+                label="Password"
+                type="password"
+                required
+                value={form.values.password ?? ""}
+                onChange={(e) => form.setValue("password", e.target.value)}
+                error={form.fieldError("password")}
+              />
+              {turnstileSiteKey !== null && (
+                <TurnstileWidget
+                  ref={turnstileRef}
+                  siteKey={turnstileSiteKey}
+                />
+              )}
+              <Stack direction="row" gap="condensed" align="center">
+                <Button type="submit" variant="primary" disabled={busy}>
+                  {isInvite ? "Join conference" : "Sign up"}
+                </Button>
+                <Link href="#" onClick={(e) => { e.preventDefault(); onCancel(); }}>
+                  Cancel
+                </Link>
+              </Stack>
+            </Form>
+            {organizer?.email_verified
+              && relevantEmail.trim().length > 0
+              && relevantEmail.trim().toLowerCase() === organizer.email.trim().toLowerCase() && (
+              <Text muted>
+                This conference will be added to your organizer account (signed in
+                as <strong>{organizer.email}</strong>).
+              </Text>
+            )}
+            {!isInvite && (
+              <Text muted>
+                Already joined?{" "}
+                <Link
+                  href="#"
+                  onClick={(e) => { e.preventDefault(); navigate(`/c/${slug}/login`); }}
+                >
+                  Sign in
+                </Link>
+                . Organizing this conference?{" "}
+                <Link
+                  href="#"
+                  onClick={(e) => { e.preventDefault(); navigate(`/?next=/conferences/${slug}`); }}
+                >
+                  Sign in from the main page
+                </Link>
+                .
+              </Text>
+            )}
+          </Stack>
         </Card>
       </Stack>
     </PageLayout>

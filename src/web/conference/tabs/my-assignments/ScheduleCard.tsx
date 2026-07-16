@@ -107,7 +107,7 @@ export function ScheduleCard({
           {isSubmitter && <Pill variant="success">you&apos;re speaking</Pill>}
           {showCapacityWarning && (
             <Pill variant="attention">
-              room may be crowded ({expectedAttendance}/{roomCapacity})
+              room may be crowded ({expectedAttendance}/{roomCapacity}) - arrive early
             </Pill>
           )}
           {conflicts.length > 0 && (

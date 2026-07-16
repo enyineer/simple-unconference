@@ -65,6 +65,12 @@ export function SessionForm(props: SessionFormProps) {
   const [allowOverlap, setAllowOverlap] = useState(
     existing?.allow_overlapping_placements ?? false,
   );
+  // Mod-only assignment fill priority. Drives whether the assignment
+  // algorithm places and fills this session ahead of (high) or behind (low)
+  // its star ranking. Defaults to "normal".
+  const [priority, setPriority] = useState<"low" | "normal" | "high">(
+    existing?.priority ?? "normal",
+  );
   // Pre-assigned room. "" means "auto" (no pin); otherwise the room id as a
   // string (matches SearchableSelect's value type).
   const [preAssignedRoomId, setPreAssignedRoomId] = useState<string>(
@@ -94,6 +100,7 @@ export function SessionForm(props: SessionFormProps) {
         manually_finished?: boolean;
         pre_assigned_room_id?: number | null;
         allow_overlapping_placements?: boolean;
+        priority?: "low" | "normal" | "high";
         submitter_id?: number;
       } = {};
       if (isMod) {
@@ -112,6 +119,7 @@ export function SessionForm(props: SessionFormProps) {
         modFields.max_placements = next;
         modFields.manually_finished = manuallyFinished;
         modFields.allow_overlapping_placements = allowOverlap;
+        modFields.priority = priority;
         modFields.pre_assigned_room_id =
           preAssignedRoomId === ""
             ? null
@@ -295,6 +303,27 @@ export function SessionForm(props: SessionFormProps) {
                 onChange={(e) => setCapValue(e.target.value)}
               />
             )}
+            <Select
+              label="Assignment priority"
+              value={priority}
+              onChange={(e) =>
+                setPriority(e.target.value as "low" | "normal" | "high")
+              }
+              options={[
+                { value: "normal", label: "Normal" },
+                { value: "high", label: "High - place and fill first" },
+                { value: "low", label: "Low - place and fill last" },
+              ]}
+            />
+            <div
+              style={{
+                fontSize: 12,
+                color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
+              }}
+            >
+              High-priority sessions get a room and are filled with attendees
+              ahead of star count; low-priority ones are placed and filled last.
+            </div>
             <CheckboxField
               checked={manuallyFinished}
               onChange={setManuallyFinished}

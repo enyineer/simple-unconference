@@ -171,7 +171,7 @@ export function ConferencePage({
             }}
           />
         )}
-        {tab === "agenda"   && <AgendaTab slug={slug} isMod={isMod} timeZone={conf.timezone} mixerAvoidRepeatsDefault={conf.mixer_avoid_repeats_default} />}
+        {tab === "agenda"   && <AgendaTab slug={slug} isMod={isMod} timeZone={conf.timezone} mixerAvoidRepeatsDefault={conf.mixer_avoid_repeats_default} myIdentityId={confMe.id} />}
         {tab === "experts"  && <ExpertsTab slug={slug} role={conf.my_role} timeZone={conf.timezone} />}
         {tab === "directory" && (
           <DirectoryTab

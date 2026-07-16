@@ -118,9 +118,22 @@ export const roomsRouter = {
   }),
 
   delete: requireConf("moderator").rooms.delete.handler(async ({ input, context }) => {
-    await context.prisma.room.deleteMany({
-      where: { id: input.id, conferenceId: context.conferenceId },
+    // Any unconference slot that placed a session in this room loses that
+    // placement (UnconferencePlacement.room cascades on delete) → those slots
+    // need a re-seat. Flag them stale before removing the room.
+    const placements = await context.prisma.unconferencePlacement.findMany({
+      where: { roomId: input.id, slot: { conferenceId: context.conferenceId, type: "unconference" } },
+      select: { slotId: true },
     });
+    const staleSlotIds = [...new Set(placements.map((p) => p.slotId))];
+    await context.prisma.$transaction([
+      context.prisma.agendaSlot.updateMany({
+        where: { id: { in: staleSlotIds } }, data: { seatingStale: true },
+      }),
+      context.prisma.room.deleteMany({
+        where: { id: input.id, conferenceId: context.conferenceId },
+      }),
+    ]);
     return { ok: true as const };
   }),
 };

@@ -7,18 +7,21 @@ import {
 // Most existing tests don't care about the submitter-as-host rule, so default
 // each submission's submitter to a synthetic id that's not in the stars map.
 // Tests that care about that rule pass `submitter_id` explicitly.
-function withSubmitters(subs: { id: number; submitter_id?: number }[]): AssignmentSubmission[] {
-  return subs.map((s) => ({ id: s.id, submitter_id: s.submitter_id ?? 9999 }));
+function withSubmitters(
+  subs: { id: number; submitter_id?: number; priority?: number }[],
+): AssignmentSubmission[] {
+  return subs.map((s) => ({ id: s.id, submitter_id: s.submitter_id ?? 9999, priority: s.priority }));
 }
 
 function input(parts: {
   rooms?: AssignmentInput["rooms"];
-  submissions?: { id: number; submitter_id?: number }[];
+  submissions?: { id: number; submitter_id?: number; priority?: number }[];
   stars?: AssignmentInput["stars"];
   priorAssignments?: AssignmentInput["priorAssignments"];
   avoidRepeats?: boolean;
   fixedAssignments?: AssignmentInput["fixedAssignments"];
   preAssignments?: AssignmentInput["preAssignments"];
+  fixedPlacements?: AssignmentInput["fixedPlacements"];
 }): AssignmentInput {
   return {
     rooms: parts.rooms ?? [],
@@ -28,6 +31,7 @@ function input(parts: {
     avoidRepeats: parts.avoidRepeats,
     fixedAssignments: parts.fixedAssignments,
     preAssignments: parts.preAssignments,
+    fixedPlacements: parts.fixedPlacements,
   };
 }
 
@@ -1128,6 +1132,106 @@ describe("pairKey", () => {
   });
 });
 
+describe("assignUnconferenceSlot — session priority", () => {
+  test("high-priority low-star session wins the room over a higher-star normal one", () => {
+    // One room, two subs. 100 has more stars but 200 is high priority — the
+    // top-N cut ranks priority first, so 200 takes the only room.
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 10 }],
+      submissions: [{ id: 100, priority: 0 }, { id: 200, priority: 1 }],
+      stars: new Map([
+        [1, new Set([100])],
+        [2, new Set([100])],
+        [3, new Set([100])],
+        [4, new Set([200])],
+      ]),
+    }));
+    expect(result.placements).toHaveLength(1);
+    expect(result.placements[0]!.submission_id).toBe(200);
+  });
+
+  test("user starring two placed sessions is routed to the high-priority one even when it's more loaded", () => {
+    // 100 (high) and 200 (normal) both placed with room. Users 1-3 star only
+    // 100 and are processed first (single candidate), loading it to 3. User 4
+    // stars both; despite 100 carrying more load, priority wins → user 4 → 100.
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 10 }, { id: 2, capacity: 10 }],
+      submissions: [{ id: 100, priority: 1 }, { id: 200, priority: 0 }],
+      stars: new Map([
+        [1, new Set([100])],
+        [2, new Set([100])],
+        [3, new Set([100])],
+        [4, new Set([100, 200])],
+      ]),
+    }));
+    const findAssign = (u: number) =>
+      result.user_assignments.find((a) => a.user_id === u)?.submission_id;
+    expect(findAssign(4)).toBe(100);
+  });
+
+  test("low-priority fills last — users with both options go to the higher-priority session first", () => {
+    // 100 (low) and 200 (normal) both placed, ample capacity. Every user
+    // stars both; priority beats even-split, so all land in 200 and 100 stays
+    // empty until 200 is full.
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 10 }, { id: 2, capacity: 10 }],
+      submissions: [{ id: 100, priority: -1 }, { id: 200, priority: 0 }],
+      stars: new Map(
+        Array.from({ length: 4 }, (_, i) => [i + 1, new Set([100, 200])] as const),
+      ),
+    }));
+    const counts = new Map<number, number>();
+    for (const a of result.user_assignments) {
+      counts.set(a.submission_id, (counts.get(a.submission_id) ?? 0) + 1);
+    }
+    expect(counts.get(200)).toBe(4);
+    expect(counts.get(100) ?? 0).toBe(0);
+  });
+
+  test("equal priorities preserve the existing even split", () => {
+    // Both high priority + equal stars → routing falls back to the balanced
+    // even split (5/5), identical to the no-priority behavior.
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 100 }, { id: 2, capacity: 100 }],
+      submissions: [{ id: 100, priority: 1 }, { id: 200, priority: 1 }],
+      stars: new Map(
+        Array.from({ length: 10 }, (_, i) => [i + 1, new Set([100, 200])] as const),
+      ),
+    }));
+    const counts = new Map<number, number>();
+    for (const a of result.user_assignments) {
+      counts.set(a.submission_id, (counts.get(a.submission_id) ?? 0) + 1);
+    }
+    expect(counts.get(100)).toBe(5);
+    expect(counts.get(200)).toBe(5);
+    expect(result.unplaced_users).toEqual([]);
+  });
+
+  test("priority never overrides a manual pick and never exceeds capacity", () => {
+    // 100 is high priority but capacity 1; 200 is normal, capacity 5. User 1
+    // manually picked 200 — the high-priority 100 must not steal them. Users 2
+    // and 3 only star 100; capacity 1 means exactly one is seated, the other
+    // spills (priority doesn't conjure a second seat).
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 1 }, { id: 2, capacity: 5 }],
+      submissions: [{ id: 100, priority: 1 }, { id: 200, priority: 0 }],
+      stars: new Map([
+        [1, new Set([100, 200])],
+        [2, new Set([100])],
+        [3, new Set([100])],
+      ]),
+      preAssignments: new Map([[100, 1], [200, 2]]),
+      fixedAssignments: new Map([[1, 200]]),
+    }));
+    const findAssign = (u: number) =>
+      result.user_assignments.find((a) => a.user_id === u)?.submission_id;
+    expect(findAssign(1)).toBe(200); // manual pick honored despite 100 being high priority
+    const onto100 = result.user_assignments.filter((a) => a.submission_id === 100);
+    expect(onto100).toHaveLength(1); // capacity 1 respected
+    expect(result.unplaced_users).toEqual([3]); // second 100-only starrer spills
+  });
+});
+
 describe("assignUnconferenceSlot — pre-assignments", () => {
   test("pre-assigned submission gets its pinned room regardless of star count", () => {
     // Submission 100 has more stars but submission 200 is pinned to room 1
@@ -1247,5 +1351,160 @@ describe("assignUnconferenceSlot — pre-assignments", () => {
     expect(result.user_assignments).toContainEqual(
       expect.objectContaining({ user_id: 9, submission_id: 200 }),
     );
+  });
+});
+
+describe("assignUnconferenceSlot — fixed placements", () => {
+  test("all-manual: starrers seated into fixed sessions; no new placements", () => {
+    // No rooms, no eligible submissions — the whole slot is moderator-authored.
+    // Attendees still get routed into the fixed sessions by their stars.
+    const result = assignUnconferenceSlot(input({
+      rooms: [],
+      submissions: [],
+      stars: new Map([
+        [1, new Set([100])],
+        [2, new Set([100])],
+        [3, new Set([200])],
+      ]),
+      fixedPlacements: [
+        { submission_id: 100, room_id: 10, capacity: 5, submitter_id: 9999 },
+        { submission_id: 200, room_id: 20, capacity: 5, submitter_id: 9999 },
+      ],
+    }));
+
+    // Fixed placements already exist as rows — the algorithm never re-emits them.
+    expect(result.placements).toEqual([]);
+    const findAssign = (u: number) =>
+      result.user_assignments.find((a) => a.user_id === u)?.submission_id;
+    expect(findAssign(1)).toBe(100);
+    expect(findAssign(2)).toBe(100);
+    expect(findAssign(3)).toBe(200);
+    expect(result.unplaced_users).toEqual([]);
+  });
+
+  test("all-manual: fixed placement capacity is respected", () => {
+    const result = assignUnconferenceSlot(input({
+      rooms: [],
+      submissions: [],
+      stars: new Map([
+        [1, new Set([100])],
+        [2, new Set([100])],
+      ]),
+      fixedPlacements: [
+        { submission_id: 100, room_id: 10, capacity: 1, submitter_id: 9999 },
+      ],
+    }));
+
+    expect(result.placements).toEqual([]);
+    expect(result.user_assignments.filter((a) => a.submission_id === 100)).toHaveLength(1);
+    expect(result.user_assignments.find((a) => a.user_id === 1)?.submission_id).toBe(100);
+    expect(result.unplaced_users).toEqual([2]);
+  });
+
+  test("mixed: fixed rooms/sessions excluded from Phase A; output excludes fixed", () => {
+    // Room 2 (capacity 50) is held by a fixed placement. If Phase A could see
+    // it, the eligible session 300 would take it (largest room); asserting it
+    // lands in room 1 proves the fixed room is reserved out of the pool.
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 5 }, { id: 2, capacity: 50 }],
+      submissions: [{ id: 300 }],
+      stars: new Map([
+        [1, new Set([100])], // fixed session
+        [2, new Set([300])], // eligible session
+      ]),
+      fixedPlacements: [
+        { submission_id: 100, room_id: 2, capacity: 50, submitter_id: 9999 },
+      ],
+    }));
+
+    // Only the eligible session is placed by Phase A, and only in room 1.
+    expect(result.placements).toHaveLength(1);
+    expect(result.placements[0]!.submission_id).toBe(300);
+    expect(result.placements[0]!.room_id).toBe(1);
+    expect(result.placements.some((p) => p.submission_id === 100)).toBe(false);
+
+    // Users are seated into both kinds of placement.
+    const findAssign = (u: number) =>
+      result.user_assignments.find((a) => a.user_id === u)?.submission_id;
+    expect(findAssign(1)).toBe(100);
+    expect(findAssign(2)).toBe(300);
+  });
+
+  test("submitter of a fixed session is pinned into it as host (B.1 parity)", () => {
+    const result = assignUnconferenceSlot(input({
+      rooms: [],
+      submissions: [],
+      stars: new Map([
+        [9, new Set()], // submitter starred nothing
+        [1, new Set([100])],
+      ]),
+      fixedPlacements: [
+        { submission_id: 100, room_id: 10, capacity: 5, submitter_id: 9 },
+      ],
+    }));
+
+    expect(result.user_assignments).toContainEqual(
+      expect.objectContaining({ user_id: 9, submission_id: 100 }),
+    );
+  });
+
+  test("avoid-repeats: user who already attended a fixed session isn't re-seated", () => {
+    const result = assignUnconferenceSlot(input({
+      rooms: [],
+      submissions: [],
+      stars: new Map([[1, new Set([100])]]),
+      priorAssignments: new Map([[1, new Set([100])]]),
+      avoidRepeats: true,
+      fixedPlacements: [
+        { submission_id: 100, room_id: 10, capacity: 5, submitter_id: 9999 },
+      ],
+    }));
+
+    expect(result.user_assignments.find((a) => a.user_id === 1)).toBeUndefined();
+    expect(result.unplaced_users).toEqual([1]);
+  });
+
+  test("fixed user pick targeting a fixed placement is honored (B.0)", () => {
+    // User 1 never starred 100, but manually picked it — B.0 honors the pick
+    // and seats them into the fixed placement.
+    const result = assignUnconferenceSlot(input({
+      rooms: [],
+      submissions: [],
+      stars: new Map([[1, new Set()]]),
+      fixedAssignments: new Map([[1, 100]]),
+      fixedPlacements: [
+        { submission_id: 100, room_id: 10, capacity: 5, submitter_id: 9999 },
+      ],
+    }));
+
+    expect(result.user_assignments).toContainEqual(
+      expect.objectContaining({ user_id: 1, submission_id: 100 }),
+    );
+  });
+
+  test("priority composes: high-priority fixed session fills before a normal auto session", () => {
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 5 }],
+      submissions: [{ id: 200, priority: 0 }],
+      stars: new Map([[1, new Set([100, 200])]]),
+      fixedPlacements: [
+        { submission_id: 100, room_id: 10, capacity: 5, submitter_id: 9999, priority: 1 },
+      ],
+    }));
+
+    expect(result.user_assignments.find((a) => a.user_id === 1)?.submission_id).toBe(100);
+  });
+
+  test("priority composes: a low-priority fixed session loses to a normal auto session", () => {
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 5 }],
+      submissions: [{ id: 200, priority: 0 }],
+      stars: new Map([[1, new Set([100, 200])]]),
+      fixedPlacements: [
+        { submission_id: 100, room_id: 10, capacity: 5, submitter_id: 9999, priority: -1 },
+      ],
+    }));
+
+    expect(result.user_assignments.find((a) => a.user_id === 1)?.submission_id).toBe(200);
   });
 });

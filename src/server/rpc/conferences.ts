@@ -5,18 +5,20 @@ import {
   slugify, INVITE_TTL_MS, newOpaqueToken, joinUrl, calendarFeedPath,
   pageOf, parsePageInput,
   toInviteOut, toConfMeOut,
+  type RpcContext,
 } from "./shared";
 import {
   hashPassword, verifyPassword,
   createIdentitySession, destroySession,
   setIdentityCookie, clearIdentityCookie,
   readCookie, identityCookieName,
+  principalFromRequest,
 } from "../auth";
 import { notifyQuotaThreshold } from "../notifications";
 import {
   LIMITS,
   assertQuota,
-  assertLoginAllowed, recordLoginFailure, recordLoginSuccess,
+  assertLoginAllowed, isLoginLocked, recordLoginFailure, recordLoginSuccess,
   assertPasswordResetAllowed,
   recordWrite,
 } from "../lib/limits";
@@ -26,6 +28,27 @@ import {
   identityResetUrl,
 } from "../lib/password-reset";
 import { sendPasswordResetEmail } from "../lib/email";
+
+// When an anonymous claim/join is made while a verified global account with the
+// SAME email is signed in on this browser, the new per-conference identity is
+// auto-linked to that account. Mirrors `account.linkConferenceIdentity` minus
+// the password proof — the claimer just set that password themselves, so the
+// conference side is already controlled. Returns the user id to stamp as
+// `linkedUserId`, or null when there is no eligible global session (missing /
+// expired cookie, unverified email, or a different email). Never links across
+// mismatched emails. Emails are already normalized (both go through the `Email`
+// primitive), so a strict equality check is correct.
+async function resolveAutoLinkUserId(
+  context: RpcContext,
+  identityEmail: string,
+): Promise<number | null> {
+  const principal = await principalFromRequest(context.prisma, context.req, { type: "owner" });
+  if (!principal || principal.kind !== "owner") return null;
+  const { user } = principal;
+  if (user.emailVerifiedAt === null) return null;
+  if (user.email !== identityEmail) return null;
+  return user.id;
+}
 
 export const conferenceRouter = {
   // Owner-only: list conferences this global account owns. Identities never
@@ -590,6 +613,7 @@ export const conferenceRouter = {
     if (dup) throw new ORPCError("CONFLICT", { message: "email_already_in_conference" });
 
     const passwordHash = await hashPassword(input.password);
+    const linkedUserId = await resolveAutoLinkUserId(context, invite.email);
     const identity = await context.prisma.$transaction(async (tx) => {
       const created = await tx.conferenceIdentity.create({
         data: {
@@ -599,6 +623,7 @@ export const conferenceRouter = {
           passwordHash,
           role: invite.role,
           claimedAt: new Date(),
+          linkedUserId,
         },
       });
       await tx.conferenceInvite.update({
@@ -651,6 +676,7 @@ export const conferenceRouter = {
     if (dup) throw new ORPCError("CONFLICT", { message: "email_already_in_conference" });
 
     const passwordHash = await hashPassword(input.password);
+    const linkedUserId = await resolveAutoLinkUserId(context, input.email);
     const identity = await context.prisma.$transaction(async (tx) => {
       const created = await tx.conferenceIdentity.create({
         data: {
@@ -660,6 +686,7 @@ export const conferenceRouter = {
           passwordHash,
           role: "participant",
           claimedAt: new Date(),
+          linkedUserId,
         },
       });
       await tx.conferenceJoinLink.update({
@@ -690,7 +717,8 @@ export const conferenceRouter = {
     assertLoginAllowed(lockoutKey);
 
     const conf = await context.prisma.conference.findUnique({
-      where: { slug: input.slug }, select: { id: true },
+      where: { slug: input.slug },
+      select: { id: true, owner: { select: { email: true } } },
     });
     if (!conf) throw new ORPCError("NOT_FOUND", { message: "conference_not_found" });
     const identity = await context.prisma.conferenceIdentity.findUnique({
@@ -698,7 +726,67 @@ export const conferenceRouter = {
     });
     if (!identity || !identity.passwordHash
         || !(await verifyPassword(input.password, identity.passwordHash))) {
+      // Record the failed attempt BEFORE branching so the two targeted codes
+      // below are throttled byte-for-byte like a wrong-password guess — an
+      // attacker can't probe owner/invite existence faster than they can
+      // brute-force a password (accepted, rate-limit-mitigated enumeration).
       recordLoginFailure(lockoutKey);
+      if (identity && identity.passwordHash === null) {
+        // Identity exists but has no password: either the owner's auto-minted
+        // row (send them to the global login) or an invite never claimed.
+        throw new ORPCError("UNAUTHORIZED", {
+          message: identity.ownerUserId !== null
+            ? "owner_use_main_login"
+            : "invite_not_claimed",
+        });
+      }
+      if (!identity) {
+        if (input.email === conf.owner.email) {
+          // Owner who never touched this conference, so no identity was minted.
+          // Email is normalized identically on both sides (the `Email` schema
+          // trims + lowercases; owner emails are stored the same way).
+          throw new ORPCError("UNAUTHORIZED", { message: "owner_use_main_login" });
+        }
+        // An unclaimed invite means the account was set up but never claimed,
+        // so there's no identity row yet. Include expired invites — the client
+        // copy tells them to ask an organizer for a fresh invite either way.
+        // createInvite runs invite emails through the same `Email` schema, so a
+        // direct match against the normalized login email is safe.
+        const pendingInvite = await context.prisma.conferenceInvite.findFirst({
+          where: { conferenceId: conf.id, email: input.email, claimedAt: null },
+          select: { id: true },
+        });
+        if (pendingInvite) {
+          throw new ORPCError("UNAUTHORIZED", { message: "invite_not_claimed" });
+        }
+      }
+      // Last resort before the generic error: did the caller type their GLOBAL
+      // organizer-account password here (confusing their two logins)? This is
+      // safe to surface because the distinct response only fires for a caller
+      // who ALREADY holds valid organizer credentials — they could sign in at
+      // auth.login regardless — so it reveals nothing they don't already know.
+      //
+      // SECURITY: this verifies against the GLOBAL password hash, so it must
+      // honour the GLOBAL login budget on BOTH sides, using the exact key
+      // auth.login uses (the bare email):
+      //  - Gate on the global lock FIRST via the non-throwing `isLoginLocked`.
+      //    If the global account is locked we SKIP detection entirely and fall
+      //    through to invalid_credentials — a locked account must never act as
+      //    a password oracle, and we must not throw account_locked here (that
+      //    would itself leak that a global account exists).
+      //  - A FAILED global verify records a failure against the global key too
+      //    (the conference key was already recorded above), so this endpoint
+      //    can't become a global brute-force bypass. A MATCH records no global
+      //    failure — it wasn't a wrong global password.
+      const globalUser = await context.prisma.user.findUnique({
+        where: { email: input.email },
+      });
+      if (globalUser && !isLoginLocked(input.email)) {
+        if (await verifyPassword(input.password, globalUser.passwordHash)) {
+          throw new ORPCError("UNAUTHORIZED", { message: "organizer_password_used" });
+        }
+        recordLoginFailure(input.email);
+      }
       throw new ORPCError("UNAUTHORIZED", { message: "invalid_credentials" });
     }
     recordLoginSuccess(lockoutKey);

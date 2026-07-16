@@ -20,6 +20,7 @@ export function StaticBody({
   rooms,
   subs,
   tracks,
+  participantCount,
   isMod,
   onChange,
 }: {
@@ -28,6 +29,10 @@ export function StaticBody({
   rooms: Room[];
   subs: Submission[];
   tracks: Track[];
+  /** Conference identity count (mod-only; `null` for participants). Drives the
+   *  mandatory overfill badge — everyone attends a required talk, so its room
+   *  must seat the whole conference. */
+  participantCount: number | null;
   isMod: boolean;
   onChange: () => Promise<void>;
 }) {
@@ -41,6 +46,12 @@ export function StaticBody({
 
   return (
     <Stack gap="condensed">
+      {/* Re-fit is an occasional mod action: reassign this slot's rooms among
+          its scheduled talks by star count. Only meaningful once at least one
+          talk is scheduled (a single talk can still hop to a bigger free room). */}
+      {isMod && assignedRooms.length >= 1 && (
+        <RefitRoomsButton slug={slug} slot={slot} onChange={onChange} />
+      )}
       {assignedRooms.length === 0 && !isMod && (
         <Text muted>No sessions scheduled yet.</Text>
       )}
@@ -52,6 +63,7 @@ export function StaticBody({
           room={r}
           track={trackByRoomId.get(r.id) ?? null}
           subs={subs}
+          participantCount={participantCount}
           isMod={isMod}
           onChange={onChange}
         />
@@ -67,6 +79,88 @@ export function StaticBody({
       )}
     </Stack>
   );
+}
+
+// Re-fit rooms: reassign this planned slot's rooms among its scheduled talks
+// by star count (biggest room → most-starred), honoring reserved rooms and
+// room requirements. All-or-nothing on the server; conflicts come back as a
+// structured payload we surface as a readable toast (mirrors the
+// AutoRoomPicker / PlacementAuthor conflict pattern). A compact right-aligned
+// row so it reads as an occasional action, not the slot's primary control.
+function RefitRoomsButton({
+  slug,
+  slot,
+  onChange,
+}: {
+  slug: string;
+  slot: Slot;
+  onChange: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  async function refit() {
+    setBusy(true);
+    try {
+      const r = await api.agenda.refitRooms({ slug, slot_id: slot.id });
+      if (r.kind === "conflict") {
+        toast.error(refitConflictMessage(r));
+        return;
+      }
+      if (r.moves.length === 0) {
+        toast.info("Rooms already fit interest best.");
+        return;
+      }
+      const parts = r.moves.map((m) => `${m.title} → ${m.to_room}`);
+      const shown = parts.slice(0, 3).join(" · ");
+      const extra =
+        parts.length > 3 ? ` and ${parts.length - 3} more` : "";
+      toast.success(`Re-fit rooms: ${shown}${extra}.`);
+      await onChange();
+    } catch (e) {
+      toast.error(errorCode(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      style={{ display: "flex", justifyContent: "flex-end" }}
+      title="Reassigns this slot's rooms by stars - the most-starred talk gets the biggest room. Talks with a reserved room stay put. People who starred a moved talk are notified."
+    >
+      <Button size="small" onClick={refit} disabled={busy}>
+        {busy ? "Re-fitting…" : "Re-fit rooms by interest"}
+      </Button>
+    </div>
+  );
+}
+
+// Conflict copy for `agenda.refitRooms`. Mirrors AutoRoomPicker's messaging but
+// names the offending talk from the payload's `submission` field (a refit
+// weighs many talks at once, so the server tells us which one couldn't be
+// placed).
+function refitConflictMessage(r: {
+  reason: "pin_room_taken" | "pin_room_out_of_scope" | "unsatisfiable_requirements";
+  pinned_room: { id: number; name: string } | null;
+  required_tags: string[];
+  candidate_room_names: string[];
+  submission: { id: number; title: string } | null;
+}): string {
+  const subject = r.submission ? `"${r.submission.title}"` : "A talk";
+  const room = r.pinned_room?.name ?? "a room";
+  switch (r.reason) {
+    case "pin_room_taken":
+      return `${subject} is reserved for ${room}, but that room is already used by another talk in this slot.`;
+    case "pin_room_out_of_scope":
+      return `${subject} is reserved for ${room}, which isn't in this slot's room set.`;
+    case "unsatisfiable_requirements": {
+      const tags = r.required_tags.join(", ") || "specific room tags";
+      return r.candidate_room_names.length > 0
+        ? `${subject} needs ${tags}; the only matching rooms (${r.candidate_room_names.join(", ")}) are already in use.`
+        : `${subject} needs ${tags}, but no room in this slot has them.`;
+    }
+  }
 }
 
 export function AddTrackPicker({
@@ -100,6 +194,7 @@ export function AddTrackPicker({
         room={room}
         track={null}
         subs={subs}
+        participantCount={null}
         isMod={true}
         onChange={async () => {
           setPickedRoomId(null);
@@ -144,7 +239,10 @@ export function AddTrackPicker({
       <Button size="small" variant="primary" onClick={() => setAutoMode(true)}>
         Auto-assign room
       </Button>
-      <span style={{ opacity: 0.7 }}>or reserve a room:</span>
+      {/* "start with a room" (not "reserve") — nothing is persisted until a
+          session is scheduled, and "reserved" already means a session's
+          pinned room elsewhere in the app. */}
+      <span style={{ opacity: 0.7 }}>or start with a room:</span>
       {unassignedRooms.map((r) => (
         <Button key={r.id} size="small" onClick={() => setPickedRoomId(r.id)}>
           {r.name}
@@ -272,6 +370,7 @@ export function TrackEditor({
   room,
   track,
   subs,
+  participantCount,
   isMod,
   onChange,
 }: {
@@ -280,6 +379,9 @@ export function TrackEditor({
   room: Room;
   track: Track | null;
   subs: Submission[];
+  /** Conference identity count (mod-only; `null` for participants). A required
+   *  track is attended by everyone, so its room must seat all of them. */
+  participantCount: number | null;
   isMod: boolean;
   onChange: () => Promise<void>;
 }) {
@@ -514,6 +616,10 @@ export function TrackEditor({
             display: "flex",
             gap: 6,
             alignItems: "center",
+            // Wrap the badge/action cluster so a mandatory track's extra
+            // overfill badge can't overflow the row on narrow (mobile) widths.
+            flexWrap: "wrap",
+            justifyContent: "flex-end",
           }}
         >
           {track && display && track.mandatory && (
@@ -537,9 +643,30 @@ export function TrackEditor({
               ★ Required
             </span>
           )}
+          {track && display && track.mandatory && participantCount !== null && participantCount > room.capacity && (
+            <span
+              title={`Every participant attends required talks - this room seats ${room.capacity} of ${participantCount} people. Move it to a bigger room or re-fit rooms.`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                padding: "2px 8px",
+                borderRadius: 999,
+                background:
+                  "var(--bgColor-danger-muted, rgba(207,34,46,0.12))",
+                color: "var(--fgColor-danger, #cf222e)",
+                fontSize: 11,
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: 0.4,
+              }}
+            >
+              ⚠ Required talk overfills room ({participantCount}/{room.capacity})
+            </span>
+          )}
           {track && display && !track.mandatory && track.star_count > room.capacity && (
             <span
-              title={`${track.star_count} people have starred this session — the room holds ${room.capacity}. Consider moving to a larger room or duplicating the slot.`}
+              title={`${track.star_count} people have starred this session — the room holds ${room.capacity}. Move it to a bigger room, re-fit rooms, or duplicate the slot.`}
               style={{
                 display: "inline-flex",
                 alignItems: "center",

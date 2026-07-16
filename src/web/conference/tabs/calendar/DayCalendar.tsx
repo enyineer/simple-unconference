@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { clipToMinute, formatInTz } from "../../../../shared/tz";
+import { formatInTz } from "../../../../shared/tz";
 import {
   AXIS_WIDTH,
   HEADER_BORDER_RADIUS,
   MIN_SLOT_COL_WIDTH,
+  MIN_SLOT_HEIGHT_PX,
   PX_PER_MIN,
   SNAP_MIN,
 } from "./constants";
 import { endOfDay, snapToMinutes, startOfDay } from "./helpers";
+import { layoutSlots } from "./layoutSlots";
 import { NowIndicator } from "./NowIndicator";
 import { SlotEvent } from "./SlotEvent";
 import type {
@@ -18,53 +20,7 @@ import type {
   CalSubmission,
   CalTrack,
   DragState,
-  SlotLayout,
 } from "./types";
-
-function layoutSlots(slots: CalSlot[]): SlotLayout[] {
-  // Calendar labels show HH:MM, so overlap decisions need to match minute
-  // granularity. Without this, a slot ending at 18:07:30 (labelled "18:07")
-  // and a slot starting at 18:07:15 (also labelled "18:07") get rendered
-  // side-by-side because they technically overlap by 15s — visually
-  // confusing because the labels read as adjacent. `clipToMinute` (shared
-  // with the MyAssignments conflict detector and the server-side time
-  // normalization) makes the layout align with what the user can see.
-  const startMin = (s: CalSlot) => clipToMinute(s.starts_at);
-  const endMin = (s: CalSlot) => clipToMinute(s.ends_at);
-
-  const sorted = [...slots].sort((a, b) => a.starts_at - b.starts_at);
-  const out: SlotLayout[] = [];
-
-  let cluster: { slot: CalSlot; col: number }[] = [];
-  let clusterEnd = -Infinity;
-  let colEnds: number[] = []; // colEnds[i] = latest end-minute of slots placed in col i (within cluster)
-
-  const flush = () => {
-    const cols = Math.max(1, colEnds.length);
-    for (const c of cluster) out.push({ slot: c.slot, col: c.col, cols });
-    cluster = [];
-    colEnds = [];
-    clusterEnd = -Infinity;
-  };
-
-  for (const s of sorted) {
-    const sStart = startMin(s);
-    const sEnd = endMin(s);
-    if (sStart >= clusterEnd) flush();
-    // pick the first column whose last slot ended by the time this one starts
-    let col = colEnds.findIndex((end) => end <= sStart);
-    if (col === -1) {
-      col = colEnds.length;
-      colEnds.push(sEnd);
-    } else {
-      colEnds[col] = sEnd;
-    }
-    cluster.push({ slot: s, col });
-    clusterEnd = Math.max(clusterEnd, sEnd);
-  }
-  flush();
-  return out;
-}
 
 export function DayCalendar({
   dayMs, windowStartMin, windowEndMin, slots, tracks, placements, mixerPlacements,
@@ -242,7 +198,7 @@ export function DayCalendar({
               const startMs = isDragged ? drag!.liveStart : slot.starts_at;
               const endMs   = isDragged ? drag!.liveEnd   : slot.ends_at;
               const topPx = ((startMs - dayMs) / 60000 - windowStartMin) * PX_PER_MIN;
-              const heightPx = Math.max(28, ((endMs - startMs) / 60000) * PX_PER_MIN);
+              const heightPx = Math.max(MIN_SLOT_HEIGHT_PX, ((endMs - startMs) / 60000) * PX_PER_MIN);
               const colWidthPct = 100 / cols;
               const leftPct = col * colWidthPct;
               const slotTracks = tracks.filter((t) => t.slot_id === slot.id);

@@ -12,8 +12,9 @@ import { BUILD_STEPS, type BuildStep } from "../../ui/agendaGuide";
 const STORAGE_PREFIX = "agenda-onboarding-dismissed:";
 
 // Each step resolves to a checked flag + an action that points the moderator
-// at the place to act. `assign` has no target tab — its CTA is the header's
-// "Assign attendees" button on this same tab — so it carries no action.
+// at the place to act. `assign` has no target tab — its CTA is the two-step
+// "Place sessions / Update seating" panel on this same tab — so it carries no
+// action.
 interface ChecklistItem extends BuildStep {
   done: boolean;
   /** Tab to switch to when the item is unchecked. `null` = no link (action

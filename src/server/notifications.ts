@@ -34,6 +34,9 @@ export type NotificationKind =
   | "chat_message"
   | "chat_report"
   | "chat_warning"
+  // Planned-slot schedule change (talk scheduled / moved / removed). Coalesced
+  // per (slot, submission) via dedupeKey "track:<slotId>:<submissionId>".
+  | "schedule_changed"
   // Mod-only heads-up when a per-conference quota crosses 80% or hits 100%.
   // Fired by `notifyQuotaThreshold` exactly twice per resource per lifetime.
   | "quota_threshold";

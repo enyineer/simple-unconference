@@ -146,6 +146,16 @@ setInterval(() => {
   }
 }, CLEANUP_INTERVAL_MS).unref?.();
 
+// Non-throwing lock probe. True when `email` is currently locked out. For
+// callers that must consult the SAME login budget as `assertLoginAllowed` but
+// must NOT surface `account_locked` (e.g. the organizer-password probe in
+// conferences.login, where throwing would leak that a global account exists).
+export function isLoginLocked(email: string): boolean {
+  if (LIMITS.loginFailLimit === 0) return false;
+  const s = loginFails.get(email);
+  return s !== undefined && s.lockedUntil !== null && s.lockedUntil > Date.now();
+}
+
 // Check before validating the password. Throws when the email is locked.
 export function assertLoginAllowed(email: string): void {
   if (LIMITS.loginFailLimit === 0) return;

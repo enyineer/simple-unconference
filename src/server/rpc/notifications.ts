@@ -23,7 +23,8 @@ export const notificationsRouter = {
           | "unconf_assigned" | "mixer_assigned"
           | "expert_booked" | "expert_booking_cancelled"
           | "quota_threshold"
-          | "chat_message" | "chat_report" | "chat_warning",
+          | "chat_message" | "chat_report" | "chat_warning"
+          | "schedule_changed",
         title: n.title,
         body: n.body,
         cta_label: n.ctaLabel,
