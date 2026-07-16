@@ -2,11 +2,12 @@ import { ORPCError } from "@orpc/server";
 import type { Prisma } from "@prisma/client";
 import {
   base, authed, verified, requireConf, actorIdentityId, clientIp,
-  slugify, INVITE_TTL_MS, newOpaqueToken, joinUrl, boardUrl, calendarFeedPath,
+  generateUniqueSlug, INVITE_TTL_MS, newOpaqueToken, joinUrl, boardUrl, calendarFeedPath,
   pageOf, parsePageInput,
   toInviteOut, toConfMeOut,
   type RpcContext,
 } from "./shared";
+import { startOfDayInstant } from "../../shared/tz";
 import {
   hashPassword, verifyPassword,
   createIdentitySession, destroySession,
@@ -86,13 +87,7 @@ export const conferenceRouter = {
     assertQuota("conferences_per_user", LIMITS.maxConferencesPerUser, ownedCount);
     recordWrite(context.user.id);
 
-    const baseSlug = slugify(input.name);
-    let slug = baseSlug;
-    let n = 1;
-    while (await context.prisma.conference.findUnique({ where: { slug }, select: { id: true } })) {
-      n++;
-      slug = `${baseSlug}-${n}`;
-    }
+    const slug = await generateUniqueSlug(context.prisma, input.name);
     const conf = await context.prisma.conference.create({
       data: {
         name: input.name, slug, ownerId: context.user.id,
@@ -223,6 +218,230 @@ export const conferenceRouter = {
       where: { id: context.conferenceId },
     });
     return { ok: true as const };
+  }),
+
+  // Wrap-up report (F3). Aggregated counts for the whole conference, computed
+  // in a single parallel batch (no N+1). Names only, never emails.
+  report: requireConf("moderator").conferences.report.handler(async ({ context }) => {
+    const confId = context.conferenceId;
+    const [
+      participantCount,
+      submitted,
+      published,
+      seatsFilled,
+      starsTotal,
+      publishedRows,
+      rooms,
+      tracks,
+      placements,
+      totalSlots,
+      expertBookingsCount,
+      takeawayCount,
+    ] = await Promise.all([
+      context.prisma.conferenceIdentity.count({ where: { conferenceId: confId } }),
+      context.prisma.submission.count({ where: { conferenceId: confId } }),
+      context.prisma.submission.count({ where: { conferenceId: confId, status: "published" } }),
+      context.prisma.userAssignment.count({
+        where: { slot: { conferenceId: confId, type: "unconference" } },
+      }),
+      context.prisma.star.count({ where: { submission: { conferenceId: confId } } }),
+      context.prisma.submission.findMany({
+        where: { conferenceId: confId, status: "published" },
+        select: {
+          id: true, title: true,
+          submitter: { select: { name: true } },
+          _count: { select: { stars: true } },
+        },
+      }),
+      context.prisma.room.findMany({
+        where: { conferenceId: confId },
+        select: { id: true, name: true, capacity: true },
+        orderBy: [{ capacity: "desc" }, { name: "asc" }],
+      }),
+      context.prisma.trackAssignment.findMany({
+        where: { slot: { conferenceId: confId } },
+        select: { roomId: true, slotId: true, submissionId: true },
+      }),
+      context.prisma.unconferencePlacement.findMany({
+        where: { slot: { conferenceId: confId } },
+        select: { roomId: true, slotId: true, submissionId: true },
+      }),
+      context.prisma.agendaSlot.count({ where: { conferenceId: confId } }),
+      context.prisma.expertBooking.count({ where: { expert: { conferenceId: confId } } }),
+      context.prisma.sessionTakeaway.count({ where: { submission: { conferenceId: confId } } }),
+    ]);
+
+    // Fold tracks + placements once: distinct placed submissions, and the set
+    // of distinct slots each room hosts.
+    const placedSubs = new Set<number>();
+    const roomSlots = new Map<number, Set<number>>();
+    for (const row of [...tracks, ...placements]) {
+      placedSubs.add(row.submissionId);
+      let set = roomSlots.get(row.roomId);
+      if (!set) { set = new Set(); roomSlots.set(row.roomId, set); }
+      set.add(row.slotId);
+    }
+
+    const topSessions = publishedRows
+      .map((s) => ({ title: s.title, star_count: s._count.stars, submitter_name: s.submitter.name }))
+      .sort((a, b) => b.star_count - a.star_count || a.title.localeCompare(b.title))
+      .slice(0, 5);
+
+    return {
+      participant_count: participantCount,
+      sessions: { submitted, published, placed_or_scheduled: placedSubs.size },
+      seats_filled: seatsFilled,
+      stars_total: starsTotal,
+      top_sessions: topSessions,
+      rooms: rooms.map((r) => ({
+        name: r.name,
+        capacity: r.capacity,
+        used_slots: roomSlots.get(r.id)?.size ?? 0,
+        available_slots: totalSlots,
+      })),
+      expert_bookings_count: expertBookingsCount,
+      takeaway_count: takeawayCount,
+      generated_at: Date.now(),
+    };
+  }),
+
+  // Templates / duplicate (F5). Clone a conference's CONFIG + rooms + a slot /
+  // series skeleton into a fresh conference owned by the same user. Explicitly
+  // NOT cloned: identities, submissions, tracks, placements, seatings, experts,
+  // invites, join/board tokens, spotlight. Slot + room-availability times shift
+  // by the delta between the requested first day and the source's first slot.
+  duplicate: requireConf("owner").conferences.duplicate.handler(async ({ input, context }) => {
+    const source = await context.prisma.conference.findUniqueOrThrow({
+      where: { id: context.conferenceId },
+    });
+    // requireConf("owner") guarantees the caller is the conference owner, so the
+    // clone is owned by the source's owner. Respect the same per-user quota as
+    // `create`.
+    const ownerId = source.ownerId;
+    const ownedCount = await context.prisma.conference.count({ where: { ownerId } });
+    assertQuota("conferences_per_user", LIMITS.maxConferencesPerUser, ownedCount);
+    recordWrite(ownerId);
+
+    const [rooms, slots, series, slotRooms, seriesRooms] = await Promise.all([
+      context.prisma.room.findMany({
+        where: { conferenceId: source.id },
+        include: {
+          tags: { select: { value: true } },
+          availabilities: { select: { startsAt: true, endsAt: true } },
+        },
+      }),
+      context.prisma.agendaSlot.findMany({ where: { conferenceId: source.id } }),
+      context.prisma.slotSeries.findMany({ where: { conferenceId: source.id } }),
+      context.prisma.slotRoom.findMany({ where: { slot: { conferenceId: source.id } } }),
+      context.prisma.seriesRoom.findMany({ where: { series: { conferenceId: source.id } } }),
+    ]);
+
+    // Day delta: align the earliest slot's day to `first_day`, preserving each
+    // slot's wall-clock time. Zero when the source has no slots.
+    let delta = 0;
+    if (slots.length > 0) {
+      const minStart = Math.min(...slots.map((s) => s.startsAt.getTime()));
+      delta = startOfDayInstant(input.first_day, source.timezone)
+        - startOfDayInstant(minStart, source.timezone);
+    }
+
+    const newSlug = await generateUniqueSlug(context.prisma, input.name);
+
+    const created = await context.prisma.$transaction(async (tx) => {
+      const conf = await tx.conference.create({
+        data: {
+          name: input.name,
+          slug: newSlug,
+          ownerId,
+          designSystem: source.designSystem,
+          timezone: source.timezone,
+          mixerAvoidRepeatsDefault: source.mixerAvoidRepeatsDefault,
+          submissionMaxPlacementsDefault: source.submissionMaxPlacementsDefault,
+          participantSubmissionsEnabled: source.participantSubmissionsEnabled,
+          // boardToken / spotlightSubmissionId deliberately left fresh (null).
+        },
+      });
+
+      // Rooms (+ tags, + availability windows shifted by delta).
+      const roomIdMap = new Map<number, number>();
+      for (const r of rooms) {
+        const newRoom = await tx.room.create({
+          data: {
+            conferenceId: conf.id,
+            name: r.name,
+            capacity: r.capacity,
+            description: r.description,
+            tags: { create: r.tags.map((t) => ({ value: t.value })) },
+            availabilities: {
+              create: r.availabilities.map((a) => ({
+                startsAt: new Date(a.startsAt.getTime() + delta),
+                endsAt: new Date(a.endsAt.getTime() + delta),
+              })),
+            },
+          },
+        });
+        roomIdMap.set(r.id, newRoom.id);
+      }
+
+      // Series config (submission scoping dropped — no submissions cloned).
+      const seriesIdMap = new Map<number, number>();
+      for (const s of series) {
+        const newSeries = await tx.slotSeries.create({
+          data: {
+            conferenceId: conf.id,
+            type: s.type,
+            title: s.title,
+            description: s.description,
+            unconfUseAllRooms: s.unconfUseAllRooms,
+            unconfUseAllSubmissions: s.unconfUseAllSubmissions,
+            unconfAvoidRepeats: s.unconfAvoidRepeats,
+            mixerAvoidRepeats: s.mixerAvoidRepeats,
+            avoidRepeatsAcrossSiblings: s.avoidRepeatsAcrossSiblings,
+          },
+        });
+        seriesIdMap.set(s.id, newSeries.id);
+      }
+
+      // Slots (times shifted; series remapped; seating reset; no tracks/placements).
+      const slotIdMap = new Map<number, number>();
+      for (const sl of slots) {
+        const newSlot = await tx.agendaSlot.create({
+          data: {
+            conferenceId: conf.id,
+            type: sl.type,
+            title: sl.title,
+            description: sl.description,
+            startsAt: new Date(sl.startsAt.getTime() + delta),
+            endsAt: new Date(sl.endsAt.getTime() + delta),
+            unconfUseAllRooms: sl.unconfUseAllRooms,
+            unconfUseAllSubmissions: sl.unconfUseAllSubmissions,
+            unconfAvoidRepeats: sl.unconfAvoidRepeats,
+            mixerAvoidRepeats: sl.mixerAvoidRepeats,
+            seriesId: sl.seriesId === null ? null : (seriesIdMap.get(sl.seriesId) ?? null),
+            seatingStale: false,
+          },
+        });
+        slotIdMap.set(sl.id, newSlot.id);
+      }
+
+      // Room-scoping selections (remapped to the cloned rooms). Submission
+      // scoping is intentionally not carried over — no submissions are cloned.
+      const slotRoomData = slotRooms
+        .map((sr) => ({ slotId: slotIdMap.get(sr.slotId), roomId: roomIdMap.get(sr.roomId) }))
+        .filter((x): x is { slotId: number; roomId: number } =>
+          x.slotId !== undefined && x.roomId !== undefined);
+      if (slotRoomData.length > 0) await tx.slotRoom.createMany({ data: slotRoomData });
+
+      const seriesRoomData = seriesRooms
+        .map((sr) => ({ seriesId: seriesIdMap.get(sr.seriesId), roomId: roomIdMap.get(sr.roomId) }))
+        .filter((x): x is { seriesId: number; roomId: number } =>
+          x.seriesId !== undefined && x.roomId !== undefined);
+      if (seriesRoomData.length > 0) await tx.seriesRoom.createMany({ data: seriesRoomData });
+
+      return conf;
+    });
+
+    return { slug: created.slug };
   }),
 
   // Roster surface. `user_id` in the response is the ConferenceIdentity.id.

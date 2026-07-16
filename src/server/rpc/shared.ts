@@ -114,6 +114,22 @@ export function slugify(name: string): string {
   );
 }
 
+// Slugify `name` and append `-2`, `-3`, … until the slug is free across all
+// conferences. Shared by `conferences.create` and `conferences.duplicate`.
+export async function generateUniqueSlug(
+  prisma: PrismaClient,
+  name: string,
+): Promise<string> {
+  const baseSlug = slugify(name);
+  let slug = baseSlug;
+  let n = 1;
+  while (await prisma.conference.findUnique({ where: { slug }, select: { id: true } })) {
+    n++;
+    slug = `${baseSlug}-${n}`;
+  }
+  return slug;
+}
+
 export function normalizeLabels(input: string[] | undefined): string[] {
   if (!input) return [];
   const seen = new Set<string>();

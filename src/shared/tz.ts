@@ -77,6 +77,17 @@ export function clipToMinute(ms: number): number {
   return Math.floor(ms / 60_000) * 60_000;
 }
 
+/**
+ * The instant of midnight (00:00) beginning the calendar day that contains
+ * `ms`, interpreted in `timeZone`. Used to align a duplicated conference's
+ * agenda to a new first day while preserving each slot's wall-clock time of
+ * day (the shift is `startOfDayInstant(newFirstDay) - startOfDayInstant(firstSlot)`).
+ */
+export function startOfDayInstant(ms: number, timeZone: string): number {
+  const day = instantToWallClock(ms, timeZone).slice(0, 10); // YYYY-MM-DD
+  return wallClockToInstant(`${day}T00:00`, timeZone);
+}
+
 /** Format an instant in a given timezone using `Intl.DateTimeFormat`. */
 export function formatInTz(
   ms: number,

@@ -17,6 +17,16 @@ export const CreateConferenceSchema = v.object({
 });
 export type CreateConferenceInput = v.InferOutput<typeof CreateConferenceSchema>;
 
+// Clone a conference into a fresh one owned by the same user. `first_day` is
+// the epoch-ms of the intended first conference day (a date at midnight in the
+// source conference's timezone); slot + room-availability times shift by the
+// day delta between it and the source's first slot.
+export const DuplicateConferenceSchema = v.object({
+  name: NonEmpty("Conference name"),
+  first_day: PosInt,
+});
+export type DuplicateConferenceInput = v.InferOutput<typeof DuplicateConferenceSchema>;
+
 export const UpdateConferenceSchema = v.object({
   name: v.optional(NonEmpty("Conference name")),
   design_system: v.optional(v.string()),

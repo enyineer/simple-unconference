@@ -924,6 +924,58 @@ export interface ChatSettingsOut {
   chat_ban_reason: string | null;
 }
 
+// ----- takeaways (Harvest & Wrap-up, F3) ----------------------------------
+//
+// A short learning / link captured against a session. Public within the
+// conference: author DISPLAY NAME + identity id only, NEVER an email.
+export interface TakeawayOut {
+  id: number;
+  submission_id: number;
+  text: string;
+  url: string | null;
+  created_at: number;
+  // Author's display name, or null when they have none set.
+  author_name: string | null;
+  author_identity_id: number;
+  // True when the calling identity authored this row (drives the delete
+  // affordance; mods can delete any takeaway regardless of this flag).
+  mine: boolean;
+}
+
+// ----- wrap-up event report (F3, moderator-only) --------------------------
+export interface EventReportTopSession {
+  title: string;
+  star_count: number;
+  submitter_name: string | null;
+}
+export interface EventReportRoom {
+  name: string;
+  capacity: number;
+  // Distinct slots where this room hosts a planned track or unconference placement.
+  used_slots: number;
+  // Total agenda slots in the conference — a KISS proxy for "slots this room
+  // could have hosted" (every room shares the same figure).
+  available_slots: number;
+}
+export interface EventReportOut {
+  participant_count: number;
+  sessions: {
+    submitted: number;
+    published: number;
+    // Distinct submissions with at least one track assignment or placement.
+    placed_or_scheduled: number;
+  };
+  // Total attendee seats filled across unconference slots (UserAssignment rows).
+  seats_filled: number;
+  stars_total: number;
+  // Top 5 published sessions by star count, most-starred first.
+  top_sessions: EventReportTopSession[];
+  rooms: EventReportRoom[];
+  expert_bookings_count: number;
+  takeaway_count: number;
+  generated_at: number;
+}
+
 // ----- public Live Board (F1) ---------------------------------------------
 //
 // Shape of the token-gated, read-only board payload served at

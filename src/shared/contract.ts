@@ -25,7 +25,9 @@ import {
   CreateRoomSchema,
   CreateSlotSchema,
   CreateSubmissionSchema,
+  DuplicateConferenceSchema,
   DuplicateSlotSchema,
+  TakeawayAddSchema,
   InviteClaimSchema,
   InviteCreateSchema,
   InviteImportSchema,
@@ -86,6 +88,7 @@ import {
   type ConfDetail,
   type ConfMeOut,
   type ConfSummary,
+  type EventReportOut,
   type ExpertBookingCreatedOut,
   type ExpertOut,
   type ExpertPoolOut,
@@ -108,6 +111,7 @@ import {
   type SetTrackResult,
   type SubmissionCreated,
   type SubmissionOut,
+  type TakeawayOut,
   type UpdateSeriesResult,
   type UserOut,
 } from "./contract/types";
@@ -166,6 +170,14 @@ export const contract = {
       .input(v.object({ slug: Slug, ...UpdateConferenceSchema.entries }))
       .output(type<Ok>()),
     delete: oc.input(InConf).output(type<Ok>()),
+    // Wrap-up report (F3): aggregate counts for the whole conference. Mod-only.
+    report: oc.input(InConf).output(type<EventReportOut>()),
+    // Templates / duplicate (F5): owner clones settings + rooms + a slot/series
+    // skeleton into a fresh conference (no identities, submissions, or tokens).
+    // Returns the new conference's slug.
+    duplicate: oc
+      .input(v.object({ slug: Slug, ...DuplicateConferenceSchema.entries }))
+      .output(type<{ slug: string }>()),
     listParticipants: oc
       .input(v.object({ slug: Slug, ...PageInputEntries }))
       .output(type<Page<ParticipantOut>>()),
@@ -476,6 +488,19 @@ export const contract = {
   announcements: {
     send: oc
       .input(v.object({ slug: Slug, ...AnnouncementSendSchema.entries }))
+      .output(type<Ok>()),
+  },
+  // Harvest & Wrap-up (F3). Short takeaways captured against a session, public
+  // within the conference. Author display names only — never emails.
+  takeaways: {
+    list: oc
+      .input(v.object({ slug: Slug, submission_id: Id }))
+      .output(type<TakeawayOut[]>()),
+    add: oc
+      .input(v.object({ slug: Slug, ...TakeawayAddSchema.entries }))
+      .output(type<TakeawayOut>()),
+    remove: oc
+      .input(v.object({ slug: Slug, id: Id }))
       .output(type<Ok>()),
   },
   notifications: {

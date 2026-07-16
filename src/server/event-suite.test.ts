@@ -14,6 +14,8 @@ import {
   type BusEvent,
 } from "./realtime/bus";
 import type { BoardPayloadOut } from "../shared/contract/types";
+import { startOfDayInstant } from "../shared/tz";
+import { LIMITS } from "./lib/limits";
 
 // Seating / board-relevant slots live in the near future (mirrors the other
 // suites' convention).
@@ -304,5 +306,277 @@ describe("Live Board SSE stream", () => {
     expect(frame).toContain(`"conferenceId":${conf.id}`);
 
     await reader.cancel();
+  });
+});
+
+describe("Takeaways (Harvest & Wrap-up)", () => {
+  beforeAll(() => { ctx = setupTestApp(); });
+  afterAll(async () => { await ctx.cleanup(); });
+
+  async function seed(prefix: string) {
+    const { owner, conf } = await makeOwnerConf(prefix);
+    const { client: p1 } = await inviteAndClaim(ctx.app, owner, conf.slug, `${prefix}-p1@example.com`, "secret123", "Ada");
+    const { client: p2 } = await inviteAndClaim(ctx.app, owner, conf.slug, `${prefix}-p2@example.com`, "secret123", "Bo");
+    const sub = await p1.rpc.submissions.create({ slug: conf.slug, title: "Session" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+    return { owner, conf, p1, p2, sub };
+  }
+
+  test("add + list returns author display name + mine flag, never emails", async () => {
+    const { conf, p1, p2, sub } = await seed("tk");
+    const added = await p1.rpc.takeaways.add({
+      slug: conf.slug, submission_id: sub.id, text: "Great notes", url: "https://example.org/x",
+    });
+    expect(added.author_name).toBe("Ada");
+    expect(added.mine).toBe(true);
+    expect(added.url).toBe("https://example.org/x");
+
+    // p2 sees the takeaway as not-theirs; author name present, no email leaks.
+    const list2 = await p2.rpc.takeaways.list({ slug: conf.slug, submission_id: sub.id });
+    expect(list2).toHaveLength(1);
+    expect(list2[0]!.author_name).toBe("Ada");
+    expect(list2[0]!.mine).toBe(false);
+    expect(JSON.stringify(list2)).not.toContain("@example.com");
+
+    // p1 sees mine=true on their own row.
+    const list1 = await p1.rpc.takeaways.list({ slug: conf.slug, submission_id: sub.id });
+    expect(list1[0]!.mine).toBe(true);
+  });
+
+  test("a 501-character takeaway is rejected", async () => {
+    const { conf, p1, sub } = await seed("tklong");
+    await expect(
+      p1.rpc.takeaways.add({ slug: conf.slug, submission_id: sub.id, text: "x".repeat(501) }),
+    ).rejects.toBeInstanceOf(ORPCError);
+  });
+
+  test("the 11th takeaway by one identity on a session is rejected", async () => {
+    const { conf, p1, sub } = await seed("tkcap");
+    for (let i = 0; i < 10; i++) {
+      await p1.rpc.takeaways.add({ slug: conf.slug, submission_id: sub.id, text: `note ${i}` });
+    }
+    await expect(
+      p1.rpc.takeaways.add({ slug: conf.slug, submission_id: sub.id, text: "one too many" }),
+    ).rejects.toBeInstanceOf(ORPCError);
+  });
+
+  test("author deletes own; a participant can't delete another's but a mod can", async () => {
+    const { owner, conf, p1, p2, sub } = await seed("tkdel");
+    const a = await p1.rpc.takeaways.add({ slug: conf.slug, submission_id: sub.id, text: "mine to remove" });
+    // A different participant cannot delete it.
+    await expect(
+      p2.rpc.takeaways.remove({ slug: conf.slug, id: a.id }),
+    ).rejects.toBeInstanceOf(ORPCError);
+    // The author can.
+    await p1.rpc.takeaways.remove({ slug: conf.slug, id: a.id });
+    expect(await p1.rpc.takeaways.list({ slug: conf.slug, submission_id: sub.id })).toHaveLength(0);
+
+    // A moderator can delete anyone's.
+    const b = await p2.rpc.takeaways.add({ slug: conf.slug, submission_id: sub.id, text: "mod removes this" });
+    await owner.rpc.takeaways.remove({ slug: conf.slug, id: b.id });
+    expect(await p1.rpc.takeaways.list({ slug: conf.slug, submission_id: sub.id })).toHaveLength(0);
+  });
+
+  test("adding a takeaway to an unpublished session is rejected", async () => {
+    const { owner, conf } = await makeOwnerConf("tkdraft");
+    const { client: p1 } = await inviteAndClaim(ctx.app, owner, conf.slug, "tkdraft-p@example.com");
+    const sub = await p1.rpc.submissions.create({ slug: conf.slug, title: "Draft" });
+    await expect(
+      p1.rpc.takeaways.add({ slug: conf.slug, submission_id: sub.id, text: "too soon" }),
+    ).rejects.toBeInstanceOf(ORPCError);
+  });
+});
+
+describe("Event report (conferences.report)", () => {
+  beforeAll(() => { ctx = setupTestApp(); });
+  afterAll(async () => { await ctx.cleanup(); });
+
+  test("aggregates participants, sessions, seats, stars, top ordering, takeaways", async () => {
+    const { owner, conf } = await makeOwnerConf("rep");
+    const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 100 });
+    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 10 });
+
+    const p1 = await inviteAndClaim(ctx.app, owner, conf.slug, "rep-p1@example.com", "secret123", "Ada");
+    const p2 = await inviteAndClaim(ctx.app, owner, conf.slug, "rep-p2@example.com", "secret123", "Bo");
+
+    const subA = await p1.client.rpc.submissions.create({ slug: conf.slug, title: "Popular" });
+    const subB = await p1.client.rpc.submissions.create({ slug: conf.slug, title: "Quiet" });
+    await p2.client.rpc.submissions.create({ slug: conf.slug, title: "Draft" }); // stays submitted
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: subA.id });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: subB.id });
+
+    // Stars: A gets 2, B gets 1 → total 3.
+    await p1.client.rpc.submissions.star({ slug: conf.slug, id: subA.id });
+    await p2.client.rpc.submissions.star({ slug: conf.slug, id: subA.id });
+    await p1.client.rpc.submissions.star({ slug: conf.slug, id: subB.id });
+
+    // A: unconference placement in Big. B: planned track in Small.
+    const unconf = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", title: "Unconf", starts_at: soon(), ends_at: soon(3600_000),
+    });
+    await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: unconf.id, submission_id: subA.id, room_id: big.id });
+    const planned = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", title: "Planned", starts_at: soon(7200_000), ends_at: soon(10800_000),
+    });
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: planned.id, room_id: small.id, submission_id: subB.id });
+
+    // Seats: two attendees seated into the unconference slot (subA/Big).
+    await ctx.prisma.userAssignment.createMany({
+      data: [
+        { slotId: unconf.id, userId: p1.identity_id, submissionId: subA.id, roomId: big.id },
+        { slotId: unconf.id, userId: p2.identity_id, submissionId: subA.id, roomId: big.id },
+      ],
+    });
+
+    // Takeaways: 2 on A, 1 on B → 3.
+    await p1.client.rpc.takeaways.add({ slug: conf.slug, submission_id: subA.id, text: "a1" });
+    await p2.client.rpc.takeaways.add({ slug: conf.slug, submission_id: subA.id, text: "a2" });
+    await p1.client.rpc.takeaways.add({ slug: conf.slug, submission_id: subB.id, text: "b1" });
+
+    const report = await owner.rpc.conferences.report({ slug: conf.slug });
+
+    const identityCount = await ctx.prisma.conferenceIdentity.count({ where: { conferenceId: conf.id } });
+    expect(report.participant_count).toBe(identityCount);
+    expect(report.sessions.submitted).toBe(3);
+    expect(report.sessions.published).toBe(2);
+    expect(report.sessions.placed_or_scheduled).toBe(2);
+    expect(report.seats_filled).toBe(2);
+    expect(report.stars_total).toBe(3);
+
+    expect(report.top_sessions).toHaveLength(2);
+    expect(report.top_sessions[0]).toEqual({ title: "Popular", star_count: 2, submitter_name: "Ada" });
+    expect(report.top_sessions[1]).toEqual({ title: "Quiet", star_count: 1, submitter_name: "Ada" });
+
+    // Rooms sorted capacity desc; each hosts one slot; 2 total slots in the conference.
+    expect(report.rooms).toHaveLength(2);
+    const bigOut = report.rooms.find((r) => r.name === "Big")!;
+    const smallOut = report.rooms.find((r) => r.name === "Small")!;
+    expect(bigOut.used_slots).toBe(1);
+    expect(smallOut.used_slots).toBe(1);
+    expect(bigOut.available_slots).toBe(2);
+
+    expect(report.expert_bookings_count).toBe(0);
+    expect(report.takeaway_count).toBe(3);
+    expect(report.generated_at).toBeGreaterThan(0);
+
+    // No emails anywhere in the report payload.
+    expect(JSON.stringify(report)).not.toContain("@example.com");
+  });
+
+  test("a participant cannot pull the report", async () => {
+    const { owner, conf } = await makeOwnerConf("repauth");
+    const { client: part } = await inviteAndClaim(ctx.app, owner, conf.slug, "rep-part@example.com");
+    await expect(part.rpc.conferences.report({ slug: conf.slug })).rejects.toBeInstanceOf(ORPCError);
+  });
+});
+
+describe("Duplicate conference (conferences.duplicate)", () => {
+  beforeAll(() => { ctx = setupTestApp(); });
+  afterAll(async () => { await ctx.cleanup(); });
+
+  test("owner clones config + rooms + slot skeleton with times shifted; no identities/submissions/tokens", async () => {
+    const { owner, conf } = await makeOwnerConf("dup");
+    // Non-default config so the copy is observable.
+    await owner.rpc.conferences.update({
+      slug: conf.slug,
+      design_system: "minimal",
+      mixer_avoid_repeats_default: false,
+      submission_max_placements_default: 3,
+      participant_submissions_enabled: false,
+    });
+
+    // Rooms with tags + an availability window (Jan 1 2026, UTC).
+    const dayStart = Date.UTC(2026, 0, 1, 8, 0);
+    const dayEnd = Date.UTC(2026, 0, 1, 18, 0);
+    await owner.rpc.rooms.create({
+      slug: conf.slug, name: "Main", capacity: 50, tags: ["projector"],
+      availability: [{ starts_at: dayStart, ends_at: dayEnd }],
+    });
+    await owner.rpc.rooms.create({ slug: conf.slug, name: "Side", capacity: 20 });
+
+    // Two slots on Jan 1.
+    const slot1Start = Date.UTC(2026, 0, 1, 9, 0);
+    const slot1End = Date.UTC(2026, 0, 1, 10, 0);
+    const slot2Start = Date.UTC(2026, 0, 1, 14, 0);
+    const slot2End = Date.UTC(2026, 0, 1, 15, 0);
+    await owner.rpc.agenda.createSlot({ slug: conf.slug, type: "normal", title: "Morning", starts_at: slot1Start, ends_at: slot1End });
+    await owner.rpc.agenda.createSlot({ slug: conf.slug, type: "unconference", title: "Afternoon", starts_at: slot2Start, ends_at: slot2End });
+
+    // Source has a participant + a submission — neither should reach the clone.
+    // (Owner submits, since participant submissions were disabled above.)
+    await inviteAndClaim(ctx.app, owner, conf.slug, "dup-p@example.com");
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Source Talk" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+
+    // Duplicate onto June 10 2026 (midnight UTC).
+    const firstDay = Date.UTC(2026, 5, 10, 0, 0);
+    const { slug: newSlug } = await owner.rpc.conferences.duplicate({
+      slug: conf.slug, name: "Cloned Event", first_day: firstDay,
+    });
+    expect(newSlug).not.toBe(conf.slug);
+
+    const clone = await ctx.prisma.conference.findUniqueOrThrow({ where: { slug: newSlug } });
+    // Config copied.
+    expect(clone.designSystem).toBe("minimal");
+    expect(clone.timezone).toBe("UTC");
+    expect(clone.mixerAvoidRepeatsDefault).toBe(false);
+    expect(clone.submissionMaxPlacementsDefault).toBe(3);
+    expect(clone.participantSubmissionsEnabled).toBe(false);
+    expect(clone.ownerId).toBe(conf.owner_id);
+    // Tokens / spotlight NOT copied.
+    expect(clone.boardToken).toBeNull();
+    expect(clone.spotlightSubmissionId).toBeNull();
+
+    const delta = startOfDayInstant(firstDay, "UTC") - startOfDayInstant(slot1Start, "UTC");
+
+    // Slots shifted by delta; seating reset.
+    const cloneSlots = await ctx.prisma.agendaSlot.findMany({
+      where: { conferenceId: clone.id }, orderBy: { startsAt: "asc" },
+    });
+    expect(cloneSlots).toHaveLength(2);
+    expect(cloneSlots[0]!.startsAt.getTime()).toBe(slot1Start + delta);
+    expect(cloneSlots[0]!.endsAt.getTime()).toBe(slot1End + delta);
+    expect(cloneSlots[1]!.startsAt.getTime()).toBe(slot2Start + delta);
+    expect(cloneSlots[1]!.endsAt.getTime()).toBe(slot2End + delta);
+    expect(cloneSlots.every((s) => s.seatingStale === false)).toBe(true);
+
+    // Rooms cloned with tags + availability shifted by the same delta.
+    const cloneRooms = await ctx.prisma.room.findMany({
+      where: { conferenceId: clone.id }, include: { tags: true, availabilities: true },
+    });
+    expect(cloneRooms.map((r) => r.name).sort()).toEqual(["Main", "Side"]);
+    const cloneMain = cloneRooms.find((r) => r.name === "Main")!;
+    expect(cloneMain.tags.map((t) => t.value)).toEqual(["projector"]);
+    expect(cloneMain.availabilities).toHaveLength(1);
+    expect(cloneMain.availabilities[0]!.startsAt.getTime()).toBe(dayStart + delta);
+    expect(cloneMain.availabilities[0]!.endsAt.getTime()).toBe(dayEnd + delta);
+
+    // No identities, submissions, tracks, placements, or join link in the clone.
+    expect(await ctx.prisma.conferenceIdentity.count({ where: { conferenceId: clone.id } })).toBe(0);
+    expect(await ctx.prisma.submission.count({ where: { conferenceId: clone.id } })).toBe(0);
+    expect(await ctx.prisma.trackAssignment.count({ where: { slot: { conferenceId: clone.id } } })).toBe(0);
+    expect(await ctx.prisma.unconferencePlacement.count({ where: { slot: { conferenceId: clone.id } } })).toBe(0);
+    expect(await ctx.prisma.conferenceJoinLink.findUnique({ where: { conferenceId: clone.id } })).toBeNull();
+  });
+
+  test("a non-owner cannot duplicate", async () => {
+    const { owner, conf } = await makeOwnerConf("dupauth");
+    const { client: part } = await inviteAndClaim(ctx.app, owner, conf.slug, "dupauth-p@example.com");
+    await expect(
+      part.rpc.conferences.duplicate({ slug: conf.slug, name: "Nope", first_day: Date.UTC(2026, 5, 10) }),
+    ).rejects.toBeInstanceOf(ORPCError);
+  });
+
+  test("respects the per-user conference quota", async () => {
+    const cap = LIMITS.maxConferencesPerUser;
+    if (cap === 0) return; // unlimited: nothing to assert
+    const { owner, conf } = await makeOwnerConf("dupquota");
+    // makeOwnerConf already created 1 conference for this owner; fill to the cap.
+    for (let i = 1; i < cap; i++) {
+      await owner.rpc.conferences.create({ name: `Filler ${i}` });
+    }
+    await expect(
+      owner.rpc.conferences.duplicate({ slug: conf.slug, name: "Over Cap", first_day: Date.UTC(2026, 5, 10) }),
+    ).rejects.toBeInstanceOf(ORPCError);
   });
 });
