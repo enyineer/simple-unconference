@@ -16,6 +16,7 @@ import { isTab } from "../conference/types";
 import { TabBar } from "../conference/ui/TabBar";
 import { AccountMenu } from "../components/AccountMenu";
 import { NotificationBell } from "../components/NotificationBell";
+import { BroadcastButton } from "../components/BroadcastButton";
 import { AgendaTab } from "../conference/tabs/AgendaTab";
 import { DirectoryTab } from "../conference/tabs/DirectoryTab";
 import { ExpertsTab } from "../conference/tabs/ExpertsTab";
@@ -265,6 +266,7 @@ function ConferenceHeader({
   const navigateTab = (tabKey: string) => {
     if ((tabs as string[]).includes(tabKey)) onTabChange(tabKey as Tab);
   };
+  const isMod = conf.my_role === "owner" || conf.my_role === "moderator";
   const [showCompact, setShowCompact] = useState(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -300,6 +302,7 @@ function ConferenceHeader({
             current={conf.name}
           />
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            {isMod && <BroadcastButton slug={slug} />}
             <NotificationBell slug={slug} onNavigateTab={navigateTab} />
             <AccountMenu
               name={me.name}
@@ -357,6 +360,7 @@ function ConferenceHeader({
                 inlineRole={conf.my_role}
               />
               <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                {isMod && <BroadcastButton slug={slug} />}
                 <NotificationBell slug={slug} onNavigateTab={navigateTab} />
                 <AccountMenu
                   name={me.name}

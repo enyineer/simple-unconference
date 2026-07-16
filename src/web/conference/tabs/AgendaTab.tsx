@@ -18,6 +18,7 @@ import { useNow } from "../../useNow";
 import { api, errorCode } from "../../api";
 import type { AgendaData, Room, Submission } from "../types";
 import { AssignmentRulesTrigger } from "../ui/AssignmentRulesModal";
+import { EventReportSheet } from "../ui/EventReportSheet";
 import { Tip } from "../ui/Tip";
 import { useRequirementsConfirm } from "../ui/RequirementsConfirm";
 import { ASSIGN_STEPS } from "../ui/agendaGuide";
@@ -61,6 +62,7 @@ export function AgendaTab({
   });
   const [selectedSlotId, setSelectedSlotId] = useState<number | null>(null);
   const [pitchOpen, setPitchOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
 
   // Open the confirm, or assign straight away if the mod opted out of it.
   function requestAssignAll() {
@@ -258,6 +260,11 @@ export function AgendaTab({
               identical primary actions competing on one screen. */}
           <AssignmentRulesTrigger isMod={isMod} label="How it works" />
           {isMod && (
+            <Button onClick={() => setReportOpen(true)}>
+              Event report
+            </Button>
+          )}
+          {isMod && (
             <Button onClick={() => setPitchOpen(true)}>
               Pitch mode
             </Button>
@@ -377,6 +384,14 @@ export function AgendaTab({
           subs={subs}
           activeId={data.spotlight_submission_id}
           onChanged={refresh}
+        />
+      )}
+
+      {isMod && (
+        <EventReportSheet
+          slug={slug}
+          open={reportOpen}
+          onClose={() => setReportOpen(false)}
         />
       )}
 

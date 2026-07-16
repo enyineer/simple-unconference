@@ -9,6 +9,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { useToast } from "../design-system/hooks";
 import { realtimeBus } from "../realtime/realtimeBus";
 import { useRoute } from "../router";
 
@@ -58,13 +59,33 @@ export function NotificationBell({
   const [unread, setUnread] = useState(0);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const { navigate } = useRoute();
+  const toast = useToast();
+  // Notification ids seen in a prior fetch. `null` until the first load so we
+  // don't toast the whole backlog on mount — only rows that appear *after*
+  // we've established a baseline count as "arrived live."
+  const seenIdsRef = useRef<Set<number> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    // Reset the arrival baseline when switching conferences so the new
+    // inbox's existing rows aren't announced as fresh.
+    seenIdsRef.current = null;
     const tick = () => {
       api.notifications.list({ slug })
         .then((res) => {
           if (cancelled) return;
+          // Surface a live toast for announcements that arrived since the last
+          // fetch — in-app users see the broadcast immediately, not just as a
+          // bell badge. Guarded by the baseline so mount/first-load is silent.
+          const seen = seenIdsRef.current;
+          if (seen) {
+            for (const it of res.items) {
+              if (it.kind === "announcement" && it.read_at === null && !seen.has(it.id)) {
+                toast.info(it.body ?? it.title);
+              }
+            }
+          }
+          seenIdsRef.current = new Set(res.items.map((i) => i.id));
           setItems(res.items);
           setUnread(res.unread_count);
         })
@@ -99,7 +120,7 @@ export function NotificationBell({
       if (refetchTimer) clearTimeout(refetchTimer);
       for (const off of offs) off();
     };
-  }, [slug]);
+  }, [slug, toast]);
 
   // Close on outside click + Escape (same pattern as AccountMenu).
   useEffect(() => {

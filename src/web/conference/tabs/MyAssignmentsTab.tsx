@@ -3,6 +3,7 @@ import {
   Heading, Spinner, Stack,
 } from "../../design-system";
 import { api } from "../../api";
+import { useNow } from "../../useNow";
 import { clipToMinute, formatInTz } from "../../../shared/tz";
 import type { AgendaData, MyAssignments, Room, Submission } from "../types";
 import { EmptyState } from "../ui/EmptyState";
@@ -11,6 +12,7 @@ import { SessionPicker } from "../ui/SessionPicker";
 import { UnplacedCard } from "./my-assignments/UnplacedCard";
 import { ScheduleCard } from "./my-assignments/ScheduleCard";
 import { CalendarSubscribe } from "./my-assignments/CalendarSubscribe";
+import { RightNowCard } from "./my-assignments/RightNowCard";
 
 export function MyAssignmentsTab({
   slug, timeZone,
@@ -28,6 +30,8 @@ export function MyAssignmentsTab({
   // Which slot's session picker is currently open. The picker is shared
   // across "Pick a session" (unplaced) and "Change session" (placed).
   const [pickerSlotId, setPickerSlotId] = useState<number | null>(null);
+  // Whole-minute "now" driving the Right Now card's running/next detection.
+  const now = useNow();
 
   const fetchAll = useCallback(() => Promise.all([
     api.agenda.myAssignments({ slug }),
@@ -121,6 +125,16 @@ export function MyAssignmentsTab({
   return (
     <Stack gap="spacious">
       <Heading level={2}>Your schedule</Heading>
+
+      <RightNowCard
+        slots={agenda.slots}
+        assignments={data.assignments}
+        roomById={roomById}
+        placements={agenda.placements}
+        timeZone={timeZone}
+        now={now}
+        onSwitchSession={(sid) => setPickerSlotId(sid)}
+      />
 
       <CalendarSubscribe slug={slug} />
 
