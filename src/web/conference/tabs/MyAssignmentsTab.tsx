@@ -13,12 +13,14 @@ import { UnplacedCard } from "./my-assignments/UnplacedCard";
 import { ScheduleCard } from "./my-assignments/ScheduleCard";
 import { CalendarSubscribe } from "./my-assignments/CalendarSubscribe";
 import { RightNowCard } from "./my-assignments/RightNowCard";
+import { RecapSection } from "./my-assignments/RecapSection";
 
 export function MyAssignmentsTab({
-  slug, timeZone,
+  slug, timeZone, isMod,
 }: {
   slug: string;
   timeZone: string;
+  isMod: boolean;
 }) {
   const [data, setData] = useState<MyAssignments | null>(null);
   const [agenda, setAgenda] = useState<AgendaData | null>(null);
@@ -193,6 +195,15 @@ export function MyAssignmentsTab({
           ))}
         </Stack>
       )}
+
+      <RecapSection
+        slug={slug}
+        timeZone={timeZone}
+        isMod={isMod}
+        slots={agenda.slots}
+        assignments={data.assignments}
+        now={now}
+      />
 
       <RoomInfoSheet room={openRoom} onClose={() => setOpenRoom(null)} />
 

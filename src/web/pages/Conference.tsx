@@ -193,6 +193,7 @@ export function ConferencePage({
           <MyAssignmentsTab
             slug={slug}
             timeZone={conf.timezone}
+            isMod={isMod}
           />
         )}
         {tab === "settings" && isOwner && (

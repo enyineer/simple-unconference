@@ -7,6 +7,7 @@ import {
 } from "../../helpers";
 import { ProfileLink } from "../../ProfileLink";
 import { Pill } from "../../ui/Pill";
+import { TakeawaysPanel } from "../../ui/TakeawaysPanel";
 
 export function SessionCard({
   slug,
@@ -294,6 +295,17 @@ export function SessionCard({
           </div>
         )}
       </div>
+
+      {s.status === "published" && (
+        <div style={{ gridColumn: "1 / -1", gridRow: 8 }}>
+          <TakeawaysPanel
+            slug={slug}
+            submissionId={s.id}
+            isMod={isMod}
+            timeZone={timeZone}
+          />
+        </div>
+      )}
     </div>
   );
 }

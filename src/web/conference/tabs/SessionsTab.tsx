@@ -20,6 +20,7 @@ import { SessionFilterBar } from "./sessions/SessionFilterBar";
 import { SessionCard } from "./sessions/SessionCard";
 import { SessionForm } from "./sessions/SessionForm";
 import { MySessionQuotaHint } from "./sessions/MySessionQuotaHint";
+import { WelcomeRail } from "./sessions/WelcomeRail";
 
 export function SessionsTab({
   slug,
@@ -210,6 +211,8 @@ export function SessionsTab({
   return (
     <Stack gap="spacious">
       {requirementsConfirm.modal}
+
+      {!isMod && <WelcomeRail slug={slug} />}
 
       <Stack direction="row" justify="between" align="center" wrap>
         <Heading level={2}>Sessions</Heading>
