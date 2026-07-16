@@ -5333,6 +5333,7 @@ describe("agenda.scheduleSubmission (auto-room planned tracks)", () => {
     });
     if (r.kind !== "conflict") throw new Error(`expected conflict, got ${r.kind}`);
     expect(r.reason).toBe("pin_room_taken");
+    if (r.reason !== "pin_room_taken") throw new Error("expected pin_room_taken");
     expect(r.pinned_room?.id).toBe(room.id);
   });
 
@@ -5360,6 +5361,7 @@ describe("agenda.scheduleSubmission (auto-room planned tracks)", () => {
     });
     if (r.kind !== "conflict") throw new Error(`expected conflict, got ${r.kind}`);
     expect(r.reason).toBe("unsatisfiable_requirements");
+    if (r.reason !== "unsatisfiable_requirements") throw new Error("expected unsatisfiable_requirements");
     expect(r.required_tags).toEqual(["projector"]);
     expect(r.candidate_room_names).toEqual([]);
   });
@@ -5388,6 +5390,7 @@ describe("agenda.scheduleSubmission (auto-room planned tracks)", () => {
     });
     if (r.kind !== "conflict") throw new Error(`expected conflict, got ${r.kind}`);
     expect(r.reason).toBe("unsatisfiable_requirements");
+    if (r.reason !== "unsatisfiable_requirements") throw new Error("expected unsatisfiable_requirements");
     expect(r.candidate_room_names).toContain("Studio");
   });
 
@@ -5407,6 +5410,7 @@ describe("agenda.scheduleSubmission (auto-room planned tracks)", () => {
     });
     if (r.kind !== "conflict") throw new Error(`expected conflict, got ${r.kind}`);
     expect(r.reason).toBe("no_free_room");
+    if (r.reason !== "no_free_room") throw new Error("expected no_free_room");
     expect(r.candidate_room_names).toEqual(["Only"]);
   });
 

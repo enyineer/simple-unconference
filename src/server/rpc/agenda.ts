@@ -4,13 +4,37 @@ import {
   requireConf, actorIdentityId,
   normalizeLabels, resolveFinished,
 } from "./shared";
-import { clipToMinute } from "../../shared/tz";
+import { clipToMinute, formatInTz } from "../../shared/tz";
+import type { RoomOverlapHolder } from "../../shared/contract/types";
 import { assignUnconferenceSlot, assignMixerSlot, pairKey, priorityWeight, type AssignmentInput } from "../assignment";
 import {
   assignAgenda, type AgendaOccurrence, type AgendaUserAssignment,
 } from "../assignment-agenda";
 import { effectiveSlotConfig, SLOT_CONFIG_INCLUDE } from "../lib/slot-config";
 import { createNotifications } from "../notifications";
+import {
+  expertDedicatedRoomIds, expertDedicationOf,
+  unavailableRoomIds, roomAvailabilityWindows,
+} from "../lib/room-constraints";
+import type { RoomDedicatedConflict, RoomUnavailableConflict } from "../../shared/contract/types";
+
+// `room_expert_dedicated` conflict body for a specific blocked room on a manual
+// scheduling path. Spread by each call site alongside its own `kind`/`submission`.
+function roomDedicatedConflict(
+  room: { id: number; name: string }, poolName: string | null,
+): RoomDedicatedConflict {
+  return { reason: "room_expert_dedicated", room, pool_name: poolName };
+}
+// `room_unavailable` conflict body — carries the room's windows (epoch-ms pairs).
+async function roomUnavailableConflict(
+  prisma: PrismaClient, room: { id: number; name: string },
+): Promise<RoomUnavailableConflict> {
+  return {
+    reason: "room_unavailable",
+    room,
+    availability: await roomAvailabilityWindows(prisma, room.id),
+  };
+}
 
 // Shapes of pre-assignment conflicts surfaced by `runAssignmentForSlot`.
 // Mirrors the `PreAssignmentConflict` union in the API contract.
@@ -145,6 +169,108 @@ async function notifyPlannedScheduleChange(
   );
 }
 
+// Room ids physically occupied by any slot whose time window overlaps
+// `[startsAt, endsAt)` (excluding `slotId` itself). Occupancy comes from every
+// source that puts a body in a room during that window:
+//   - planned tracks (`TrackAssignment.roomId`),
+//   - unconference placements (`UnconferencePlacement.roomId`),
+//   - explicit seat assignments incl. MIXER rooms (`UserAssignment.roomId`) —
+//     mixers never create placements, they only write UserAssignment rows, so
+//     this last source is what makes a mixer's rooms count as occupied.
+// Mirrors the overlap-exclusion query pattern in `runAssignmentForSlot`. The
+// overlap convention is `a.startsAt < b.endsAt && a.endsAt > b.startsAt`.
+async function overlapHeldRoomIds(
+  prisma: PrismaClient,
+  confId: number,
+  slotId: number,
+  window: { startsAt: Date; endsAt: Date },
+): Promise<Set<number>> {
+  const held = new Set<number>();
+  const overlapping = await prisma.agendaSlot.findMany({
+    where: {
+      conferenceId: confId,
+      id: { not: slotId },
+      startsAt: { lt: window.endsAt },
+      endsAt: { gt: window.startsAt },
+    },
+    select: { id: true },
+  });
+  const ids = overlapping.map((s) => s.id);
+  if (ids.length === 0) return held;
+  const [placements, tracks, assigns] = await Promise.all([
+    prisma.unconferencePlacement.findMany({
+      where: { slotId: { in: ids } }, select: { roomId: true },
+    }),
+    prisma.trackAssignment.findMany({
+      where: { slotId: { in: ids } }, select: { roomId: true },
+    }),
+    prisma.userAssignment.findMany({
+      where: { slotId: { in: ids }, roomId: { not: null } }, select: { roomId: true },
+    }),
+  ]);
+  for (const p of placements) held.add(p.roomId);
+  for (const t of tracks) held.add(t.roomId);
+  for (const a of assigns) if (a.roomId !== null) held.add(a.roomId);
+  return held;
+}
+
+// Describe WHAT occupies `roomId` during `window` in some other slot, so a
+// refused hand-placement can name the clash instead of just refusing. Returns
+// the first holder found, preferring a planned track, then an unconference
+// placement, then a bare room booking (a mixer — no session title). Null when
+// no overlapping slot holds the room. `slot_label` is the holder slot's start
+// time formatted in the conference timezone.
+async function findRoomOverlapHolder(
+  prisma: PrismaClient,
+  confId: number,
+  slotId: number,
+  window: { startsAt: Date; endsAt: Date },
+  timezone: string,
+  roomId: number,
+): Promise<RoomOverlapHolder | null> {
+  const overlapping = await prisma.agendaSlot.findMany({
+    where: {
+      conferenceId: confId,
+      id: { not: slotId },
+      startsAt: { lt: window.endsAt },
+      endsAt: { gt: window.startsAt },
+    },
+    select: { id: true, startsAt: true },
+  });
+  if (overlapping.length === 0) return null;
+  const ids = overlapping.map((s) => s.id);
+  const startById = new Map(overlapping.map((s) => [s.id, s.startsAt]));
+  const [track, placement, assign, room] = await Promise.all([
+    prisma.trackAssignment.findFirst({
+      where: { slotId: { in: ids }, roomId },
+      select: { slotId: true, submission: { select: { title: true } } },
+    }),
+    prisma.unconferencePlacement.findFirst({
+      where: { slotId: { in: ids }, roomId },
+      select: { slotId: true, submission: { select: { title: true } } },
+    }),
+    prisma.userAssignment.findFirst({
+      where: { slotId: { in: ids }, roomId },
+      select: { slotId: true },
+    }),
+    prisma.room.findUnique({ where: { id: roomId }, select: { name: true } }),
+  ]);
+  const holder = track
+    ? { slotId: track.slotId, title: track.submission.title }
+    : placement
+      ? { slotId: placement.slotId, title: placement.submission.title }
+      : assign
+        ? { slotId: assign.slotId, title: null }
+        : null;
+  if (!holder) return null;
+  const startsAt = startById.get(holder.slotId);
+  return {
+    slot_label: startsAt ? formatInTz(startsAt.getTime(), timezone) : "",
+    title: holder.title,
+    room_name: room?.name ?? "(unknown room)",
+  };
+}
+
 // USER-FACING DOCS: the plain-language description of the steps below
 // (top-N selection, pin/tag pre-assignments, bipartite matching with
 // cascade analysis, overlap exclusions, finished filter, manual picks)
@@ -171,6 +297,17 @@ async function runAssignmentForSlot(
   let rooms = await prisma.room.findMany({
     where: roomWhere, select: { id: true, capacity: true, name: true },
   });
+  // Room constraints: expert-dedicated rooms are never assignable, and rooms
+  // whose availability windows don't fully contain this slot's window are
+  // excluded. Both are folded silently into the assignable pool (automatic
+  // path) — the mod sees the reduced set of placements, not a conflict.
+  {
+    const [dedicated, unavailable] = await Promise.all([
+      expertDedicatedRoomIds(prisma, confId),
+      unavailableRoomIds(prisma, rooms.map((r) => r.id), slot.startsAt, slot.endsAt),
+    ]);
+    rooms = rooms.filter((r) => !dedicated.has(r.id) && !unavailable.has(r.id));
+  }
 
   const subWhere = cfg.unconfUseAllSubmissions
     ? { conferenceId: confId, status: "published" as const }
@@ -981,6 +1118,15 @@ async function runMixerForSlot(prisma: PrismaClient, confId: number, slotId: num
   let rooms = await prisma.room.findMany({
     where: roomWhere, select: { id: true, capacity: true, name: true },
   });
+  // Expert-dedicated and window-unavailable rooms are silently excluded (same
+  // as the unconference path).
+  {
+    const [dedicated, unavailable] = await Promise.all([
+      expertDedicatedRoomIds(prisma, confId),
+      unavailableRoomIds(prisma, rooms.map((r) => r.id), slot.startsAt, slot.endsAt),
+    ]);
+    rooms = rooms.filter((r) => !dedicated.has(r.id) && !unavailable.has(r.id));
+  }
   const identityRows = await prisma.conferenceIdentity.findMany({
     where: { conferenceId: confId }, select: { id: true },
   });
@@ -2154,6 +2300,45 @@ export const agendaRouter = {
       },
     });
 
+    // Refuse a room physically occupied by a time-overlapping slot — mods can't
+    // hold every booking in their head. Only when placing into a room this slot
+    // doesn't already use (`!existing`): editing/replacing a track already in
+    // this room is never blocked by its own room. The conflict names the holder
+    // so the UI can say what's using it.
+    if (!existing) {
+      // Room constraints: a room reserved for experts, or one whose availability
+      // windows don't contain this slot, can't host a hand-scheduled track.
+      // Checked before the overlap holder (config errors before contention).
+      const targetRoom = await context.prisma.room.findFirst({
+        where: { id: input.room_id, conferenceId: context.conferenceId },
+        select: { id: true, name: true },
+      });
+      if (targetRoom) {
+        const dedication = await expertDedicationOf(
+          context.prisma, context.conferenceId, targetRoom.id,
+        );
+        if (dedication) {
+          return { kind: "conflict" as const, ...roomDedicatedConflict(targetRoom, dedication.poolName) };
+        }
+        const unavailable = await unavailableRoomIds(
+          context.prisma, [targetRoom.id], slot.startsAt, slot.endsAt,
+        );
+        if (unavailable.has(targetRoom.id)) {
+          return { kind: "conflict" as const, ...(await roomUnavailableConflict(context.prisma, targetRoom)) };
+        }
+      }
+      const conf = await context.prisma.conference.findUniqueOrThrow({
+        where: { id: context.conferenceId }, select: { timezone: true },
+      });
+      const holder = await findRoomOverlapHolder(
+        context.prisma, context.conferenceId, input.slot_id,
+        { startsAt: slot.startsAt, endsAt: slot.endsAt }, conf.timezone, input.room_id,
+      );
+      if (holder) {
+        return { kind: "conflict" as const, reason: "room_overlap_taken" as const, holder };
+      }
+    }
+
     await context.prisma.$transaction(async (tx) => {
       const track = await tx.trackAssignment.upsert({
         where: { slotId_roomId: { slotId: input.slot_id, roomId: input.room_id } },
@@ -2206,7 +2391,7 @@ export const agendaRouter = {
         mandatory: newMandatory, change: { kind: "scheduled", roomName },
       });
     }
-    return { ok: true as const };
+    return { kind: "ok" as const };
   }),
 
   clearTrack: requireConf("moderator").agenda.clearTrack.handler(async ({ input, context }) => {
@@ -2285,7 +2470,26 @@ export const agendaRouter = {
         select: { roomId: true },
       }),
     ]);
-    const takenRoomIds = new Set(existingTracks.map((t) => t.roomId));
+    // A room is unusable here if it already holds a track in THIS slot OR is
+    // physically occupied by a time-overlapping slot (double-booking). Folding
+    // both into `takenRoomIds` makes the pin check report `pin_room_taken` and
+    // the auto path report `no_free_room`/`unsatisfiable_requirements` when
+    // everything satisfying is overlap-held.
+    const overlapHeld = await overlapHeldRoomIds(
+      context.prisma, context.conferenceId, input.slot_id,
+      { startsAt: slot.startsAt, endsAt: slot.endsAt },
+    );
+    const takenRoomIds = new Set<number>([
+      ...existingTracks.map((t) => t.roomId),
+      ...overlapHeld,
+    ]);
+    // Room constraints for this slot's window: dedicated rooms (conference-wide)
+    // and rooms unavailable for the slot window. A pinned room hitting either is
+    // a specific conflict; the auto path just excludes them from the free pool.
+    const [dedicatedIds, unavailableIds] = await Promise.all([
+      expertDedicatedRoomIds(context.prisma, context.conferenceId),
+      unavailableRoomIds(context.prisma, scopedRooms.map((r) => r.id), slot.startsAt, slot.endsAt),
+    ]);
     const requiredTags = submission.roomRequirements.map((r) => r.value);
 
     // Resolve all rooms' tags up front so we can build `candidate_room_names`
@@ -2332,6 +2536,15 @@ export const agendaRouter = {
           candidate_room_names: [],
         };
       }
+      const pinnedDedication = await expertDedicationOf(
+        context.prisma, context.conferenceId, pinnedId,
+      );
+      if (pinnedDedication) {
+        return { kind: "conflict" as const, ...roomDedicatedConflict(pinnedRoom, pinnedDedication.poolName) };
+      }
+      if (unavailableIds.has(pinnedId)) {
+        return { kind: "conflict" as const, ...(await roomUnavailableConflict(context.prisma, pinnedRoom)) };
+      }
       if (takenRoomIds.has(pinnedId)) {
         return {
           kind: "conflict" as const,
@@ -2344,7 +2557,9 @@ export const agendaRouter = {
       chosenRoomId = pinnedId;
     } else {
       const matching = scopedRooms.filter((r) => roomSatisfiesRequirements(r.id));
-      const free = matching.filter((r) => !takenRoomIds.has(r.id));
+      const free = matching.filter(
+        (r) => !takenRoomIds.has(r.id) && !dedicatedIds.has(r.id) && !unavailableIds.has(r.id),
+      );
       if (free.length === 0) {
         // Two distinct failure modes here, both surfaced clearly to the mod:
         //   - `matching.length === 0` and we have any requirements →
@@ -2419,12 +2634,18 @@ export const agendaRouter = {
     };
   }),
 
-  // Reassign a PLANNED slot's rooms among its already-scheduled tracks by
-  // popularity: biggest room to the most-starred talk. Honors `preAssignedRoomId`
-  // pins (a pin overrides tag requirements, like scheduleSubmission) and
-  // `roomRequirements`. All-or-nothing: any unmatchable track returns a conflict
-  // with ZERO writes. Mirrors the assignment.ts Phase A zip semantics without
-  // importing it (that module is per-slot attendee placement, not track refit).
+  // REPAIR a PLANNED slot's room assignment with stable, minimal-move
+  // semantics (NOT a re-rank). Only "misfit" tracks move; talks that already
+  // fit keep their rooms. A track is a misfit when its interest exceeds its
+  // room, its `preAssignedRoomId` pin points elsewhere, its `roomRequirements`
+  // aren't met by its room, or its room is double-booked by a time-overlapping
+  // slot. Each misfit is sent to the SMALLEST free room that still covers its
+  // interest (best fit — preserves big-room headroom), falling back to the
+  // largest satisfying free room, then to a single swap with a strictly
+  // less-starred non-pinned track. Genuine pin config errors abort with a
+  // conflict + zero writes; misfits that still can't be improved stay put and
+  // are reported in `unresolved`. `preAssignedRoomId` pins override tag
+  // requirements (parity with `scheduleSubmission`).
   refitRooms: requireConf("moderator").agenda.refitRooms.handler(async ({ input, context }) => {
     const slot = await context.prisma.agendaSlot.findFirst({
       where: { id: input.slot_id, conferenceId: context.conferenceId },
@@ -2487,89 +2708,255 @@ export const agendaRouter = {
       return tags ? reqs.every((t) => tags.has(t)) : false;
     };
 
-    const claimed = new Set<number>();
-    const assignedRoom = new Map<number, number>(); // trackId -> roomId
+    // Rooms physically occupied by a time-overlapping slot: never claimable,
+    // and a track sitting in one is a misfit (double-booked).
+    const overlapHeld = await overlapHeldRoomIds(
+      context.prisma, context.conferenceId, input.slot_id,
+      { startsAt: slot.startsAt, endsAt: slot.endsAt },
+    );
+    // Room constraints: expert-dedicated rooms and rooms unavailable for this
+    // slot's window are never valid refit targets. A pinned track pointing at
+    // one aborts with a conflict (step 1); for auto repair they're just dropped
+    // from the pool of claimable rooms (`roomAvailable` below).
+    const [dedicatedIds, unavailableIds] = await Promise.all([
+      expertDedicatedRoomIds(context.prisma, context.conferenceId),
+      unavailableRoomIds(context.prisma, pool.map((r) => r.id), slot.startsAt, slot.endsAt),
+    ]);
 
-    // (1) Pins claim their room first (walk by submission id asc for
-    //     deterministic conflict messages). A pin outside the pool → out of
-    //     scope; two pins on one room → taken.
+    type Track = (typeof tracks)[number];
+    const starsOf = (t: Track) => t.submission._count.stars;
+    const reqsOf = (t: Track) => t.requirements.map((r) => r.value);
+    const capOf = (roomId: number) => poolById.get(roomId)?.capacity ?? 0;
+    const pinOf = (t: Track) => t.submission.preAssignedRoomId;
+
+    // ----- (1) Hard pin conflicts (all-or-nothing, ZERO writes) ------------
+    // Genuine configuration errors a repair can't silently work around. Walked
+    // by submission id asc for deterministic messages. `pin_room_taken` covers
+    // a pin room double-booked by an overlapping slot as well as two pins on
+    // one room.
     const pinnedTracks = tracks
-      .filter((t) => t.submission.preAssignedRoomId !== null)
+      .filter((t) => pinOf(t) !== null)
       .sort((a, b) => a.submission.id - b.submission.id);
+    const pinClaims = new Set<number>();
     for (const t of pinnedTracks) {
-      const pinId = t.submission.preAssignedRoomId;
-      if (pinId === null) continue; // defensive; filtered above
-      const reqTags = t.requirements.map((r) => r.value);
-      if (!poolById.has(pinId)) {
+      const pin = pinOf(t)!;
+      const reqTags = reqsOf(t);
+      if (!poolById.has(pin)) {
         const name = (await context.prisma.room.findFirst({
-          where: { id: pinId, conferenceId: context.conferenceId }, select: { name: true },
+          where: { id: pin, conferenceId: context.conferenceId }, select: { name: true },
         }))?.name ?? "(unknown room)";
         return {
           kind: "conflict" as const, reason: "pin_room_out_of_scope" as const,
-          pinned_room: { id: pinId, name }, required_tags: reqTags,
-          candidate_room_names: [],
+          pinned_room: { id: pin, name }, required_tags: reqTags, candidate_room_names: [],
           submission: { id: t.submission.id, title: t.submission.title },
         };
       }
-      if (claimed.has(pinId)) {
+      const pinRoom = { id: pin, name: poolById.get(pin)!.name };
+      const submissionRef = { id: t.submission.id, title: t.submission.title };
+      const pinDedication = await expertDedicationOf(
+        context.prisma, context.conferenceId, pin,
+      );
+      if (pinDedication) {
+        return {
+          kind: "conflict" as const, submission: submissionRef,
+          ...roomDedicatedConflict(pinRoom, pinDedication.poolName),
+        };
+      }
+      if (unavailableIds.has(pin)) {
+        return {
+          kind: "conflict" as const, submission: submissionRef,
+          ...(await roomUnavailableConflict(context.prisma, pinRoom)),
+        };
+      }
+      if (overlapHeld.has(pin) || pinClaims.has(pin)) {
         return {
           kind: "conflict" as const, reason: "pin_room_taken" as const,
-          pinned_room: { id: pinId, name: poolById.get(pinId)!.name },
+          pinned_room: { id: pin, name: poolById.get(pin)!.name },
           required_tags: reqTags, candidate_room_names: [],
           submission: { id: t.submission.id, title: t.submission.title },
         };
       }
-      claimed.add(pinId);
-      assignedRoom.set(t.id, pinId);
+      pinClaims.add(pin);
     }
 
-    // (2) Remaining (unpinned) tracks by star count desc / submission id asc
-    //     each take the largest free pool room satisfying their requirements.
-    const sortedPool = [...pool].sort((a, b) =>
-      a.capacity !== b.capacity ? b.capacity - a.capacity : a.id - b.id);
-    const unpinned = tracks
-      .filter((t) => t.submission.preAssignedRoomId === null)
-      .sort((a, b) => {
-        const sa = a.submission._count.stars;
-        const sb = b.submission._count.stars;
-        if (sb !== sa) return sb - sa;
-        return a.submission.id - b.submission.id;
-      });
-    for (const t of unpinned) {
-      const reqs = t.requirements.map((r) => r.value);
-      const room = sortedPool.find((r) => !claimed.has(r.id) && satisfies(r.id, reqs));
-      if (!room) {
+    // ----- (2) Classify + seed the placement --------------------------------
+    // `finalRoom` is where each track ends up; `roomTaken` is the set of rooms
+    // already committed to a settled track this run. Non-misfits settle in
+    // place and are reserved. Pins never move except onto their own pin room.
+    const finalRoom = new Map<number, number>();
+    const roomTaken = new Set<number>();
+    const settled = new Set<number>();
+    const immovable = new Set<number>(pinnedTracks.map((t) => t.id)); // never a swap partner
+    const unresolved: { submission_id: number; title: string; reason: "overfilled" | "double_booked" | "requirements" }[] = [];
+
+    function isMisfit(t: Track): boolean {
+      const pin = pinOf(t);
+      if (pin !== null) {
+        // Pin overrides overfill + requirements; only wrong-room (or a pin
+        // room that's since become double-booked) is a misfit. The
+        // double-booked-pin case already hard-conflicted above.
+        return pin !== t.roomId || overlapHeld.has(t.roomId);
+      }
+      return (
+        !satisfies(t.roomId, reqsOf(t)) ||
+        overlapHeld.has(t.roomId) ||
+        starsOf(t) > capOf(t.roomId)
+      );
+    }
+
+    const unpinnedMisfits: Track[] = [];
+    for (const t of tracks) {
+      if (!isMisfit(t)) {
+        finalRoom.set(t.id, t.roomId);
+        roomTaken.add(t.roomId);
+        settled.add(t.id);
+      } else if (pinOf(t) === null) {
+        unpinnedMisfits.push(t);
+      }
+      // Pinned misfits are placed in step (3).
+    }
+
+    // ----- (3) Place pinned misfits onto their pin room --------------------
+    // Their pin room is in the pool, not double-booked, and unique (validated
+    // in step 1). If it's already held by a settled non-misfit, the pin can't
+    // be honored without moving a talk that fits → hard conflict pin_room_taken.
+    // If it's currently held by an unpinned misfit, that misfit will relocate.
+    for (const t of pinnedTracks) {
+      if (settled.has(t.id)) continue; // pin == current room → already settled
+      const pin = pinOf(t)!;
+      if (roomTaken.has(pin)) {
         return {
-          kind: "conflict" as const, reason: "unsatisfiable_requirements" as const,
-          pinned_room: null, required_tags: reqs,
-          candidate_room_names: pool.filter((r) => satisfies(r.id, reqs)).map((r) => r.name),
+          kind: "conflict" as const, reason: "pin_room_taken" as const,
+          pinned_room: { id: pin, name: poolById.get(pin)!.name },
+          required_tags: reqsOf(t), candidate_room_names: [],
           submission: { id: t.submission.id, title: t.submission.title },
         };
       }
-      claimed.add(room.id);
-      assignedRoom.set(t.id, room.id);
+      finalRoom.set(t.id, pin);
+      roomTaken.add(pin);
+      settled.add(t.id);
     }
 
-    // Changed tracks only. Nothing to do → no writes, no notifications.
+    // ----- (4) Repair unpinned misfits, most-starred first -----------------
+    const roomAvailable = (roomId: number) =>
+      poolById.has(roomId) && !overlapHeld.has(roomId) && !roomTaken.has(roomId) &&
+      !dedicatedIds.has(roomId) && !unavailableIds.has(roomId);
+
+    // Best-fit target among free satisfying rooms (excluding `exclude`, the
+    // track's own current room): smallest room covering `need`; else the
+    // largest satisfying room; else null.
+    function bestTarget(need: number, reqs: string[], exclude: number): number | null {
+      const cands = pool.filter(
+        (r) => r.id !== exclude && roomAvailable(r.id) && satisfies(r.id, reqs),
+      );
+      if (cands.length === 0) return null;
+      const adequate = cands.filter((r) => r.capacity >= need);
+      const pick = (arr: typeof cands, dir: "asc" | "desc") =>
+        [...arr].sort((a, b) =>
+          a.capacity !== b.capacity
+            ? (dir === "asc" ? a.capacity - b.capacity : b.capacity - a.capacity)
+            : a.id - b.id,
+        )[0]!.id;
+      return adequate.length > 0 ? pick(adequate, "asc") : pick(cands, "desc");
+    }
+
+    const sortedMisfits = [...unpinnedMisfits].sort((a, b) => {
+      const d = starsOf(b) - starsOf(a);
+      return d !== 0 ? d : a.submission.id - b.submission.id;
+    });
+
+    function place(trackId: number, roomId: number) {
+      finalRoom.set(trackId, roomId);
+      roomTaken.add(roomId);
+      settled.add(trackId);
+    }
+    function remainingReason(t: Track, roomId: number): "overfilled" | "double_booked" | "requirements" {
+      if (!satisfies(roomId, reqsOf(t))) return "requirements";
+      if (overlapHeld.has(roomId)) return "double_booked";
+      return "overfilled";
+    }
+
+    for (const m of sortedMisfits) {
+      if (settled.has(m.id)) continue; // consumed as a swap partner already
+      const reqs = reqsOf(m);
+      const need = starsOf(m);
+      const cur = m.roomId;
+      // Current room is fundamentally unusable (wrong features / double-booked)
+      // — any satisfying free room is an improvement. Overfill alone leaves the
+      // room usable, so we only move for a strictly better one.
+      const mustMove = !satisfies(cur, reqs) || overlapHeld.has(cur);
+
+      const target = bestTarget(need, reqs, cur);
+      let chosen: number | null = null;
+      if (target !== null) {
+        if (mustMove || capOf(target) >= need || capOf(target) > capOf(cur)) {
+          chosen = target;
+        }
+      }
+      if (chosen !== null) {
+        place(m.id, chosen);
+        immovable.add(m.id);
+        continue;
+      }
+
+      // No direct target. Allow ONE swap: trade rooms with a strictly
+      // less-starred, non-pinned, not-yet-repositioned track whose room can
+      // hold this misfit and whose own needs fit into this misfit's old room.
+      let partner: Track | null = null;
+      let partnerRoom = -1;
+      for (const w of tracks) {
+        if (w.id === m.id || immovable.has(w.id)) continue;
+        if (starsOf(w) >= need) continue; // must be strictly less starred
+        const wRoom = finalRoom.get(w.id) ?? w.roomId;
+        // m must be able to live in w's room; w must be able to live in m's.
+        if (overlapHeld.has(wRoom) || capOf(wRoom) < need || !satisfies(wRoom, reqs)) continue;
+        if (overlapHeld.has(cur) || capOf(cur) < starsOf(w) || !satisfies(cur, reqsOf(w))) continue;
+        // Best fit for m: smallest partner room that works.
+        if (partner === null || capOf(wRoom) < capOf(partnerRoom) ||
+            (capOf(wRoom) === capOf(partnerRoom) && w.submission.id < partner.submission.id)) {
+          partner = w;
+          partnerRoom = wRoom;
+        }
+      }
+      if (partner !== null) {
+        // If the partner was a settled non-misfit, it vacates its room for m.
+        place(m.id, partnerRoom);
+        immovable.add(m.id);
+        place(partner.id, cur);
+        immovable.add(partner.id);
+        continue;
+      }
+
+      // Unimprovable: stay put and report.
+      place(m.id, cur);
+      immovable.add(m.id);
+      unresolved.push({
+        submission_id: m.submission.id,
+        title: m.submission.title,
+        reason: remainingReason(m, cur),
+      });
+    }
+
+    // ----- (5) Diff, write, notify -----------------------------------------
     const moves = tracks
-      .filter((t) => assignedRoom.get(t.id) !== t.roomId)
+      .filter((t) => finalRoom.get(t.id) !== t.roomId)
       .map((t) => ({
         submission_id: t.submission.id,
         title: t.submission.title,
         from_room: poolById.get(t.roomId)!.name,
-        to_room: poolById.get(assignedRoom.get(t.id)!)!.name,
+        to_room: poolById.get(finalRoom.get(t.id)!)!.name,
       }));
     if (moves.length === 0) {
-      return { kind: "ok" as const, moves: [] };
+      return { kind: "ok" as const, moves: [], unresolved };
     }
 
     // The @@unique([slotId, roomId]) makes in-place room swaps collide
     // transiently, so we delete the slot's tracks and recreate them with the
     // new roomIds (same submission / speakers / mandatory / requirements).
     // Track ids change as a result — see the refit caveat in CLAUDE.md (the
-    // ICS VEVENT UID keys off track id).
+    // ICS VEVENT UID keys off slot+submission, so it's unaffected).
     const recreate = tracks.map((t) => ({
-      roomId: assignedRoom.get(t.id)!,
+      roomId: finalRoom.get(t.id)!,
       submissionId: t.submissionId,
       speakers: t.speakers,
       mandatory: t.mandatory,
@@ -2595,7 +2982,7 @@ export const agendaRouter = {
 
     // Notify "moved" per changed track AFTER commit.
     for (const t of tracks) {
-      const to = assignedRoom.get(t.id)!;
+      const to = finalRoom.get(t.id)!;
       if (to === t.roomId) continue;
       await notifyPlannedScheduleChange(context.prisma, {
         conferenceId: context.conferenceId, slotId: input.slot_id,
@@ -2605,7 +2992,7 @@ export const agendaRouter = {
       });
     }
 
-    return { kind: "ok" as const, moves };
+    return { kind: "ok" as const, moves, unresolved };
   }),
 
   // Path C: planned-track "stars" no longer exist as a separate concept.
@@ -2720,10 +3107,24 @@ export const agendaRouter = {
         where: { slotId: input.slot_id }, select: { roomId: true, submissionId: true },
       }),
     ]);
-    // A room is taken if another session occupies it in this slot.
-    const takenRoomIds = new Set(
-      existingPlacements.filter((p) => p.submissionId !== submission.id).map((p) => p.roomId),
+    // A room is taken if another session occupies it in this slot OR it's
+    // physically held by a time-overlapping slot (planned track, unconference
+    // placement, or mixer booking). Folding overlap-held rooms into
+    // `takenRoomIds` makes explicit/pin choices report `pin_room_taken` and the
+    // auto path report `no_free_room`/`unsatisfiable_requirements`.
+    const overlapHeld = await overlapHeldRoomIds(
+      context.prisma, context.conferenceId, input.slot_id,
+      { startsAt: slot.startsAt, endsAt: slot.endsAt },
     );
+    const takenRoomIds = new Set<number>([
+      ...existingPlacements.filter((p) => p.submissionId !== submission.id).map((p) => p.roomId),
+      ...overlapHeld,
+    ]);
+    // Room constraints for this slot's window (see scheduleSubmission).
+    const [dedicatedIds, unavailableIds] = await Promise.all([
+      expertDedicatedRoomIds(context.prisma, context.conferenceId),
+      unavailableRoomIds(context.prisma, scopedRooms.map((r) => r.id), slot.startsAt, slot.endsAt),
+    ]);
     const requiredTags = submission.roomRequirements.map((r) => r.value);
     const roomTagsRows = scopedRooms.length === 0 ? [] : await context.prisma.roomTag.findMany({
       where: { roomId: { in: scopedRooms.map((r) => r.id) } }, select: { roomId: true, value: true },
@@ -2756,6 +3157,15 @@ export const agendaRouter = {
           required_tags: requiredTags, candidate_room_names: [],
         };
       }
+      const explicitDedication = await expertDedicationOf(
+        context.prisma, context.conferenceId, room.id,
+      );
+      if (explicitDedication) {
+        return { kind: "conflict" as const, ...roomDedicatedConflict(room, explicitDedication.poolName) };
+      }
+      if (unavailableIds.has(room.id)) {
+        return { kind: "conflict" as const, ...(await roomUnavailableConflict(context.prisma, room)) };
+      }
       if (takenRoomIds.has(room.id)) {
         return {
           kind: "conflict" as const, reason: "pin_room_taken" as const,
@@ -2774,6 +3184,15 @@ export const agendaRouter = {
           required_tags: requiredTags, candidate_room_names: [],
         };
       }
+      const pinnedDedication = await expertDedicationOf(
+        context.prisma, context.conferenceId, pinnedId,
+      );
+      if (pinnedDedication) {
+        return { kind: "conflict" as const, ...roomDedicatedConflict(pinned, pinnedDedication.poolName) };
+      }
+      if (unavailableIds.has(pinnedId)) {
+        return { kind: "conflict" as const, ...(await roomUnavailableConflict(context.prisma, pinned)) };
+      }
       if (takenRoomIds.has(pinnedId)) {
         return {
           kind: "conflict" as const, reason: "pin_room_taken" as const,
@@ -2784,7 +3203,9 @@ export const agendaRouter = {
       chosenRoomId = pinnedId;
     } else {
       const matching = scopedRooms.filter((r) => satisfies(r.id));
-      const free = matching.filter((r) => !takenRoomIds.has(r.id));
+      const free = matching.filter(
+        (r) => !takenRoomIds.has(r.id) && !dedicatedIds.has(r.id) && !unavailableIds.has(r.id),
+      );
       if (free.length === 0) {
         // Required tags present → it's a requirements problem (no matching room,
         // or all matching rooms taken); otherwise simply no free room.

@@ -141,7 +141,9 @@ export const GLOSSARY: GlossaryTerm[] = [
   { term: "Star", definition: "An attendee marking a session \"I want this\". One star both signals interest for the unconference ranking and adds the session to their schedule." },
   { term: "Required", definition: "A session flagged to land on everyone's schedule regardless of stars — for keynotes, opening, and closing." },
   { term: "Reserved room (pinning)", definition: "Holding a specific room for a session so assignment always puts it there, ignoring stars and features. Set on the Sessions tab." },
-  { term: "Re-fit rooms", definition: "On a Planned slot, reassigning its rooms among the scheduled talks by star count - the most-starred talk gets the biggest room. Reserved rooms stay put; anyone who starred a moved talk is notified." },
+  { term: "Re-fit rooms", definition: "On a Planned slot, a repair pass that moves only talks whose room no longer fits - overfilled, clashing with an overlapping slot, or missing required features - into the best-fitting free room. Talks that already fit (and any with a reserved room) stay put; anyone who starred a moved talk is notified." },
   { term: "Room scope", definition: "Which rooms (and which sessions) a single unconference slot is allowed to use. Defaults to all of them." },
+  { term: "Expert-dedicated room", definition: "A room reserved for expert 1:1 chats (via an expert pool or an expert's room list). It never takes part in slot assignment, and a room already used by the agenda can't be reserved this way." },
+  { term: "Room availability", definition: "Optional time windows limiting when a room can be used. With windows, a session, track, or booking must fit fully inside one; with none, the room is available for the whole conference." },
   { term: "Recurring session", definition: "The same session placed on more than one slot, so it runs more than once. Attendees are split across the times." },
 ];

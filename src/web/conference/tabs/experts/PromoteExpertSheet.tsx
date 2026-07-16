@@ -6,6 +6,7 @@ import type { Room, Participant } from "../../types";
 import { SearchableSelect } from "../../ui/SearchableSelect";
 import { RoomCheckboxes } from "./RoomCheckboxes";
 import { humanError } from "./helpers";
+import { roomsInUseMessage } from "../../roomConstraints";
 import type { ExpertPool } from "./types";
 
 export function PromoteExpertSheet({
@@ -56,7 +57,7 @@ export function PromoteExpertSheet({
         room_ids: mode === "rooms" ? [...roomIds] : undefined,
       });
       onDone();
-    } catch (err) { toast.error(humanError(errorCode(err))); }
+    } catch (err) { toast.error(roomsInUseMessage(err) ?? humanError(errorCode(err))); }
   }
 
   return (

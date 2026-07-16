@@ -259,9 +259,29 @@ model Room {
   expertRoomMemberships ExpertRoom[]
   expertBookings        ExpertBooking[]
   preAssignedSubmissions Submission[]          @relation("SubmissionPreAssignedRoom")
+  // Availability windows. **No rows = the room is ALWAYS available** (the hard
+  // default). With one or more rows, the room is only usable for an interval
+  // that lies fully inside a single window. See src/server/lib/room-constraints.ts.
+  availabilities        RoomAvailability[]
 
   @@index([conferenceId])
   @@map("rooms")
+}
+
+// A window during which a Room may host sessions / expert bookings. Multiple
+// windows per room are allowed. The absence of any window means "always
+// available" — see the `availabilities` relation comment on Room. An interval
+// is usable only when it lies fully inside a single window.
+model RoomAvailability {
+  id       Int      @id @default(autoincrement())
+  roomId   Int      @map("room_id")
+  startsAt DateTime @map("starts_at")
+  endsAt   DateTime @map("ends_at")
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@index([roomId])
+  @@map("room_availabilities")
 }
 
 // Per-room labels (e.g. "projector", "ground floor", "wheelchair-accessible").

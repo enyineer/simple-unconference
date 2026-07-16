@@ -7,6 +7,7 @@ import { EmptyState } from "../../ui/EmptyState";
 import { Tip } from "../../ui/Tip";
 import { RoomCheckboxes } from "./RoomCheckboxes";
 import { humanError } from "./helpers";
+import { roomsInUseMessage } from "../../roomConstraints";
 import type { ExpertPool } from "./types";
 
 export function PoolsSheet({
@@ -31,7 +32,7 @@ export function PoolsSheet({
       await api.experts.createPool({ slug, name: name.trim(), room_ids: [...roomIds] });
       setName(""); setRoomIds(new Set()); setCreating(false);
       onDone();
-    } catch (err) { toast.error(humanError(errorCode(err))); }
+    } catch (err) { toast.error(roomsInUseMessage(err) ?? humanError(errorCode(err))); }
   }
 
   async function remove(id: number) {
@@ -46,7 +47,8 @@ export function PoolsSheet({
       <Tip>
         A pool is a named set of rooms reserved for expert chats. Assign an
         expert to a pool and bookings will draw the first available room from
-        it. You can also assign specific rooms per expert instead.
+        it. You can also assign specific rooms per expert instead. Rooms in a
+        pool are reserved for expert chats - agenda slots can&apos;t use them.
       </Tip>
       <Stack gap="spacious">
         {pools.length === 0 ? (
@@ -108,7 +110,7 @@ export function PoolRow({
       await api.experts.updatePool({ slug, id: pool.id, name: name.trim() || pool.name, room_ids: [...roomIds] });
       setEditing(false);
       onChanged();
-    } catch (e) { toast.error(humanError(errorCode(e))); }
+    } catch (e) { toast.error(roomsInUseMessage(e) ?? humanError(errorCode(e))); }
   }
 
   return (

@@ -8,6 +8,7 @@ import {
 } from "./shared";
 import { createNotification, createNotifications, modIdentityIds } from "../notifications";
 import { LIMITS, assertQuota, recordWrite } from "../lib/limits";
+import { expertDedicationOf } from "../lib/room-constraints";
 
 async function setStatus(prisma: PrismaClient, confId: number, id: number, status: SubmissionStatus) {
   await prisma.submission.updateMany({ where: { id, conferenceId: confId }, data: { status } });
@@ -228,6 +229,16 @@ export const submissionsRouter = {
           select: { id: true },
         });
         if (!room) throw new ORPCError("BAD_REQUEST", { message: "room_not_in_conference" });
+        // A room reserved for expert conversations is never a valid pin target.
+        const dedication = await expertDedicationOf(
+          context.prisma, context.conferenceId, room.id,
+        );
+        if (dedication) {
+          throw new ORPCError("BAD_REQUEST", {
+            message: "room_expert_dedicated",
+            data: { room_id: room.id, pool_name: dedication.poolName },
+          });
+        }
         modData.preAssignedRoomId = room.id;
       }
       if (input.submitter_id !== undefined) {
@@ -327,6 +338,16 @@ export const submissionsRouter = {
             select: { id: true },
           });
           if (!room) throw new ORPCError("BAD_REQUEST", { message: "room_not_in_conference" });
+          // A room reserved for expert conversations is never a valid pin target.
+          const dedication = await expertDedicationOf(
+            context.prisma, context.conferenceId, room.id,
+          );
+          if (dedication) {
+            throw new ORPCError("BAD_REQUEST", {
+              message: "room_expert_dedicated",
+              data: { room_id: room.id, pool_name: dedication.poolName },
+            });
+          }
           modPatch.preAssignedRoom = { connect: { id: room.id } };
         }
       }

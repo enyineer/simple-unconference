@@ -491,7 +491,7 @@ export function UnconferenceBody({
       {isMod && (
         <PlacementAuthor
           slug={slug}
-          slotId={slot.id}
+          slot={slot}
           eligibleSubs={eligibleSubs}
           eligibleRooms={eligibleRooms}
           placedSubmissionIds={new Set(placements.map((p) => p.submission_id))}

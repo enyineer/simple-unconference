@@ -13,6 +13,7 @@ import { TagInput } from "../../../design-system/core/tag-input";
 import { lowercaseTrim } from "../../../design-system/core/normalize";
 import { SearchableSelect } from "../../ui/SearchableSelect";
 import { useRequirementsConfirm } from "../../ui/RequirementsConfirm";
+import { slotRoomBlockReason } from "../../roomConstraints";
 
 export function StaticBody({
   slug,
@@ -108,14 +109,20 @@ function RefitRoomsButton({
         return;
       }
       if (r.moves.length === 0) {
-        toast.info("Rooms already fit interest best.");
+        if (r.unresolved.length > 0) {
+          toast.info(refitUnresolvedNote(r.unresolved));
+        } else {
+          toast.info("All talks already fit their rooms.");
+        }
         return;
       }
       const parts = r.moves.map((m) => `${m.title} → ${m.to_room}`);
       const shown = parts.slice(0, 3).join(" · ");
       const extra =
         parts.length > 3 ? ` and ${parts.length - 3} more` : "";
-      toast.success(`Re-fit rooms: ${shown}${extra}.`);
+      const tail =
+        r.unresolved.length > 0 ? ` ${refitUnresolvedNote(r.unresolved)}` : "";
+      toast.success(`Re-fit rooms: ${shown}${extra}.${tail}`);
       await onChange();
     } catch (e) {
       toast.error(errorCode(e));
@@ -127,7 +134,7 @@ function RefitRoomsButton({
   return (
     <div
       style={{ display: "flex", justifyContent: "flex-end" }}
-      title="Reassigns this slot's rooms by stars - the most-starred talk gets the biggest room. Talks with a reserved room stay put. People who starred a moved talk are notified."
+      title="Fixes talks whose room no longer fits - overfilled, conflicting with an overlapping slot, or violating their requirements - by moving them to the best-fitting free room. Talks that already fit stay put. People who starred a moved talk are notified."
     >
       <Button size="small" onClick={refit} disabled={busy}>
         {busy ? "Re-fitting…" : "Re-fit rooms by interest"}
@@ -136,30 +143,72 @@ function RefitRoomsButton({
   );
 }
 
+// Toast copy for talks a refit couldn't improve (they stay in their current
+// room). Names the shared reason when all unresolved talks failed the same way.
+function refitUnresolvedNote(
+  unresolved: { reason: "overfilled" | "double_booked" | "requirements" }[],
+): string {
+  const n = unresolved.length;
+  const noun = n === 1 ? "talk" : "talks";
+  const reasons = new Set(unresolved.map((u) => u.reason));
+  let why = "";
+  if (reasons.size === 1) {
+    const [reason] = [...reasons];
+    why =
+      reason === "overfilled"
+        ? " (no bigger room free)"
+        : reason === "double_booked"
+          ? " (clashing with an overlapping slot)"
+          : " (no free room with the required features)";
+  }
+  return `${n} ${noun} could not be improved${why}.`;
+}
+
 // Conflict copy for `agenda.refitRooms`. Mirrors AutoRoomPicker's messaging but
 // names the offending talk from the payload's `submission` field (a refit
 // weighs many talks at once, so the server tells us which one couldn't be
 // placed).
-function refitConflictMessage(r: {
-  reason: "pin_room_taken" | "pin_room_out_of_scope" | "unsatisfiable_requirements";
-  pinned_room: { id: number; name: string } | null;
-  required_tags: string[];
-  candidate_room_names: string[];
-  submission: { id: number; title: string } | null;
-}): string {
+function refitConflictMessage(
+  r: Extract<Awaited<ReturnType<typeof api.agenda.refitRooms>>, { kind: "conflict" }>,
+): string {
   const subject = r.submission ? `"${r.submission.title}"` : "A talk";
-  const room = r.pinned_room?.name ?? "a room";
   switch (r.reason) {
     case "pin_room_taken":
-      return `${subject} is reserved for ${room}, but that room is already used by another talk in this slot.`;
+      return `${subject} is reserved for ${r.pinned_room?.name ?? "a room"}, but that room is already used by another talk in this slot.`;
     case "pin_room_out_of_scope":
-      return `${subject} is reserved for ${room}, which isn't in this slot's room set.`;
+      return `${subject} is reserved for ${r.pinned_room?.name ?? "a room"}, which isn't in this slot's room set.`;
     case "unsatisfiable_requirements": {
       const tags = r.required_tags.join(", ") || "specific room tags";
       return r.candidate_room_names.length > 0
         ? `${subject} needs ${tags}; the only matching rooms (${r.candidate_room_names.join(", ")}) are already in use.`
         : `${subject} needs ${tags}, but no room in this slot has them.`;
     }
+    case "room_expert_dedicated":
+      return r.pool_name
+        ? `${subject} is reserved for ${r.room.name}, which is dedicated to experts (${r.pool_name}).`
+        : `${subject} is reserved for ${r.room.name}, which is dedicated to experts.`;
+    case "room_unavailable":
+      return `${subject} is reserved for ${r.room.name}, which isn't available during this slot's time.`;
+  }
+}
+
+// Conflict copy for `agenda.setTrack`. A room may be refused because a
+// time-overlapping slot holds it, because it's reserved for experts, or because
+// it's outside its availability windows for this slot.
+function setTrackConflictMessage(
+  r: Extract<Awaited<ReturnType<typeof api.agenda.setTrack>>, { kind: "conflict" }>,
+): string {
+  switch (r.reason) {
+    case "room_overlap_taken": {
+      const who = r.holder.title ? `"${r.holder.title}"` : "a mixer";
+      return `${r.holder.room_name} is already used at ${r.holder.slot_label} by ${who} in an overlapping slot.`;
+    }
+    case "room_expert_dedicated":
+      return r.pool_name
+        ? `${r.room.name} is reserved for experts (${r.pool_name}) and can't host a session.`
+        : `${r.room.name} is reserved for experts and can't host a session.`;
+    case "room_unavailable":
+      return `${r.room.name} isn't available during this slot's time.`;
   }
 }
 
@@ -243,11 +292,23 @@ export function AddTrackPicker({
           session is scheduled, and "reserved" already means a session's
           pinned room elsewhere in the app. */}
       <span style={{ opacity: 0.7 }}>or start with a room:</span>
-      {unassignedRooms.map((r) => (
-        <Button key={r.id} size="small" onClick={() => setPickedRoomId(r.id)}>
-          {r.name}
-        </Button>
-      ))}
+      {unassignedRooms.map((r) => {
+        // A room reserved for experts, or outside its availability at this
+        // slot's time, can't host a track — the server would refuse setTrack.
+        // Keep it visible but disabled with a hint so the mod sees why.
+        const reason = slotRoomBlockReason(r, slot);
+        return (
+          <span key={r.id} title={reason ?? undefined} style={{ display: "inline-flex" }}>
+            <Button
+              size="small"
+              disabled={reason !== null}
+              onClick={() => setPickedRoomId(r.id)}
+            >
+              {r.name}
+            </Button>
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -316,6 +377,16 @@ export function AutoRoomPicker({
             toast.error(
               `Every room in this slot is already taken. Remove a session from a room first to free one up.`,
             );
+            break;
+          case "room_expert_dedicated":
+            toast.error(
+              r.pool_name
+                ? `${r.room.name} is reserved for experts (${r.pool_name}) and can't host a session.`
+                : `${r.room.name} is reserved for experts and can't host a session.`,
+            );
+            break;
+          case "room_unavailable":
+            toast.error(`${r.room.name} isn't available during this slot's time.`);
             break;
         }
         return;
@@ -443,7 +514,7 @@ export function TrackEditor({
     }
     setBusy(true);
     try {
-      await api.agenda.setTrack({
+      const r = await api.agenda.setTrack({
         slug,
         slot_id: slot.id,
         room_id: room.id,
@@ -452,6 +523,10 @@ export function TrackEditor({
         requirements,
         mandatory,
       });
+      if (r.kind === "conflict") {
+        toast.error(setTrackConflictMessage(r));
+        return;
+      }
       setEditing(false);
       await onChange();
       toast.success(track ? `Updated the session in ${room.name}.` : `Scheduled a session in ${room.name}.`);

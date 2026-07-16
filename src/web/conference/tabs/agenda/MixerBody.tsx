@@ -3,6 +3,7 @@ import { useToast } from "../../../design-system/hooks";
 import { api, errorCode } from "../../../api";
 import type { Room, Slot } from "../../types";
 import { Tip } from "../../ui/Tip";
+import { slotRoomBlockReason } from "../../roomConstraints";
 
 // ---- Mixer slot body: room picker (mods) + room summary (everyone). ----
 //
@@ -51,6 +52,10 @@ export function MixerBody({
     }
   }
 
+  // Rooms usable for THIS mixer: not reserved for experts and available at the
+  // slot's time. Blocked rooms stay visible but can't be toggled in.
+  const usableRooms = rooms.filter((r) => slotRoomBlockReason(r, slot) === null);
+
   async function toggleRoom(roomId: number) {
     const next = new Set(selected);
     if (next.has(roomId)) next.delete(roomId);
@@ -58,7 +63,7 @@ export function MixerBody({
     await setSelection(next);
   }
   async function selectAll() {
-    await setSelection(new Set(rooms.map((r) => r.id)));
+    await setSelection(new Set(usableRooms.map((r) => r.id)));
   }
   async function clearAll() {
     await setSelection(new Set());
@@ -179,7 +184,7 @@ export function MixerBody({
           <Button
             size="small"
             onClick={selectAll}
-            disabled={selectedRooms.length === rooms.length}
+            disabled={usableRooms.length > 0 && usableRooms.every((r) => selected.has(r.id))}
           >
             Select all
           </Button>
@@ -194,14 +199,23 @@ export function MixerBody({
       </div>
 
       <Stack gap="condensed">
-        {rooms.map((r) => (
-          <MixerRoomCard
-            key={r.id}
-            room={r}
-            selected={selected.has(r.id)}
-            onToggle={() => toggleRoom(r.id)}
-          />
-        ))}
+        {rooms.map((r) => {
+          const reason = slotRoomBlockReason(r, slot);
+          const isSelected = selected.has(r.id);
+          // Blocked-and-not-selected rooms are read-only (no toggle); a room
+          // already selected but now blocked stays togglable so the mod can
+          // remove it.
+          const locked = reason !== null && !isSelected;
+          return (
+            <MixerRoomCard
+              key={r.id}
+              room={r}
+              selected={isSelected}
+              disabledReason={reason ?? undefined}
+              onToggle={locked ? undefined : () => toggleRoom(r.id)}
+            />
+          );
+        })}
       </Stack>
     </Stack>
   );
@@ -211,10 +225,14 @@ export function MixerRoomCard({
   room,
   selected,
   onToggle,
+  disabledReason,
 }: {
   room: Room;
   selected: boolean;
   onToggle?: () => Promise<void>;
+  /** When set (and the card isn't interactive), explains why this room is
+   *  off-limits for the mixer — shown as a chip + native tooltip. */
+  disabledReason?: string;
 }) {
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
   // Border + chip color hint at selection state. Unselected cards still show
@@ -270,7 +288,7 @@ export function MixerRoomCard({
           · capacity {room.capacity}
         </span>
       </span>
-      {onToggle && (
+      {onToggle ? (
         <span
           style={{
             gridColumn: 2,
@@ -282,11 +300,31 @@ export function MixerRoomCard({
         >
           {selected ? "✓ included" : "+ add"}
         </span>
-      )}
+      ) : disabledReason ? (
+        <span
+          style={{
+            gridColumn: 2,
+            gridRow: 1,
+            fontSize: 11,
+            color: muted,
+            fontWeight: 500,
+          }}
+        >
+          {disabledReason}
+        </span>
+      ) : null}
     </div>
   );
 
-  if (!onToggle) return content;
+  if (!onToggle) {
+    return disabledReason ? (
+      <span title={disabledReason} style={{ display: "block" }}>
+        {content}
+      </span>
+    ) : (
+      content
+    );
+  }
   return (
     <button
       type="button"

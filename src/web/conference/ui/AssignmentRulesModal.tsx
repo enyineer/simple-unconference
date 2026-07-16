@@ -160,6 +160,18 @@ export function AssignmentRulesModal({
             A reserved room beats required features. Required features beat
             default star ranking.
           </Rule>
+          <Rule>
+            <strong>Rooms reserved for experts sit out.</strong> A room in an
+            expert pool (or on an expert&apos;s room list) is never used by slot
+            assignment - it&apos;s held for expert chats. And a room that
+            already has agenda usage can&apos;t be added to an expert pool.
+          </Rule>
+          <Rule>
+            <strong>Availability windows limit when a room can be used.</strong>{" "}
+            A room can be given availability windows; it can then only host a
+            session, track, or booking whose time fits fully inside one window.
+            A room with no windows is available for the whole conference.
+          </Rule>
         </Section>
         </Disclosure>
 
@@ -270,12 +282,15 @@ export function AssignmentRulesModal({
           )}
           {isMod && (
             <Rule modOnly>
-              <strong>Re-fit rooms by interest</strong> reassigns a planned
-              slot&apos;s rooms among its scheduled talks at any time - the
-              most-starred talk gets the biggest room, the next-most-starred
-              the next biggest, and so on. Talks with a reserved room stay
-              put, room requirements are honored, and anyone who starred a
-              talk that moved is notified automatically.
+              <strong>Re-fit rooms by interest</strong> repairs a planned
+              slot at any time: it moves only talks whose room no longer fits
+              - interest outgrew the room, the room clashes with an
+              overlapping slot, or the room lacks a required feature - into
+              the best-fitting free room (the smallest room that still covers
+              the interest, to keep big rooms free). Talks that already fit,
+              and any with a reserved room, stay exactly where they are. When
+              no room can improve a talk it stays put and is reported. Anyone
+              who starred a talk that moved is notified automatically.
             </Rule>
           )}
           {isMod && (
@@ -285,7 +300,9 @@ export function AssignmentRulesModal({
               best match using the session&apos;s pinned room (if any), its
               required features, and the largest free room in scope.
               Conflicts surface as a readable error so you know what to
-              clear or repin.
+              clear or repin. Either way, a room already in use by a
+              time-overlapping slot is refused - the message names what&apos;s
+              using it so you can pick another room.
             </Rule>
           )}
         </Section>

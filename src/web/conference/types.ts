@@ -62,18 +62,18 @@ export interface Participant {
   role: Role;
 }
 
-export interface Room {
-  id: number;
-  name: string;
-  capacity: number;
-  description: string | null;
-  tags: string[];
-}
+// Re-exported from the contract — `Room` is the wire shape for `rooms.list` /
+// `rooms.listAll`. It carries the room-constraint fields (`availability`,
+// `expert_dedicated`, `slot_used`) that drive the availability editor and the
+// dim/disable logic in the slot-side room pickers, so we take the contract
+// type directly rather than hand-maintaining a subset that would silently
+// drift from the server.
+import type { RoomOut, SubmissionOut } from "../../shared/contract";
+export type Room = RoomOut;
 
 // Re-exported from the contract — `Submission` is the wire shape for
 // `submissions.list` / `submissions.update` etc. Duplicating it client-side
 // just creates drift, so we take the contract type directly.
-import type { SubmissionOut } from "../../shared/contract";
 export type Submission = SubmissionOut;
 
 // Re-export the contract types directly — these are pure data shapes the

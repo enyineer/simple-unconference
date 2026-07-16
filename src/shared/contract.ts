@@ -101,6 +101,7 @@ import {
   type RefitRoomsResult,
   type RoomOut,
   type ScheduleSubmissionResult,
+  type SetTrackResult,
   type SubmissionCreated,
   type SubmissionOut,
   type UpdateSeriesResult,
@@ -348,9 +349,12 @@ export const contract = {
         mode: v.picklist(["series_only", "with_slots"] as const),
       }))
       .output(type<Ok>()),
+    // Hand-schedule a submission into a specific room. Refuses a room held by
+    // a time-overlapping slot with a structured `room_overlap_taken` conflict
+    // that names the holder — see `SetTrackResult`.
     setTrack: oc
       .input(v.object({ slug: Slug, slot_id: Id, ...TrackAssignmentSchema.entries }))
-      .output(type<Ok>()),
+      .output(type<SetTrackResult>()),
     // Same intent as `setTrack`, but the server picks the room based on the
     // Submission's pin (`preAssignedRoomId`), its `roomRequirements`, and
     // the largest free room in the slot's effective scope. Conflicts come

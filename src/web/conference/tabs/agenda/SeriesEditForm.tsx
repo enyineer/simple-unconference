@@ -171,16 +171,30 @@ export function SeriesEditForm({
           </Stack>
           {!useAllRooms && (
             <Stack direction="row" gap="condensed" wrap>
-              {rooms.map((r) => (
-                <Button
-                  key={r.id}
-                  size="small"
-                  variant={pickedRooms.has(r.id) ? "primary" : "default"}
-                  onClick={() => setPickedRooms((s) => toggle(s, r.id))}
-                >
-                  {r.name}
-                </Button>
-              ))}
+              {rooms.map((r) => {
+                // A series spans several times, so availability (which is
+                // time-specific) is left to per-offering assignment. But an
+                // expert-dedicated room never takes part in assignment at all —
+                // disable adding it here.
+                const picked = pickedRooms.has(r.id);
+                const blocked = r.expert_dedicated && !picked;
+                return (
+                  <span
+                    key={r.id}
+                    title={r.expert_dedicated ? "Reserved for expert bookings" : undefined}
+                    style={{ display: "inline-flex" }}
+                  >
+                    <Button
+                      size="small"
+                      variant={picked ? "primary" : "default"}
+                      disabled={blocked}
+                      onClick={() => setPickedRooms((s) => toggle(s, r.id))}
+                    >
+                      {r.name}
+                    </Button>
+                  </span>
+                );
+              })}
               {rooms.length === 0 && <Text muted>No rooms exist yet.</Text>}
             </Stack>
           )}

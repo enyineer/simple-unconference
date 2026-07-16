@@ -153,6 +153,16 @@ export interface ConfMeOut {
 export interface RoomOut {
   id: number; name: string; capacity: number;
   description: string | null; tags: string[];
+  // Availability windows (epoch-ms pairs), ascending. Empty array means the
+  // room is ALWAYS available (the hard default) — see RoomAvailability.
+  availability: { starts_at: number; ends_at: number }[];
+  // True when the room is reserved for expert 1:1 conversations (member of any
+  // expert room pool, or of an expert's explicit room list). Dedicated rooms
+  // are excluded from every slot assignment and can't be pinned/scheduled to.
+  expert_dedicated: boolean;
+  // True when the room already carries slot usage (a planned track or an
+  // unconference placement). Such rooms can't be made expert-dedicated.
+  slot_used: boolean;
 }
 
 export type SubmissionStatus = "submitted" | "published" | "rejected";
@@ -500,7 +510,49 @@ export type ScheduleSubmissionResult =
       pinned_room: { id: number; name: string } | null;
       required_tags: string[];
       candidate_room_names: string[];
-    };
+    }
+  | ({ kind: "conflict" } & RoomDedicatedConflict)
+  | ({ kind: "conflict" } & RoomUnavailableConflict);
+
+// A specifically-chosen room can't be used because it's reserved for expert
+// conversations. `pool_name` is the owning expert room pool, or null when the
+// room belongs to an expert's explicit room list ("an expert's room list").
+export interface RoomDedicatedConflict {
+  reason: "room_expert_dedicated";
+  room: { id: number; name: string };
+  pool_name: string | null;
+}
+
+// A specifically-chosen room can't host the interval because it lies outside
+// the room's availability windows. `availability` lists the room's windows as
+// epoch-ms pairs so the UI can explain when the room IS usable.
+export interface RoomUnavailableConflict {
+  reason: "room_unavailable";
+  room: { id: number; name: string };
+  availability: { starts_at: number; ends_at: number }[];
+}
+
+// Error `data` payload of the BAD_REQUEST thrown when a mutual-exclusion write
+// (expert pool / expert room list) targets rooms that already have slot usage.
+export interface RoomsInUseErrorData {
+  rooms: {
+    id: number;
+    name: string;
+    usage: { kind: "planned" | "unconference"; title: string; slot_starts_at: number };
+  }[];
+}
+
+// Error `data` payload of the BAD_REQUEST thrown when a room availability edit
+// would strand existing usage (a track/placement/booking now outside the
+// windows).
+export interface AvailabilityStrandsUsageErrorData {
+  offenders: {
+    kind: "planned" | "unconference" | "expert_booking";
+    title: string | null;
+    starts_at: number;
+    ends_at: number;
+  }[];
+}
 
 // One room reassignment produced by `agenda.refitRooms`: the talk that moved
 // and its old → new room names. Only tracks whose room actually changed appear.
@@ -511,17 +563,62 @@ export interface RefitMove {
   to_room: string;
 }
 
-// Result of `agenda.refitRooms` — reassign a planned slot's rooms among its
-// scheduled tracks by star count (biggest room → most-starred), honoring pins
-// and room requirements. All-or-nothing: any unmatchable track returns a
-// conflict with ZERO writes. Conflict shape mirrors `ScheduleSubmissionResult`
-// (same reason literals + fields) with an added `submission` naming the track
-// that couldn't be placed (a refit weighs many tracks at once).
+// A room `agenda.setTrack` (and, in spirit, the auto/pin paths of
+// `scheduleSubmission` / `placeSubmission`) couldn't use because a
+// time-overlapping slot already occupies it. Names the holder so the mod sees
+// the clash without hunting for it. `title` is null when the holder is a mixer
+// (a room booking with no session).
+export interface RoomOverlapHolder {
+  /** Holder slot's start time, formatted in the conference timezone. */
+  slot_label: string;
+  title: string | null;
+  room_name: string;
+}
+
+// Result of `agenda.setTrack`. Hand-scheduling normally succeeds, but a room
+// physically occupied by a time-overlapping slot is refused with a structured
+// conflict that names the holder (so the UI can say what's using it, not just
+// that it's busy). Editing a track already in a room is never blocked by its
+// own room.
+export type SetTrackResult =
+  | { kind: "ok" }
+  | { kind: "conflict"; reason: "room_overlap_taken"; holder: RoomOverlapHolder }
+  | ({ kind: "conflict" } & RoomDedicatedConflict)
+  | ({ kind: "conflict" } & RoomUnavailableConflict);
+
+// One misfit `agenda.refitRooms` could not improve: it stays in its current
+// room and is reported so the mod knows what's still wrong. `reason` is the
+// remaining defect of the room the talk is stuck in:
+//   - "overfilled": interest exceeds the room's capacity and no bigger room
+//     was free (or reachable via a swap).
+//   - "double_booked": the room is physically occupied by a time-overlapping
+//     slot and no free room could take the talk.
+//   - "requirements": the room doesn't satisfy the talk's required features
+//     and no satisfying room was free.
+export interface RefitUnresolved {
+  submission_id: number;
+  title: string;
+  reason: "overfilled" | "double_booked" | "requirements";
+}
+
+// Result of `agenda.refitRooms` — a stable, minimal-move REPAIR of a planned
+// slot's room assignment. Only "misfit" tracks move (interest exceeds their
+// room, a pin points elsewhere, requirements unmet, or the room is
+// double-booked by an overlapping slot); talks that already fit never move.
+// Each misfit is sent to its best-fitting free room (smallest room that still
+// covers its interest, to preserve big-room headroom), with a single
+// less-starred swap allowed when no free room fits. Genuine pin configuration
+// errors (pin out of scope, pin room held by an overlapping slot or another
+// pin/track) still abort with a conflict and ZERO writes — its shape mirrors
+// `ScheduleSubmissionResult` plus a `submission` naming the offending track.
+// Misfits that can't be improved stay put and are listed in `unresolved`.
 export type RefitRoomsResult =
   | {
       kind: "ok";
-      /** Empty array means nothing moved (already optimal); no writes happened. */
+      /** Tracks whose room changed. Empty means nothing moved; no writes happened. */
       moves: RefitMove[];
+      /** Misfits that stayed put because no better room was reachable. */
+      unresolved: RefitUnresolved[];
     }
   | {
       kind: "conflict";
@@ -533,7 +630,9 @@ export type RefitRoomsResult =
       required_tags: string[];
       candidate_room_names: string[];
       submission: { id: number; title: string } | null;
-    };
+    }
+  | ({ kind: "conflict"; submission: { id: number; title: string } } & RoomDedicatedConflict)
+  | ({ kind: "conflict"; submission: { id: number; title: string } } & RoomUnavailableConflict);
 
 // ----- expert booking output types ---------------------------------------
 

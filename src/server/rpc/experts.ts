@@ -4,6 +4,26 @@ import { requireConf, actorIdentityId } from "./shared";
 import { clipToMinute } from "../../shared/tz";
 import { deriveSlots, pickAvailableRoom } from "../experts";
 import { createNotification, createNotifications } from "../notifications";
+import { roomsInUseForDedication, unavailableRoomIds } from "../lib/room-constraints";
+
+// A room already carrying slot usage (a planned track or unconference
+// placement) can't be reserved for experts. Every write that dedicates rooms
+// (pool membership or an expert's explicit room list) funnels through this so
+// the two systems stay mutually exclusive. Throws a structured BAD_REQUEST
+// `rooms_in_use` naming each offender; a no-op when `roomIds` is clean/empty.
+async function assertRoomsFreeForDedication(
+  prisma: PrismaClient,
+  conferenceId: number,
+  roomIds: number[],
+): Promise<void> {
+  const offenders = await roomsInUseForDedication(prisma, conferenceId, roomIds);
+  if (offenders.length > 0) {
+    throw new ORPCError("BAD_REQUEST", {
+      message: "rooms_in_use",
+      data: { rooms: offenders },
+    });
+  }
+}
 
 // Returns the candidate room id list for an expert: pool members if poolId is
 // set, otherwise the explicit ExpertRoom set. Either may be empty.
@@ -111,6 +131,7 @@ export const expertsRouter = {
 
   createPool: requireConf("moderator").experts.createPool.handler(async ({ input, context }) => {
     const roomIds = input.room_ids ?? [];
+    await assertRoomsFreeForDedication(context.prisma, context.conferenceId, roomIds);
     return context.prisma.$transaction(async (tx) => {
       const dup = await tx.expertRoomPool.findFirst({
         where: { conferenceId: context.conferenceId, name: input.name },
@@ -148,6 +169,9 @@ export const expertsRouter = {
       select: { id: true },
     });
     if (!cur) throw new ORPCError("NOT_FOUND");
+    if (input.room_ids !== undefined) {
+      await assertRoomsFreeForDedication(context.prisma, context.conferenceId, input.room_ids);
+    }
     await context.prisma.$transaction(async (tx) => {
       if (input.name !== undefined) {
         const dup = await tx.expertRoomPool.findFirst({
@@ -213,6 +237,7 @@ export const expertsRouter = {
       if (!pool) throw new ORPCError("NOT_FOUND", { message: "pool_not_found" });
     }
     const roomIds = input.room_ids ?? [];
+    await assertRoomsFreeForDedication(context.prisma, context.conferenceId, roomIds);
     const validRooms = roomIds.length === 0 ? [] : await context.prisma.room.findMany({
       where: { conferenceId: context.conferenceId, id: { in: roomIds } },
       select: { id: true },
@@ -242,6 +267,9 @@ export const expertsRouter = {
         select: { id: true },
       });
       if (!pool) throw new ORPCError("NOT_FOUND", { message: "pool_not_found" });
+    }
+    if (input.room_ids !== undefined) {
+      await assertRoomsFreeForDedication(context.prisma, context.conferenceId, input.room_ids);
     }
     await context.prisma.$transaction(async (tx) => {
       const data: { bio?: string | null; poolId?: number | null } = {};
@@ -367,16 +395,23 @@ export const expertsRouter = {
       if (candidateRoomIds.length === 0) {
         throw new ORPCError("CONFLICT", { message: "no_rooms_configured" });
       }
+      // Drop candidate rooms whose availability windows don't fully contain the
+      // booking window (no windows = always available). If that empties the
+      // set, `pickAvailableRoom` returns null → `no_room_available` below.
+      const unavailable = await unavailableRoomIds(
+        tx, candidateRoomIds, new Date(requestedStart), new Date(slotEnd),
+      );
+      const availableRoomIds = candidateRoomIds.filter((id) => !unavailable.has(id));
       const conflictingRows = await tx.expertBooking.findMany({
         where: {
-          roomId: { in: candidateRoomIds },
+          roomId: { in: availableRoomIds },
           startsAt: { lt: new Date(slotEnd) },
           endsAt: { gt: new Date(requestedStart) },
         },
         select: { roomId: true, startsAt: true, endsAt: true },
       });
       const roomId = pickAvailableRoom(
-        candidateRoomIds,
+        availableRoomIds,
         conflictingRows.map((r) => ({
           roomId: r.roomId, startsAt: r.startsAt.getTime(), endsAt: r.endsAt.getTime(),
         })),

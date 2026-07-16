@@ -201,9 +201,16 @@ export function SessionForm(props: SessionFormProps) {
     });
   }
 
+  // Expert-dedicated rooms can't be pinned (the server rejects the write), so
+  // drop them from the picker — but keep whichever room is currently pinned so
+  // an existing pin never silently disappears from the control.
+  const pinnableRooms = rooms.filter(
+    (r) => !r.expert_dedicated || String(r.id) === preAssignedRoomId,
+  );
+  const hiddenDedicatedCount = rooms.length - pinnableRooms.length;
   const roomOptions: SearchableSelectOption[] = [
     { value: "", label: "Auto (assign to any room)" },
-    ...rooms.map((r) => ({
+    ...pinnableRooms.map((r) => ({
       value: String(r.id),
       label: r.name,
       hint: `Capacity ${r.capacity}`,
@@ -363,6 +370,13 @@ export function SessionForm(props: SessionFormProps) {
               Pre-assigned sessions always go to their pinned room in any
               unconference slot they land in. The slot&apos;s assignment will be
               blocked if two pre-assigned sessions compete for the same room.
+              {hiddenDedicatedCount > 0 && (
+                <>
+                  {" "}
+                  Rooms reserved for expert bookings can&apos;t be pre-assigned
+                  and aren&apos;t listed.
+                </>
+              )}
             </div>
           </>
         )}

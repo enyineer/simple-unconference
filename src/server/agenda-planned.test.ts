@@ -48,7 +48,7 @@ describe("agenda.refitRooms + schedule-change notifications", () => {
   beforeAll(() => { ctx = setupTestApp(); });
   afterAll(async () => { await ctx.cleanup(); });
 
-  test("refit: biggest room to most-starred; requirements survive; idempotent", async () => {
+  test("refit: a requirements misfit swaps with a less-starred talk; requirements survive; idempotent", async () => {
     const { owner, conf } = await setupPlannedConf("refit1");
     const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30, tags: ["projector"] });
     const mid = await owner.rpc.rooms.create({ slug: conf.slug, name: "Mid", capacity: 20 });
@@ -110,78 +110,106 @@ describe("agenda.refitRooms + schedule-change notifications", () => {
     expect(afterUnread).toBe(beforeUnread);
   });
 
-  test("refit honors a pin: a less-starred pinned track keeps its room", async () => {
+  test("refit repairs a pin: a wrongly-placed pinned track moves onto its free pin room", async () => {
     const { owner, conf } = await setupPlannedConf("refit-pin");
+    const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
+    const mid = await owner.rpc.rooms.create({ slug: conf.slug, name: "Mid", capacity: 20 });
+    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 10 });
+    const pinned = await owner.rpc.submissions.create({ slug: conf.slug, title: "Pinned" });
+    const filler = await owner.rpc.submissions.create({ slug: conf.slug, title: "Filler" });
+    for (const s of [pinned, filler]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
+    await owner.rpc.submissions.update({ slug: conf.slug, id: pinned.id, pre_assigned_room_id: big.id });
+
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: Date.now(), ends_at: Date.now() + 3600_000,
+    });
+    // pinned sits in small (its pin points at the free Big); filler fits in mid.
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slot.id, room_id: small.id, submission_id: pinned.id });
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slot.id, room_id: mid.id, submission_id: filler.id });
+
+    const r = await owner.rpc.agenda.refitRooms({ slug: conf.slug, slot_id: slot.id });
+    if (r.kind !== "ok") throw new Error("expected ok");
+    const byRoom = new Map((await owner.rpc.agenda.get({ slug: conf.slug })).tracks.map((t) => [t.room_id, t.submission_id]));
+    // The pin is honored: pinned moves onto Big; filler (fits) never moves.
+    expect(byRoom.get(big.id)).toBe(pinned.id);
+    expect(byRoom.get(mid.id)).toBe(filler.id);
+  });
+
+  test("refit: a pin whose room is held by a fitting non-misfit → pin_room_taken + zero writes", async () => {
+    const { owner, conf } = await setupPlannedConf("refit-pin-taken");
     const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
     const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 10 });
     const pinned = await owner.rpc.submissions.create({ slug: conf.slug, title: "Pinned" });
     const hot = await owner.rpc.submissions.create({ slug: conf.slug, title: "Hot" });
     for (const s of [pinned, hot]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
     await owner.rpc.submissions.update({ slug: conf.slug, id: pinned.id, pre_assigned_room_id: big.id });
-
-    const parts = await mintParticipants(owner, conf.slug, "refit-pin", 2);
+    // `hot` is more-starred than `pinned` and fits Big → it's a non-misfit that
+    // won't move, so the pin can't be honored without evicting a talk that fits.
+    const parts = await mintParticipants(owner, conf.slug, "refit-pin-taken", 2);
     await parts[0]!.client.rpc.submissions.star({ slug: conf.slug, id: hot.id });
     await parts[1]!.client.rpc.submissions.star({ slug: conf.slug, id: hot.id });
 
     const slot = await owner.rpc.agenda.createSlot({
       slug: conf.slug, type: "normal", starts_at: Date.now(), ends_at: Date.now() + 3600_000,
     });
-    // Start reversed: pinned→small, hot→big.
     await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slot.id, room_id: small.id, submission_id: pinned.id });
     await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slot.id, room_id: big.id, submission_id: hot.id });
 
+    const before = new Map((await owner.rpc.agenda.get({ slug: conf.slug })).tracks.map((t) => [t.submission_id, t.room_id]));
     const r = await owner.rpc.agenda.refitRooms({ slug: conf.slug, slot_id: slot.id });
-    if (r.kind !== "ok") throw new Error("expected ok");
-    const agenda = await owner.rpc.agenda.get({ slug: conf.slug });
-    const byRoom = new Map(agenda.tracks.map((t) => [t.room_id, t.submission_id]));
-    // The pin wins the big room even though `hot` has more stars.
-    expect(byRoom.get(big.id)).toBe(pinned.id);
-    expect(byRoom.get(small.id)).toBe(hot.id);
+    expect(r.kind).toBe("conflict");
+    if (r.kind !== "conflict") throw new Error("expected conflict");
+    expect(r.reason).toBe("pin_room_taken");
+    if (r.reason !== "pin_room_taken") throw new Error("expected pin_room_taken");
+    expect(r.pinned_room!.id).toBe(big.id);
+    expect(r.submission!.id).toBe(pinned.id);
+    const after = new Map((await owner.rpc.agenda.get({ slug: conf.slug })).tracks.map((t) => [t.submission_id, t.room_id]));
+    expect(after).toEqual(before);
   });
 
-  test("refit places a tagged track only into a satisfying room", async () => {
+  test("refit: requirements honored — a misfit takes the satisfying room, not the bigger one", async () => {
     const { owner, conf } = await setupPlannedConf("refit-req");
+    const plain = await owner.rpc.rooms.create({ slug: conf.slug, name: "Plain", capacity: 10 });
     const bigPlain = await owner.rpc.rooms.create({ slug: conf.slug, name: "BigPlain", capacity: 50 });
     const studio = await owner.rpc.rooms.create({ slug: conf.slug, name: "Studio", capacity: 10, tags: ["projector"] });
-    const plain = await owner.rpc.submissions.create({ slug: conf.slug, title: "Plain talk" });
     const proj = await owner.rpc.submissions.create({ slug: conf.slug, title: "Needs projector" });
-    for (const s of [plain, proj]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
-    const parts = await mintParticipants(owner, conf.slug, "refit-req", 2);
-    // `plain` is more popular and would grab the big room; `proj` must still
-    // land in the only projector room.
-    await parts[0]!.client.rpc.submissions.star({ slug: conf.slug, id: plain.id });
-    await parts[1]!.client.rpc.submissions.star({ slug: conf.slug, id: plain.id });
-    await parts[0]!.client.rpc.submissions.star({ slug: conf.slug, id: proj.id });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: proj.id });
 
     const slot = await owner.rpc.agenda.createSlot({
       slug: conf.slug, type: "normal", starts_at: Date.now(), ends_at: Date.now() + 3600_000,
     });
+    // proj requires a projector but sits in Plain (no projector) → misfit. Both
+    // BigPlain (bigger) and Studio (projector) are free; it must pick Studio.
     await owner.rpc.agenda.setTrack({
-      slug: conf.slug, slot_id: slot.id, room_id: bigPlain.id,
+      slug: conf.slug, slot_id: slot.id, room_id: plain.id,
       submission_id: proj.id, requirements: ["projector"],
     });
-    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slot.id, room_id: studio.id, submission_id: plain.id });
 
     const r = await owner.rpc.agenda.refitRooms({ slug: conf.slug, slot_id: slot.id });
     if (r.kind !== "ok") throw new Error("expected ok");
-    const agenda = await owner.rpc.agenda.get({ slug: conf.slug });
-    const byRoom = new Map(agenda.tracks.map((t) => [t.room_id, t.submission_id]));
+    const byRoom = new Map((await owner.rpc.agenda.get({ slug: conf.slug })).tracks.map((t) => [t.room_id, t.submission_id]));
     expect(byRoom.get(studio.id)).toBe(proj.id);
-    expect(byRoom.get(bigPlain.id)).toBe(plain.id);
+    expect(byRoom.has(bigPlain.id)).toBe(false);
   });
 
-  test("refit unsatisfiable requirement → conflict + zero writes", async () => {
-    const { owner, conf } = await setupPlannedConf("refit-unsat");
+  test("refit: an unimprovable misfit stays put, is reported in unresolved, and notifies no one", async () => {
+    const { owner, conf } = await setupPlannedConf("refit-unresolved");
     const studio = await owner.rpc.rooms.create({ slug: conf.slug, name: "Studio", capacity: 20, tags: ["projector"] });
     const plain = await owner.rpc.rooms.create({ slug: conf.slug, name: "Plain", capacity: 10 });
     const subX = await owner.rpc.submissions.create({ slug: conf.slug, title: "X" });
     const subY = await owner.rpc.submissions.create({ slug: conf.slug, title: "Y" });
     for (const s of [subX, subY]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
+    // subY's submitter is a participant we can check for (non-)notification.
+    const { client: fan, identity_id: fanId } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "refit-unresolved-fan@example.com");
+    await fan.rpc.submissions.star({ slug: conf.slug, id: subY.id });
 
     const slot = await owner.rpc.agenda.createSlot({
       slug: conf.slug, type: "normal", starts_at: Date.now(), ends_at: Date.now() + 3600_000,
     });
-    // Both require projector; only one projector room exists → one is unplaceable.
+    // Both require projector; only Studio has it and subX already fits there.
+    // A swap is impossible (subX also needs projector, which subY's Plain room
+    // lacks), so subY can't be improved.
     await owner.rpc.agenda.setTrack({
       slug: conf.slug, slot_id: slot.id, room_id: studio.id, submission_id: subX.id, requirements: ["projector"],
     });
@@ -189,27 +217,325 @@ describe("agenda.refitRooms + schedule-change notifications", () => {
       slug: conf.slug, slot_id: slot.id, room_id: plain.id, submission_id: subY.id, requirements: ["projector"],
     });
 
-    const before = await owner.rpc.agenda.get({ slug: conf.slug });
-    const beforeMap = new Map(before.tracks.map((t) => [t.submission_id, t.room_id]));
+    const before = new Map((await owner.rpc.agenda.get({ slug: conf.slug })).tracks.map((t) => [t.submission_id, t.room_id]));
+    // The fan already holds the "scheduled" note from setup; refit must add none.
+    const notesBefore = await ctx.prisma.notification.count({
+      where: { identityId: fanId, kind: "schedule_changed" },
+    });
+    const r = await owner.rpc.agenda.refitRooms({ slug: conf.slug, slot_id: slot.id });
+    if (r.kind !== "ok") throw new Error("expected ok");
+    expect(r.moves).toHaveLength(0);
+    expect(r.unresolved).toHaveLength(1);
+    expect(r.unresolved[0]).toMatchObject({ submission_id: subY.id, reason: "requirements" });
+
+    // Zero writes (nothing moved) and no NEW schedule notification for the fan.
+    const after = new Map((await owner.rpc.agenda.get({ slug: conf.slug })).tracks.map((t) => [t.submission_id, t.room_id]));
+    expect(after).toEqual(before);
+    const notesAfter = await ctx.prisma.notification.count({
+      where: { identityId: fanId, kind: "schedule_changed" },
+    });
+    expect(notesAfter).toBe(notesBefore);
+  });
+
+  test("refit: nothing moves when every talk already fits, even with a bigger room free", async () => {
+    const { owner, conf } = await setupPlannedConf("refit-antichurn");
+    const mid = await owner.rpc.rooms.create({ slug: conf.slug, name: "Mid", capacity: 10 });
+    await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Fits fine" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: Date.now(), ends_at: Date.now() + 3600_000,
+    });
+    // Comfortably within Mid, and Big sits empty — a re-rank would grab Big, a
+    // repair leaves it alone.
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slot.id, room_id: mid.id, submission_id: sub.id });
 
     const r = await owner.rpc.agenda.refitRooms({ slug: conf.slug, slot_id: slot.id });
-    expect(r.kind).toBe("conflict");
-    if (r.kind !== "conflict") throw new Error("expected conflict");
-    expect(r.reason).toBe("unsatisfiable_requirements");
-    expect(r.required_tags).toEqual(["projector"]);
-    expect(r.candidate_room_names).toEqual(["Studio"]);
-    expect(r.submission!.id).toBe(subY.id);
+    if (r.kind !== "ok") throw new Error("expected ok");
+    expect(r.moves).toHaveLength(0);
+    expect(r.unresolved).toHaveLength(0);
+    const byRoom = new Map((await owner.rpc.agenda.get({ slug: conf.slug })).tracks.map((t) => [t.room_id, t.submission_id]));
+    expect(byRoom.get(mid.id)).toBe(sub.id);
+  });
 
-    // No writes happened — track rooms are exactly as before.
-    const after = await owner.rpc.agenda.get({ slug: conf.slug });
-    const afterMap = new Map(after.tracks.map((t) => [t.submission_id, t.room_id]));
-    expect(afterMap).toEqual(beforeMap);
+  test("refit: an overfilled talk takes the SMALLEST adequate free room", async () => {
+    const { owner, conf } = await setupPlannedConf("refit-smallest");
+    const tiny = await owner.rpc.rooms.create({ slug: conf.slug, name: "Tiny", capacity: 1 });
+    const mid = await owner.rpc.rooms.create({ slug: conf.slug, name: "Mid", capacity: 3 });
+    const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Crowded" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+    const parts = await mintParticipants(owner, conf.slug, "refit-smallest", 3);
+    for (const p of parts) await p.client.rpc.submissions.star({ slug: conf.slug, id: sub.id });
+
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: Date.now(), ends_at: Date.now() + 3600_000,
+    });
+    // 3 stars overfill Tiny(1). Mid(3) and Big(30) both cover it → Mid wins
+    // (smallest adequate, keeping Big free for a bigger talk).
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slot.id, room_id: tiny.id, submission_id: sub.id });
+
+    const r = await owner.rpc.agenda.refitRooms({ slug: conf.slug, slot_id: slot.id });
+    if (r.kind !== "ok") throw new Error("expected ok");
+    expect(r.moves).toEqual([
+      { submission_id: sub.id, title: "Crowded", from_room: "Tiny", to_room: "Mid" },
+    ]);
+    const byRoom = new Map((await owner.rpc.agenda.get({ slug: conf.slug })).tracks.map((t) => [t.room_id, t.submission_id]));
+    expect(byRoom.get(mid.id)).toBe(sub.id);
+    expect(byRoom.has(big.id)).toBe(false); // Big left free (not the biggest-grabs-most rule)
+  });
+
+  test("refit: with no adequate room, best effort takes the largest bigger room", async () => {
+    const { owner, conf } = await setupPlannedConf("refit-besteffort");
+    const tiny = await owner.rpc.rooms.create({ slug: conf.slug, name: "Tiny", capacity: 1 });
+    const midA = await owner.rpc.rooms.create({ slug: conf.slug, name: "MidA", capacity: 2 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Crowded" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+    const parts = await mintParticipants(owner, conf.slug, "refit-besteffort", 3);
+    for (const p of parts) await p.client.rpc.submissions.star({ slug: conf.slug, id: sub.id });
+
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: Date.now(), ends_at: Date.now() + 3600_000,
+    });
+    // 3 stars fit no room; MidA(2) is bigger than Tiny(1) → best-effort move.
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slot.id, room_id: tiny.id, submission_id: sub.id });
+
+    const r = await owner.rpc.agenda.refitRooms({ slug: conf.slug, slot_id: slot.id });
+    if (r.kind !== "ok") throw new Error("expected ok");
+    const byRoom = new Map((await owner.rpc.agenda.get({ slug: conf.slug })).tracks.map((t) => [t.room_id, t.submission_id]));
+    expect(byRoom.get(midA.id)).toBe(sub.id);
+    // A best-effort move is still an improvement, so it's a move (not unresolved).
+    expect(r.moves).toHaveLength(1);
+    expect(r.unresolved).toHaveLength(0);
+  });
+
+  test("refit: overfilled with no bigger room stays put and is reported", async () => {
+    const { owner, conf } = await setupPlannedConf("refit-nobigger");
+    const room = await owner.rpc.rooms.create({ slug: conf.slug, name: "Room", capacity: 2 });
+    const tiny = await owner.rpc.rooms.create({ slug: conf.slug, name: "Tiny", capacity: 1 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Crowded" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+    const parts = await mintParticipants(owner, conf.slug, "refit-nobigger", 3);
+    for (const p of parts) await p.client.rpc.submissions.star({ slug: conf.slug, id: sub.id });
+
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: Date.now(), ends_at: Date.now() + 3600_000,
+    });
+    // 3 stars overfill Room(2); the only other room Tiny(1) is smaller → no
+    // improvement possible, so it stays put.
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slot.id, room_id: room.id, submission_id: sub.id });
+
+    const r = await owner.rpc.agenda.refitRooms({ slug: conf.slug, slot_id: slot.id });
+    if (r.kind !== "ok") throw new Error("expected ok");
+    expect(r.moves).toHaveLength(0);
+    expect(r.unresolved).toEqual([{ submission_id: sub.id, title: "Crowded", reason: "overfilled" }]);
+    void tiny;
+  });
+
+  test("refit: overfilled misfit swaps with a less-starred talk; both are notified", async () => {
+    const { owner, conf } = await setupPlannedConf("refit-swap");
+    const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
+    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 1 });
+    const popular = await owner.rpc.submissions.create({ slug: conf.slug, title: "Popular" });
+    const quiet = await owner.rpc.submissions.create({ slug: conf.slug, title: "Quiet" });
+    for (const s of [popular, quiet]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
+    const parts = await mintParticipants(owner, conf.slug, "refit-swap", 3);
+    // Popular: 2 stars (overfilled in Small); Quiet: 1 star (fits Big).
+    await parts[0]!.client.rpc.submissions.star({ slug: conf.slug, id: popular.id });
+    await parts[1]!.client.rpc.submissions.star({ slug: conf.slug, id: popular.id });
+    await parts[2]!.client.rpc.submissions.star({ slug: conf.slug, id: quiet.id });
+
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: Date.now(), ends_at: Date.now() + 3600_000,
+    });
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slot.id, room_id: small.id, submission_id: popular.id });
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slot.id, room_id: big.id, submission_id: quiet.id });
+
+    const r = await owner.rpc.agenda.refitRooms({ slug: conf.slug, slot_id: slot.id });
+    if (r.kind !== "ok") throw new Error("expected ok");
+    expect(r.moves).toHaveLength(2);
+    const byRoom = new Map((await owner.rpc.agenda.get({ slug: conf.slug })).tracks.map((t) => [t.room_id, t.submission_id]));
+    expect(byRoom.get(big.id)).toBe(popular.id);
+    expect(byRoom.get(small.id)).toBe(quiet.id);
+
+    // Both moved talks notify their own audiences.
+    const popularFan = await ctx.prisma.notification.findMany({
+      where: { identityId: parts[0]!.identityId, kind: "schedule_changed" },
+    });
+    expect(popularFan[0]!.body).toBe("Popular moved to Big");
+    const quietFan = await ctx.prisma.notification.findMany({
+      where: { identityId: parts[2]!.identityId, kind: "schedule_changed" },
+    });
+    expect(quietFan[0]!.body).toBe("Quiet moved to Small");
+  });
+
+  test("refit: a room held by an OVERLAPPING planned slot's track is not claimable", async () => {
+    const { owner, conf } = await setupPlannedConf("refit-overlap-track");
+    const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
+    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 1 });
+    const subM = await owner.rpc.submissions.create({ slug: conf.slug, title: "M" });
+    const subOther = await owner.rpc.submissions.create({ slug: conf.slug, title: "Other" });
+    for (const s of [subM, subOther]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
+    const parts = await mintParticipants(owner, conf.slug, "refit-overlap-track", 2);
+    for (const p of parts) await p.client.rpc.submissions.star({ slug: conf.slug, id: subM.id });
+
+    const start = Date.now();
+    const slotA = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: start, ends_at: start + 3600_000,
+    });
+    const slotB = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: start, ends_at: start + 3600_000,
+    });
+    // slotB occupies Big during the same window; slotA's overfilled M therefore
+    // cannot escape Small into Big.
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slotB.id, room_id: big.id, submission_id: subOther.id });
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slotA.id, room_id: small.id, submission_id: subM.id });
+
+    const r = await owner.rpc.agenda.refitRooms({ slug: conf.slug, slot_id: slotA.id });
+    if (r.kind !== "ok") throw new Error("expected ok");
+    expect(r.moves).toHaveLength(0);
+    expect(r.unresolved).toEqual([{ submission_id: subM.id, title: "M", reason: "overfilled" }]);
+    const aTracks = await ctx.prisma.trackAssignment.findMany({ where: { slotId: slotA.id } });
+    expect(aTracks).toHaveLength(1);
+    expect(aTracks[0]!.roomId).toBe(small.id);
+  });
+
+  test("refit: a room held by an OVERLAPPING unconference placement is not claimable", async () => {
+    const { owner, conf } = await setupPlannedConf("refit-overlap-place");
+    const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
+    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 1 });
+    const subM = await owner.rpc.submissions.create({ slug: conf.slug, title: "M" });
+    const subOther = await owner.rpc.submissions.create({ slug: conf.slug, title: "Other" });
+    for (const s of [subM, subOther]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
+    const parts = await mintParticipants(owner, conf.slug, "refit-overlap-place", 2);
+    for (const p of parts) await p.client.rpc.submissions.star({ slug: conf.slug, id: subM.id });
+
+    const start = Date.now();
+    const slotA = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: start, ends_at: start + 3600_000,
+    });
+    const slotB = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", starts_at: start, ends_at: start + 3600_000,
+    });
+    // An unconference placement occupies Big in the overlapping slotB.
+    await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: slotB.id, submission_id: subOther.id, room_id: big.id });
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slotA.id, room_id: small.id, submission_id: subM.id });
+
+    const r = await owner.rpc.agenda.refitRooms({ slug: conf.slug, slot_id: slotA.id });
+    if (r.kind !== "ok") throw new Error("expected ok");
+    expect(r.moves).toHaveLength(0);
+    const aTracks = await ctx.prisma.trackAssignment.findMany({ where: { slotId: slotA.id } });
+    expect(aTracks[0]!.roomId).toBe(small.id);
+  });
+
+  test("refit: a double-booked current room is a misfit and gets repaired to a free room", async () => {
+    const { owner, conf } = await setupPlannedConf("refit-doublebooked");
+    const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
+    const free = await owner.rpc.rooms.create({ slug: conf.slug, name: "Free", capacity: 30 });
+    const subM = await owner.rpc.submissions.create({ slug: conf.slug, title: "M" });
+    const subOther = await owner.rpc.submissions.create({ slug: conf.slug, title: "Other" });
+    for (const s of [subM, subOther]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
+
+    const start = Date.now();
+    const slotA = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: start, ends_at: start + 3600_000,
+    });
+    const slotB = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: start, ends_at: start + 3600_000,
+    });
+    // Both slots put a talk in Big at the same time: slotA's M is double-booked
+    // and must relocate to the empty Free room. setTrack now refuses to create
+    // this clash, so seed slotA's Big track directly to model a pre-existing one.
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slotB.id, room_id: big.id, submission_id: subOther.id });
+    await ctx.prisma.trackAssignment.create({
+      data: { slotId: slotA.id, roomId: big.id, submissionId: subM.id },
+    });
+
+    const r = await owner.rpc.agenda.refitRooms({ slug: conf.slug, slot_id: slotA.id });
+    if (r.kind !== "ok") throw new Error("expected ok");
+    expect(r.moves).toEqual([
+      { submission_id: subM.id, title: "M", from_room: "Big", to_room: "Free" },
+    ]);
+    void free;
+  });
+
+  test("refit: idempotent — a second run makes no moves and no new notifications", async () => {
+    const { owner, conf } = await setupPlannedConf("refit-idem");
+    const tiny = await owner.rpc.rooms.create({ slug: conf.slug, name: "Tiny", capacity: 1 });
+    const mid = await owner.rpc.rooms.create({ slug: conf.slug, name: "Mid", capacity: 3 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Crowded" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+    const parts = await mintParticipants(owner, conf.slug, "refit-idem", 3);
+    for (const p of parts) await p.client.rpc.submissions.star({ slug: conf.slug, id: sub.id });
+
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: Date.now(), ends_at: Date.now() + 3600_000,
+    });
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slot.id, room_id: tiny.id, submission_id: sub.id });
+
+    const r1 = await owner.rpc.agenda.refitRooms({ slug: conf.slug, slot_id: slot.id });
+    if (r1.kind !== "ok") throw new Error("expected ok");
+    expect(r1.moves).toHaveLength(1);
+    void mid;
+
+    const before = scheduleNotes(await parts[0]!.client.rpc.notifications.list({ slug: conf.slug }))
+      .reduce((a, i) => a + i.unread_count, 0);
+    const r2 = await owner.rpc.agenda.refitRooms({ slug: conf.slug, slot_id: slot.id });
+    if (r2.kind !== "ok") throw new Error("expected ok");
+    expect(r2.moves).toHaveLength(0);
+    const after = scheduleNotes(await parts[0]!.client.rpc.notifications.list({ slug: conf.slug }))
+      .reduce((a, i) => a + i.unread_count, 0);
+    expect(after).toBe(before);
+  });
+
+  test("scheduleSubmission auto-room skips rooms held by an overlapping slot", async () => {
+    const { owner, conf } = await setupPlannedConf("sched-overlap");
+    const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
+    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 10 });
+    const held = await owner.rpc.submissions.create({ slug: conf.slug, title: "Held" });
+    const auto = await owner.rpc.submissions.create({ slug: conf.slug, title: "Auto" });
+    const pinnedSub = await owner.rpc.submissions.create({ slug: conf.slug, title: "PinnedToBig" });
+    const filler = await owner.rpc.submissions.create({ slug: conf.slug, title: "Filler" });
+    for (const s of [held, auto, pinnedSub, filler]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
+    await owner.rpc.submissions.update({ slug: conf.slug, id: pinnedSub.id, pre_assigned_room_id: big.id });
+
+    const start = Date.now();
+    const slotA = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: start, ends_at: start + 3600_000,
+    });
+    const slotB = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: start, ends_at: start + 3600_000,
+    });
+    // slotB occupies Big for the shared window.
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slotB.id, room_id: big.id, submission_id: held.id });
+
+    // Auto-room in slotA must avoid the overlap-held Big and land in Small.
+    const a = await owner.rpc.agenda.scheduleSubmission({ slug: conf.slug, slot_id: slotA.id, submission_id: auto.id });
+    expect(a.kind).toBe("ok");
+    if (a.kind !== "ok") throw new Error("expected ok");
+    expect(a.room_id).toBe(small.id);
+
+    // A pin onto the overlap-held Big is reported as taken.
+    const p = await owner.rpc.agenda.scheduleSubmission({ slug: conf.slug, slot_id: slotA.id, submission_id: pinnedSub.id });
+    expect(p.kind).toBe("conflict");
+    if (p.kind !== "conflict") throw new Error("expected conflict");
+    expect(p.reason).toBe("pin_room_taken");
+    if (p.reason !== "pin_room_taken") throw new Error("expected pin_room_taken");
+    expect(p.pinned_room!.id).toBe(big.id);
+
+    // With Small now taken (by `auto`) and Big overlap-held, nothing is free.
+    const f = await owner.rpc.agenda.scheduleSubmission({ slug: conf.slug, slot_id: slotA.id, submission_id: filler.id });
+    expect(f.kind).toBe("conflict");
+    if (f.kind !== "conflict") throw new Error("expected conflict");
+    expect(f.reason).toBe("no_free_room");
   });
 
   test("refit notifies starrers of moved talks (coalesced with the scheduled event)", async () => {
     const { owner, conf } = await setupPlannedConf("refit-notif");
     const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
-    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 10 });
+    // Small holds 1: subA (2 stars) is overfilled there → a genuine misfit.
+    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 1 });
     const subA = await owner.rpc.submissions.create({ slug: conf.slug, title: "Alpha" });
     const subB = await owner.rpc.submissions.create({ slug: conf.slug, title: "Beta" });
     for (const s of [subA, subB]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
@@ -220,7 +546,7 @@ describe("agenda.refitRooms + schedule-change notifications", () => {
     const slot = await owner.rpc.agenda.createSlot({
       slug: conf.slug, type: "normal", starts_at: Date.now(), ends_at: Date.now() + 3600_000,
     });
-    // subA in the small room, subB in big → refit moves subA into big.
+    // subA (overfilled in small) swaps with subB in big → subA moves into big.
     await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slot.id, room_id: small.id, submission_id: subA.id });
     await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slot.id, room_id: big.id, submission_id: subB.id });
 
@@ -238,7 +564,7 @@ describe("agenda.refitRooms + schedule-change notifications", () => {
   test("refit: a mandatory moved track notifies every identity", async () => {
     const { owner, conf } = await setupPlannedConf("refit-mand");
     const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
-    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 10 });
+    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 1 });
     const keynote = await owner.rpc.submissions.create({ slug: conf.slug, title: "Keynote" });
     const filler = await owner.rpc.submissions.create({ slug: conf.slug, title: "Filler" });
     for (const s of [keynote, filler]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
@@ -357,6 +683,147 @@ describe("agenda.refitRooms + schedule-change notifications", () => {
     }
   });
 
+  test("placeSubmission auto-pick skips a room held by an overlapping planned track", async () => {
+    const { owner, conf } = await setupPlannedConf("place-overlap-auto");
+    const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
+    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 10 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Session" });
+    const holder = await owner.rpc.submissions.create({ slug: conf.slug, title: "Holder" });
+    for (const s of [sub, holder]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
+
+    const start = soon();
+    const planned = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: start, ends_at: start + 3600_000,
+    });
+    const unconf = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", starts_at: start, ends_at: start + 3600_000,
+    });
+    // The planned slot occupies Big during the shared window.
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: planned.id, room_id: big.id, submission_id: holder.id });
+
+    // Auto-place into the unconference slot must skip Big and land in Small.
+    const r = await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: unconf.id, submission_id: sub.id });
+    expect(r.kind).toBe("ok");
+    if (r.kind !== "ok") throw new Error("expected ok");
+    expect(r.room_id).toBe(small.id);
+  });
+
+  test("placeSubmission explicit room held by an overlapping unconference placement → pin_room_taken", async () => {
+    const { owner, conf } = await setupPlannedConf("place-overlap-explicit");
+    const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Session" });
+    const holder = await owner.rpc.submissions.create({ slug: conf.slug, title: "Holder" });
+    for (const s of [sub, holder]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
+
+    const start = soon();
+    const slotA = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", starts_at: start, ends_at: start + 3600_000,
+    });
+    const slotB = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", starts_at: start, ends_at: start + 3600_000,
+    });
+    // slotB's placement occupies Big during the shared window.
+    await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: slotB.id, submission_id: holder.id, room_id: big.id });
+
+    const r = await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: slotA.id, submission_id: sub.id, room_id: big.id });
+    expect(r.kind).toBe("conflict");
+    if (r.kind !== "conflict") throw new Error("expected conflict");
+    expect(r.reason).toBe("pin_room_taken");
+    if (r.reason !== "pin_room_taken") throw new Error("expected pin_room_taken");
+    expect(r.pinned_room!.id).toBe(big.id);
+    // No placement was written into slotA.
+    const placed = await ctx.prisma.unconferencePlacement.findMany({ where: { slotId: slotA.id } });
+    expect(placed).toHaveLength(0);
+  });
+
+  test("placeSubmission: non-overlapping slots can still share a room", async () => {
+    const { owner, conf } = await setupPlannedConf("place-nonoverlap");
+    const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
+    const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Session" });
+    const holder = await owner.rpc.submissions.create({ slug: conf.slug, title: "Holder" });
+    for (const s of [sub, holder]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
+
+    const start = soon();
+    const slotA = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", starts_at: start, ends_at: start + 3600_000,
+    });
+    // slotB starts after slotA ends — no overlap, so Big is fair game for both.
+    const slotB = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", starts_at: start + 3600_000, ends_at: start + 7200_000,
+    });
+    await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: slotB.id, submission_id: holder.id, room_id: big.id });
+
+    const r = await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: slotA.id, submission_id: sub.id, room_id: big.id });
+    expect(r.kind).toBe("ok");
+    if (r.kind !== "ok") throw new Error("expected ok");
+    expect(r.room_id).toBe(big.id);
+  });
+
+  test("setTrack into a room held by an overlapping slot → room_overlap_taken conflict naming the holder, no write", async () => {
+    const { owner, conf } = await setupPlannedConf("settrack-overlap");
+    const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
+    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 10 });
+    const keynote = await owner.rpc.submissions.create({ slug: conf.slug, title: "Keynote" });
+    const talk = await owner.rpc.submissions.create({ slug: conf.slug, title: "Talk" });
+    for (const s of [keynote, talk]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
+
+    const start = Date.now();
+    const slotB = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: start, ends_at: start + 3600_000,
+    });
+    const slotA = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: start, ends_at: start + 3600_000,
+    });
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slotB.id, room_id: big.id, submission_id: keynote.id });
+
+    const r = await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slotA.id, room_id: big.id, submission_id: talk.id });
+    expect(r.kind).toBe("conflict");
+    if (r.kind !== "conflict") throw new Error("expected conflict");
+    expect(r.reason).toBe("room_overlap_taken");
+    if (r.reason !== "room_overlap_taken") throw new Error("expected room_overlap_taken");
+    expect(r.holder.title).toBe("Keynote");
+    expect(r.holder.room_name).toBe("Big");
+    expect(r.holder.slot_label.length).toBeGreaterThan(0);
+    // Nothing written into slotA.
+    const aTracks = await ctx.prisma.trackAssignment.findMany({ where: { slotId: slotA.id } });
+    expect(aTracks).toHaveLength(0);
+
+    // A free room in the same overlapping situation still schedules fine.
+    const ok = await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slotA.id, room_id: small.id, submission_id: talk.id });
+    expect(ok.kind).toBe("ok");
+  });
+
+  test("setTrack: editing a track already in a room is not blocked by its own room", async () => {
+    const { owner, conf } = await setupPlannedConf("settrack-inplace");
+    const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
+    const mine = await owner.rpc.submissions.create({ slug: conf.slug, title: "Mine" });
+    const other = await owner.rpc.submissions.create({ slug: conf.slug, title: "Other" });
+    for (const s of [mine, other]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
+
+    const start = Date.now();
+    const slotA = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: start, ends_at: start + 3600_000,
+    });
+    const slotB = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "normal", starts_at: start, ends_at: start + 3600_000,
+    });
+    // slotA already holds Big.
+    await owner.rpc.agenda.setTrack({ slug: conf.slug, slot_id: slotA.id, room_id: big.id, submission_id: mine.id });
+    // Simulate a pre-existing overlapping booking of Big by slotB (the guard now
+    // prevents creating this via setTrack, so seed it directly).
+    await ctx.prisma.trackAssignment.create({
+      data: { slotId: slotB.id, roomId: big.id, submissionId: other.id },
+    });
+
+    // Editing slotA's own Big track (toggle mandatory) must NOT be blocked.
+    const r = await owner.rpc.agenda.setTrack({
+      slug: conf.slug, slot_id: slotA.id, room_id: big.id, submission_id: mine.id, mandatory: true,
+    });
+    expect(r.kind).toBe("ok");
+    const t = await ctx.prisma.trackAssignment.findFirst({ where: { slotId: slotA.id, roomId: big.id } });
+    expect(t!.mandatory).toBe(true);
+  });
+
   test("agenda participant_count: number for mods, null for participants", async () => {
     const { owner, conf } = await setupPlannedConf("pcount");
     const { client: part } = await inviteAndClaim(ctx.app, owner, conf.slug, "pcount-p@example.com");
@@ -370,12 +837,14 @@ describe("agenda.refitRooms + schedule-change notifications", () => {
   test("refit does not flip seatingStale on the slot", async () => {
     const { owner, conf } = await setupPlannedConf("refit-stale");
     const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
-    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 10 });
+    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 1 });
     const subA = await owner.rpc.submissions.create({ slug: conf.slug, title: "A" });
     const subB = await owner.rpc.submissions.create({ slug: conf.slug, title: "B" });
     for (const s of [subA, subB]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
-    const parts = await mintParticipants(owner, conf.slug, "refit-stale", 1);
+    // 2 stars overfill the capacity-1 room, so subA is a misfit that moves.
+    const parts = await mintParticipants(owner, conf.slug, "refit-stale", 2);
     await parts[0]!.client.rpc.submissions.star({ slug: conf.slug, id: subA.id });
+    await parts[1]!.client.rpc.submissions.star({ slug: conf.slug, id: subA.id });
 
     const slot = await owner.rpc.agenda.createSlot({
       slug: conf.slug, type: "normal", starts_at: Date.now(), ends_at: Date.now() + 3600_000,
@@ -416,12 +885,12 @@ describe("agenda.refitRooms + schedule-change notifications", () => {
     // Restrict the slot's room scope to `inScope`; `outScope` is bigger but not
     // configured for this slot — a track sitting there must not be stranded.
     const inScope = await owner.rpc.rooms.create({ slug: conf.slug, name: "InScope", capacity: 50 });
-    const outScope = await owner.rpc.rooms.create({ slug: conf.slug, name: "OutScope", capacity: 10 });
+    const outScope = await owner.rpc.rooms.create({ slug: conf.slug, name: "OutScope", capacity: 1 });
     const subA = await owner.rpc.submissions.create({ slug: conf.slug, title: "A" });
     const subB = await owner.rpc.submissions.create({ slug: conf.slug, title: "B" });
     for (const s of [subA, subB]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });
     const parts = await mintParticipants(owner, conf.slug, "refit-union", 2);
-    // subA is the popular one; it should claim the biggest available room.
+    // subA (2 stars) is overfilled in the capacity-1 out-of-scope room → misfit.
     await parts[0]!.client.rpc.submissions.star({ slug: conf.slug, id: subA.id });
     await parts[1]!.client.rpc.submissions.star({ slug: conf.slug, id: subA.id });
 
@@ -474,6 +943,7 @@ describe("agenda.refitRooms + schedule-change notifications", () => {
     expect(r.kind).toBe("conflict");
     if (r.kind !== "conflict") throw new Error("expected conflict");
     expect(r.reason).toBe("pin_room_taken");
+    if (r.reason !== "pin_room_taken") throw new Error("expected pin_room_taken");
     expect(r.pinned_room!.id).toBe(r1.id);
     // The conflict names one of the two clashing submissions.
     expect([subP1.id, subP2.id]).toContain(r.submission!.id);
@@ -487,7 +957,7 @@ describe("agenda.refitRooms + schedule-change notifications", () => {
   test("refit notifies the submission's submitter even though they never starred it", async () => {
     const { owner, conf } = await setupPlannedConf("refit-submitter");
     const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
-    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 10 });
+    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 1 });
     // `author` writes the talk (becomes its submitter) but never stars it.
     const { client: author, identity_id: authorId } =
       await inviteAndClaim(ctx.app, owner, conf.slug, "refit-submitter-author@example.com");
@@ -520,7 +990,7 @@ describe("agenda.refitRooms + schedule-change notifications", () => {
   test("planned-track ICS UID is stable across a refit (keyed on slot+submission)", async () => {
     const { owner, conf } = await setupPlannedConf("refit-uid");
     const big = await owner.rpc.rooms.create({ slug: conf.slug, name: "Big", capacity: 30 });
-    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 10 });
+    const small = await owner.rpc.rooms.create({ slug: conf.slug, name: "Small", capacity: 1 });
     const subA = await owner.rpc.submissions.create({ slug: conf.slug, title: "Alpha" });
     const subB = await owner.rpc.submissions.create({ slug: conf.slug, title: "Beta" });
     for (const s of [subA, subB]) await owner.rpc.submissions.publish({ slug: conf.slug, id: s.id });

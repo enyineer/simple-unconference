@@ -3,7 +3,8 @@ import { Button, Select, Stack, Text } from "../../../design-system";
 import { useToast } from "../../../design-system/hooks";
 import { api, errorCode } from "../../../api";
 import { Disclosure } from "../../ui/Disclosure";
-import type { Room, Submission } from "../../types";
+import { slotRoomBlockReason } from "../../roomConstraints";
+import type { Room, Slot, Submission } from "../../types";
 
 // Moderator-only control to author the unconference occurrence set: place a
 // session into this slot + room (or let the server auto-pick the room). The
@@ -16,7 +17,7 @@ import type { Room, Submission } from "../../types";
 // the visual hierarchy should say so.
 export function PlacementAuthor({
   slug,
-  slotId,
+  slot,
   eligibleSubs,
   eligibleRooms,
   placedSubmissionIds,
@@ -24,7 +25,7 @@ export function PlacementAuthor({
   onChange,
 }: {
   slug: string;
-  slotId: number;
+  slot: Slot;
   eligibleSubs: Submission[];
   eligibleRooms: Room[];
   placedSubmissionIds: Set<number>;
@@ -32,12 +33,21 @@ export function PlacementAuthor({
   onChange: () => Promise<void>;
 }) {
   const toast = useToast();
+  const slotId = slot.id;
   const [subId, setSubId] = useState<string>("");
   const [roomId, setRoomId] = useState<string>(""); // "" = auto-pick
   const [busy, setBusy] = useState(false);
 
   const addable = eligibleSubs.filter((s) => !placedSubmissionIds.has(s.id));
   const freeRooms = eligibleRooms.filter((r) => !takenRoomIds.has(r.id));
+  // Rooms that are physically unusable for THIS slot (reserved for experts, or
+  // outside their availability windows) can't host a placement — the server
+  // would reject them. Drop them from the picker and explain below, rather
+  // than offering a choice that always fails.
+  const pickableRooms = freeRooms.filter((r) => slotRoomBlockReason(r, slot) === null);
+  const blockedRooms = freeRooms
+    .map((r) => ({ room: r, reason: slotRoomBlockReason(r, slot) }))
+    .filter((x): x is { room: Room; reason: string } => x.reason !== null);
 
   if (addable.length === 0) {
     // Everything eligible is already placed — keep the disclosure so the
@@ -102,23 +112,30 @@ export function PlacementAuthor({
             onChange={(e) => setRoomId(e.target.value)}
             options={[
               { value: "", label: "Auto (largest free)" },
-              ...freeRooms.map((r) => ({ value: String(r.id), label: `${r.name} · ${r.capacity}` })),
+              ...pickableRooms.map((r) => ({ value: String(r.id), label: `${r.name} · ${r.capacity}` })),
             ]}
           />
           <Button variant="default" onClick={place} disabled={busy}>
             {busy ? "Placing…" : "Place"}
           </Button>
         </Stack>
+        {blockedRooms.length > 0 && (
+          <Text muted>
+            Not listed:{" "}
+            {blockedRooms
+              .map((x) => `${x.room.name} (${x.reason.toLowerCase()})`)
+              .join(", ")}
+            .
+          </Text>
+        )}
       </Stack>
     </Disclosure>
   );
 }
 
-function conflictMessage(r: {
-  reason: "pin_room_taken" | "pin_room_out_of_scope" | "unsatisfiable_requirements" | "no_free_room";
-  required_tags: string[];
-  candidate_room_names: string[];
-}): string {
+function conflictMessage(
+  r: Extract<Awaited<ReturnType<typeof api.agenda.placeSubmission>>, { kind: "conflict" }>,
+): string {
   switch (r.reason) {
     case "pin_room_taken":
       return "That room is already used by another session in this slot.";
@@ -130,5 +147,11 @@ function conflictMessage(r: {
         : "No room satisfies this session's requirements.";
     case "no_free_room":
       return "Every room in this slot's scope is already taken.";
+    case "room_expert_dedicated":
+      return r.pool_name
+        ? `${r.room.name} is reserved for experts (${r.pool_name}) and can't host a session.`
+        : `${r.room.name} is reserved for experts and can't host a session.`;
+    case "room_unavailable":
+      return `${r.room.name} isn't available during this slot's time.`;
   }
 }

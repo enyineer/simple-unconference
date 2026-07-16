@@ -155,7 +155,7 @@ export function ConferencePage({
 
       <div style={{ marginTop: 20 }}>
         {tab === "people"   && <PeopleTab slug={slug} role={conf.my_role} />}
-        {tab === "rooms"    && <RoomsTab slug={slug} isMod={isMod} />}
+        {tab === "rooms"    && <RoomsTab slug={slug} isMod={isMod} timeZone={conf.timezone} />}
         {tab === "sessions" && (
           <SessionsTab
             slug={slug}

@@ -6,6 +6,7 @@ import type { Room } from "../../types";
 import { SearchableSelect } from "../../ui/SearchableSelect";
 import { RoomCheckboxes } from "./RoomCheckboxes";
 import { humanError } from "./helpers";
+import { roomsInUseMessage } from "../../roomConstraints";
 import type { Expert, ExpertPool } from "./types";
 
 export function EditExpertSheet({
@@ -36,7 +37,7 @@ export function EditExpertSheet({
         room_ids: mode === "rooms" ? [...roomIds] : [],
       });
       onDone();
-    } catch (err) { toast.error(humanError(errorCode(err))); }
+    } catch (err) { toast.error(roomsInUseMessage(err) ?? humanError(errorCode(err))); }
   }
 
   const display = expert.name || expert.email || `Expert #${expert.id}`;

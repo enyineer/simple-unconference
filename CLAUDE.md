@@ -109,6 +109,14 @@ something the next session would need to know.
   **not** in `schema.prisma`. The `datasource db {}` block has only `provider`.
 - **Prisma CLI in tests:** `prisma db push` in Prisma 7 dropped `--skip-generate`.
   Pass `--url <url>` to override per-test DBs (see `test-helpers.ts`).
+- **Never hand-fabricate migration folders.** Create migrations with
+  `bunx prisma migrate dev --name <name>` (or `--create-only` + edit) and
+  ALWAYS apply them locally before finishing. Tests bypass migrations
+  (`db push` from the schema hash), so an unapplied migration keeps the suite
+  green while the dev server crashes with `no such table` — this happened
+  once. Prod applies pending migrations via `migrate deploy` at startup, so a
+  hand-written-but-locally-validated migration deploys fine; an unvalidated
+  one is a gamble.
 - **Vite proxy:** use the regex form `"^/api/.*"`. The bare prefix `"/api"`
   matches the source file `/api.ts` too and breaks the dev server.
 - **Primer 38 needs primitives CSS explicitly imported.** The React package
@@ -184,6 +192,32 @@ something the next session would need to know.
   unconference `placeSubmission` room-move reuses the same kind + dedupeKey
   but targets the currently-SEATED users (UserAssignment rows), not starrers.
   Call it AFTER the surrounding transaction commits (the standard rule above).
+
+## Room constraints (dedication + availability)
+
+- **Room constraint logic lives in
+  [src/server/lib/room-constraints.ts](src/server/lib/room-constraints.ts).**
+  Every room-consuming path must consult `expertDedicatedRoomIds` +
+  `unavailableRoomIds` (or `roomAvailableFor` for a single interval) after
+  resolving its room scope. The five agenda paths (`runAssignmentForSlot`,
+  `runMixerForSlot`, `scheduleSubmission`, `placeSubmission`, `refitRooms`)
+  and `experts.book` all do this; a new room-selecting path must too.
+- **Expert-dedicated rooms** (member of any `ExpertRoomPool` via
+  `ExpertRoomPoolRoom`, OR any per-expert `ExpertRoom` row) are excluded from
+  EVERY slot assignment. Automatic paths drop them silently; manual paths
+  (setTrack target, scheduleSubmission/placeSubmission explicit or pin,
+  refit pin targets) return a `room_expert_dedicated` conflict. Pin writes
+  (`submissions.create`/`update` `pre_assigned_room_id`) reject dedicated
+  rooms with a BAD_REQUEST. **Mutual exclusion is enforced on both write
+  directions:** dedicating a room that already has slot usage
+  (`experts.createPool`/`updatePool`/`promote`/`update`) is blocked with a
+  structured `rooms_in_use` error naming the offenders.
+- **Availability windows** (`RoomAvailability` rows): **no rows = always
+  available** (the hard default — existing conferences are unaffected). With
+  windows, an interval is usable only when it fits fully inside a single
+  window. Availability edits (`rooms.create`/`update`) that would strand an
+  existing track / placement / booking are rejected with
+  `availability_strands_usage`; clearing to empty always succeeds.
 
 ## Architecture choices that look weird unless you know them
 
@@ -262,12 +296,37 @@ something the next session would need to know.
   unconference slot body). `UnconferencePlacement.manual=true` marks
   mod-authored placements so the per-slot auto-assign preserves them
   (`placementWriteOps` deletes only `manual:false`).
-- **Planned-slot room refit** (`agenda.refitRooms`) reassigns a normal slot's
-  rooms among its scheduled tracks by star count (biggest room → most-starred),
-  honoring `preAssignedRoomId` pins (a pin overrides tag requirements) and
-  `roomRequirements`. It mirrors the `assignment.ts` Phase A zip semantics but
-  does NOT import that module (that's per-slot attendee placement). All-or-
-  nothing: an unmatchable track returns a conflict with ZERO writes. **Caveat:
+- **Planned-slot room refit** (`agenda.refitRooms`) is a STABLE, minimal-move
+  REPAIR of a normal slot's room assignment — NOT a re-rank. A track is a
+  "misfit" when its interest exceeds its room, its `preAssignedRoomId` pin
+  points elsewhere, its `roomRequirements` aren't met, or its room is
+  double-booked by a time-overlapping slot (`overlapHeldRoomIds` — tracks +
+  placements + `UserAssignment.roomId`, the last covering mixer rooms since
+  mixers write no placement rows). Non-misfits NEVER move (zero misfits → zero
+  moves, zero writes). Each misfit goes to the SMALLEST free room that still
+  covers its interest (best fit — preserves big-room headroom), else the
+  largest satisfying free room (only if strictly bigger for a pure overfill),
+  else a single swap with a strictly less-starred non-pinned track. Pins
+  override tag requirements + overfill; a pin only ever lands on its pin room.
+  Genuine pin config errors (pin out of scope, pin room held by an overlapping
+  slot / another pin / a non-misfit) still abort with a conflict + ZERO writes;
+  misfits that can't be improved stay put and are returned in `unresolved`
+  (`overfilled` | `double_booked` | `requirements`).
+- **Overlap-held rooms block ALL room authoring, not just refit.**
+  `overlapHeldRoomIds(prisma, confId, slotId, window)` is the shared source of
+  truth (overlapping slots' tracks + unconference placements +
+  `UserAssignment.roomId`, the last covering mixer rooms since mixers write no
+  placement rows). It's folded into the taken-room set of `scheduleSubmission`
+  (auto + pin), `placeSubmission` (auto + explicit + pin), and — as of the
+  setTrack overlap gate — `setTrack` itself. `setTrack` returns a structured
+  `SetTrackResult` (`{kind:"ok"} | {kind:"conflict", reason:"room_overlap_taken",
+  holder}`) naming the holding slot's time + talk/session title + room via
+  `findRoomOverlapHolder`, so the UI can say WHAT's using the room. The gate
+  fires only when placing into a room this slot doesn't already use (`!existing`)
+  — editing/replacing a track already in a room is never blocked by its own room
+  (a pre-existing double-book stays editable). When adding a NEW overlap-aware
+  room-authoring endpoint, fold `overlapHeldRoomIds` in the same way.
+  **Caveat:
   `TrackAssignment.id` is NOT stable across a refit** — the `@@unique([slotId,
   roomId])` makes in-place room swaps collide transiently, so the write is
   delete-all-tracks + recreate with new roomIds (requirements re-created too).

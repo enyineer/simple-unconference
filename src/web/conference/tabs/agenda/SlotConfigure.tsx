@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button, Card, Stack, Text } from "../../../design-system";
 import { useToast } from "../../../design-system/hooks";
 import { api, errorCode } from "../../../api";
+import { slotRoomBlockReason } from "../../roomConstraints";
 import type { Room, Slot, Submission } from "../../types";
 
 export function SlotConfigure({
@@ -93,16 +94,26 @@ export function SlotConfigure({
           </Stack>
           {!useAllRooms && (
             <Stack direction="row" gap="condensed" wrap>
-              {rooms.map((r) => (
-                <Button
-                  key={r.id}
-                  size="small"
-                  variant={pickedRooms.has(r.id) ? "primary" : "default"}
-                  onClick={() => setPickedRooms((s) => toggle(s, r.id))}
-                >
-                  {r.name}
-                </Button>
-              ))}
+              {rooms.map((r) => {
+                // Expert-dedicated rooms never take part in assignment, and a
+                // room outside its availability at this slot's time can't be
+                // used either — disable adding them, but still let a mod
+                // deselect one that's somehow already in scope.
+                const reason = slotRoomBlockReason(r, slot);
+                const picked = pickedRooms.has(r.id);
+                return (
+                  <span key={r.id} title={reason ?? undefined} style={{ display: "inline-flex" }}>
+                    <Button
+                      size="small"
+                      variant={picked ? "primary" : "default"}
+                      disabled={reason !== null && !picked}
+                      onClick={() => setPickedRooms((s) => toggle(s, r.id))}
+                    >
+                      {r.name}
+                    </Button>
+                  </span>
+                );
+              })}
               {rooms.length === 0 && <Text muted>No rooms exist yet.</Text>}
             </Stack>
           )}
