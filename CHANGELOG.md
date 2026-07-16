@@ -1,5 +1,11 @@
 # simple-unconference
 
+## 0.12.1
+
+### Patch Changes
+
+- [`02c188d`](https://github.com/enyineer/simple-unconference/commit/02c188d0748417814f71376979a387f4509ff9e1) Thanks [@enyineer](https://github.com/enyineer)! - Fixed the agenda setup checklist on mobile: text-only action hints (like "Open an unconference slot to place sessions") now sit below the step description instead of squeezing it into a one-word-wide column.
+
 ## 0.12.0
 
 ### Minor Changes
