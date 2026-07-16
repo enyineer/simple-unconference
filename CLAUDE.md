@@ -99,6 +99,32 @@ something the next session would need to know.
   attach a track to an unassigned room when they want to. Don't iterate
   `rooms.map(…)` in slot displays without filtering by `tracks.find`.
 
+## Event Experience Suite (Live Board, broadcast, takeaways, PWA)
+
+- **Live Board privacy + spotlight truth.** The board payload rules live in the
+  Realtime section below. The CURRENT spotlight is mod-readable via
+  `AgendaOut.spotlight_submission_id` — the Pitch Mode sheet seeds from it;
+  never reintroduce client-side spotlight guessing (localStorage etc.).
+- **Takeaways UI is ONE component**: `src/web/conference/ui/TakeawaysPanel.tsx`
+  (lazy-loads on first Disclosure expand), used by SessionCard and the Me-tab
+  RecapSection. Server caps: 500 chars, 10 per identity per submission;
+  visibility = published-or-own; author or mod deletes. Payloads carry display
+  names only, never emails.
+- **conferences.duplicate** clones CONFIG + rooms (tags, availability windows
+  offset to the new first day) + slot/series skeleton (incl. SlotRoom/SeriesRoom
+  scoping remapped) — never people, submissions, placements, experts, or
+  tokens. It shares `generateUniqueSlug` and the conference quota guard with
+  `create`; keep them shared.
+- **Service worker** (`src/web/public/sw.js`, prod-only registration): bump
+  `CACHE_VERSION` whenever its caching behavior changes; NEVER let it cache
+  non-GET, `/api/realtime*`, or `/api/board/*/stream`. The static server sends
+  `Cache-Control: no-cache` for sw.js — keep that, or stale workers can pin old
+  code forever. Read-only offline is the deliberate scope: no write queueing.
+- **Announcements** (`announcements.send`) fan out through `createNotifications`
+  (kind `announcement`, no dedupeKey). The live toast for in-app users lives in
+  NotificationBell's fetch path (baseline-guarded so mounts don't replay the
+  backlog) — don't add a second delivery surface.
+
 ## Stack gotchas you will hit if you forget
 
 - **Prisma adapter:** we use `@prisma/adapter-libsql` (pure JS), not
