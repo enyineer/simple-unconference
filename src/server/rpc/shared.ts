@@ -219,11 +219,13 @@ export function joinUrl(slug: string, token: string): string {
   return `/c/${slug}/join?t=${token}`;
 }
 
-// Relative path to the public read-only Live Board (hash route; the web client
-// route is added in W3). The token is the secret — anyone with this URL can
-// view the board.
+// Relative path to the public read-only Live Board. Hashless, exactly like
+// `joinUrl` above: the web client turns it absolute with `absoluteUrl`, which
+// prepends `${origin}/#`. Returning the `/#` here too would double it
+// (`${origin}/#/#/board/...`) and break the hash-route match. The token is the
+// secret — anyone with this URL can view the board.
 export function boardUrl(slug: string, token: string): string {
-  return `/#/board/${slug}?t=${token}`;
+  return `/board/${slug}?t=${token}`;
 }
 
 export function calendarFeedPath(token: string): string {

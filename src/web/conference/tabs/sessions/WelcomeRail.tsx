@@ -11,7 +11,7 @@ const STORAGE_PREFIX = "welcome-rail:";
 const STEPS = [
   "Sessions are proposed by everyone - including you.",
   "Star what you want to attend - stars literally build the schedule.",
-  "Your day appears in the Me tab once seating runs.",
+  "Your day appears in the My schedule tab once seating runs.",
 ];
 
 export function WelcomeRail({ slug }: { slug: string }) {

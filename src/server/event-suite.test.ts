@@ -57,7 +57,8 @@ describe("Live Board payload + link", () => {
     const link = await owner.rpc.conferences.setBoardLink({ slug: conf.slug, enabled: true });
     expect(link.enabled).toBe(true);
     expect(link.token).toBeTruthy();
-    expect(link.url).toContain(`/#/board/${conf.slug}`);
+    // Hashless server path (like joinUrl); the web client prepends `${origin}/#`.
+    expect(link.url).toBe(`/board/${conf.slug}?t=${link.token}`);
 
     // The board is PUBLIC — fetch it with a cookieless client.
     const anon = new Client(ctx.app);
