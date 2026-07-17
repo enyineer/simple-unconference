@@ -57,6 +57,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # The default PWA icons (src/web/public/icon-*.png) are Git LFS
+          # objects; the conference-icon fallback test reads their real bytes
+          # through sharp. Without this, checkout leaves LFS pointer text and
+          # sharp fails with "unsupported image format".
+          lfs: true
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
