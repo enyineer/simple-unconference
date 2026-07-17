@@ -205,6 +205,7 @@ model ConferenceIdentity {
   chatBlocksReceived   ChatBlock[]        @relation("ChatBlockBlocked")
   takeaways            SessionTakeaway[]
   pushSubscriptions    PushSubscription[]
+  speakerFor           SubmissionSpeaker[]
 
   @@unique([conferenceId, email])
   @@index([conferenceId])
@@ -367,6 +368,7 @@ model Submission {
   trackAssignments    TrackAssignment[]
   placements          UnconferencePlacement[]
   userAssignments     UserAssignment[]
+  speakers            SubmissionSpeaker[]
   tags                SubmissionTag[]
   requirements        SubmissionRequirement[]
   roomRequirements    SubmissionRoomRequirement[]
@@ -381,6 +383,31 @@ model Submission {
   @@index([conferenceId])
   @@index([conferenceId, status])
   @@map("submissions")
+}
+
+// A presenter of a session, decoupled from authorship (`Submission.submitterId`).
+// Exactly one of `identityId` (a registered conference identity) or `name` (a
+// free-form typed name for an unregistered speaker) is set — enforced in the
+// valibot schema layer, not the DB. When a submission has no speaker rows the
+// effective speaker defaults to its submitter (see src/server/lib/speakers.ts).
+// The effective speaker set drives the scheduler's parallel-speaker rule and the
+// displayed presenter; `submitterId` semantics are untouched.
+model SubmissionSpeaker {
+  id           Int     @id @default(autoincrement())
+  submissionId Int     @map("submission_id")
+  identityId   Int?    @map("identity_id")
+  name         String?
+  position     Int     @default(0)
+
+  submission Submission          @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  identity   ConferenceIdentity? @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  // No duplicate registered speaker per submission. NULL identityIds are
+  // distinct in SQLite, so free-form names are unbounded here (dedup happens
+  // in the RPC layer by normalized name).
+  @@unique([submissionId, identityId])
+  @@index([submissionId])
+  @@map("submission_speakers")
 }
 
 // A short takeaway (learning / link) captured against a session. Anyone in the

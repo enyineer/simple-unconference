@@ -5,7 +5,10 @@ import {
   normalizeLabels, resolveFinished,
 } from "./shared";
 import { clipToMinute, formatInTz } from "../../shared/tz";
-import type { RoomOverlapHolder } from "../../shared/contract/types";
+import type { RoomOverlapHolder, SpeakerOverlapHolder } from "../../shared/contract/types";
+import {
+  effectiveSpeakers, effectiveSpeakerKeys, effectiveSpeakerIdentityIds,
+} from "../lib/speakers";
 import { assignUnconferenceSlot, assignMixerSlot, pairKey, priorityWeight, type AssignmentInput } from "../assignment";
 import {
   assignAgenda, type AgendaOccurrence, type AgendaUserAssignment,
@@ -272,6 +275,103 @@ async function findRoomOverlapHolder(
   };
 }
 
+// Non-blocking speaker-clash detector for the MANUAL placement paths. Given a
+// set of effective speaker keys (for the session being placed) + its window,
+// returns the first placed/tracked session in a time-overlapping slot that
+// SHARES a speaker key (excluding the session itself). Mirrors
+// `findRoomOverlapHolder`: it names the clash so the mod can be told a speaker
+// is double-booked, without blocking the placement. Both unconference
+// placements and planned tracks are considered. Returns null when no clash.
+async function findSpeakerOverlapHolder(
+  prisma: PrismaClient,
+  confId: number,
+  slotId: number,
+  window: { startsAt: Date; endsAt: Date },
+  timezone: string,
+  speakerKeys: ReadonlySet<string>,
+  excludeSubmissionId: number,
+): Promise<SpeakerOverlapHolder | null> {
+  if (speakerKeys.size === 0) return null;
+  const overlapping = await prisma.agendaSlot.findMany({
+    where: {
+      conferenceId: confId,
+      id: { not: slotId },
+      startsAt: { lt: window.endsAt },
+      endsAt: { gt: window.startsAt },
+    },
+    select: { id: true, startsAt: true },
+  });
+  if (overlapping.length === 0) return null;
+  const ids = overlapping.map((s) => s.id);
+  const startById = new Map(overlapping.map((s) => [s.id, s.startsAt]));
+  const submissionSelect = {
+    id: true, title: true, submitterId: true,
+    submitter: { select: { name: true } },
+    speakers: {
+      select: { identityId: true, name: true, identity: { select: { name: true } } },
+      orderBy: { position: "asc" as const },
+    },
+  } as const;
+  const [placements, tracks] = await Promise.all([
+    prisma.unconferencePlacement.findMany({
+      where: { slotId: { in: ids }, submissionId: { not: excludeSubmissionId } },
+      select: { slotId: true, room: { select: { name: true } }, submission: { select: submissionSelect } },
+    }),
+    prisma.trackAssignment.findMany({
+      where: { slotId: { in: ids }, submissionId: { not: excludeSubmissionId } },
+      select: { slotId: true, room: { select: { name: true } }, submission: { select: submissionSelect } },
+    }),
+  ]);
+  const candidates = [
+    ...placements.map((p) => ({ slotId: p.slotId, roomName: p.room.name, submission: p.submission })),
+    ...tracks.map((t) => ({ slotId: t.slotId, roomName: t.room.name, submission: t.submission })),
+  ]
+    // A track's submission may be null (onDelete: SetNull) — no speaker to clash.
+    .filter((c): c is typeof c & { submission: NonNullable<typeof c.submission> } => c.submission !== null)
+    // Earliest overlapping slot first, then lowest submission id — deterministic.
+    .sort((a, b) => {
+      const sa = startById.get(a.slotId)?.getTime() ?? 0;
+      const sb = startById.get(b.slotId)?.getTime() ?? 0;
+      if (sa !== sb) return sa - sb;
+      return a.submission.id - b.submission.id;
+    });
+  for (const c of candidates) {
+    for (const sp of effectiveSpeakers(c.submission)) {
+      if (speakerKeys.has(sp.key)) {
+        const startsAt = startById.get(c.slotId);
+        return {
+          speaker_name: sp.name,
+          slot_label: startsAt ? formatInTz(startsAt.getTime(), timezone) : "",
+          session_title: c.submission.title,
+          room_name: c.roomName,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+// Compute the non-blocking `speaker_warning` for a manual placement of
+// `submission` into `slot`. Fetches the conference timezone for the label.
+// Returns undefined when no overlapping speaker clash exists.
+async function computeSpeakerWarning(
+  prisma: PrismaClient,
+  confId: number,
+  slot: { id: number; startsAt: Date; endsAt: Date },
+  submission: { id: number; submitterId: number; speakers: { identityId: number | null; name: string | null }[] },
+): Promise<SpeakerOverlapHolder | undefined> {
+  const keys = effectiveSpeakerKeys(submission);
+  const conf = await prisma.conference.findUniqueOrThrow({
+    where: { id: confId }, select: { timezone: true },
+  });
+  const holder = await findSpeakerOverlapHolder(
+    prisma, confId, slot.id,
+    { startsAt: slot.startsAt, endsAt: slot.endsAt },
+    conf.timezone, keys, submission.id,
+  );
+  return holder ?? undefined;
+}
+
 // USER-FACING DOCS: the plain-language description of the steps below
 // (top-N selection, pin/tag pre-assignments, bipartite matching with
 // cascade analysis, overlap exclusions, finished filter, manual picks)
@@ -325,6 +425,9 @@ async function runAssignmentForSlot(
       allowOverlappingPlacements: true,
       priority: true,
       roomRequirements: { select: { value: true } },
+      // Effective-speaker rows drive the parallel-speaker overlap rule below.
+      // No rows → the session's sole speaker defaults to its submitter.
+      speakers: { select: { identityId: true, name: true } },
     },
   });
   // Count placements + static tracks per submission, excluding the current
@@ -479,27 +582,37 @@ async function runAssignmentForSlot(
         if (a.roomId !== null) excludedRoomIds.add(a.roomId);
       }
 
-      // For (b): map submitter → set of session IDs they're hosting in
-      // overlapping slots. A candidate sub is blocked when its submitter is
-      // hosting a *different* session there (same session is the (c) case).
-      const placedOverlappingByOtherSubmitter = overlapPlacedSessionIds.size === 0
+      // For (b): map each effective SPEAKER key → set of session IDs that
+      // speaker is presenting in overlapping slots. A candidate sub is blocked
+      // when ANY of its own effective speaker keys already presents a
+      // *different* session there (same session is the (c) case). Effective
+      // speakers default to the submitter, so a session with no explicit
+      // speaker rows behaves exactly as the old submitter-keyed rule did.
+      const overlapPlacedSessions = overlapPlacedSessionIds.size === 0
         ? []
         : await prisma.submission.findMany({
             where: { id: { in: [...overlapPlacedSessionIds] } },
-            select: { id: true, submitterId: true },
+            select: {
+              id: true, submitterId: true,
+              speakers: { select: { identityId: true, name: true } },
+            },
           });
-      const placementsBySubmitter = new Map<number, Set<number>>();
-      for (const p of placedOverlappingByOtherSubmitter) {
-        let set = placementsBySubmitter.get(p.submitterId);
-        if (!set) { set = new Set(); placementsBySubmitter.set(p.submitterId, set); }
-        set.add(p.id);
+      const placementsBySpeakerKey = new Map<string, Set<number>>();
+      for (const p of overlapPlacedSessions) {
+        for (const key of effectiveSpeakerKeys(p)) {
+          let set = placementsBySpeakerKey.get(key);
+          if (!set) { set = new Set(); placementsBySpeakerKey.set(key, set); }
+          set.add(p.id);
+        }
       }
 
-      // Path C busy-user derivation: stars + submitter + mandatory.
+      // Path C busy-user derivation: stars + speakers + mandatory.
       //   - Stars on overlapping placed/tracked sessions → the starring user
       //     is going to attend that session (MyAssignments derives the row).
-      //   - Submitter of any overlapping placed/tracked session → they're
-      //     speaking; they can't also be a participant elsewhere.
+      //   - Every registered effective SPEAKER of an overlapping placed/tracked
+      //     session → they're presenting; they can't also be a participant
+      //     elsewhere. Defaults to the submitter when a session has no explicit
+      //     speaker rows (unchanged behavior).
       //   - Any mandatory track in an overlapping slot → every conference
       //     identity is force-attending. We union the full identity list.
       // We run these as one parallel batch (only the queries we actually need).
@@ -520,7 +633,9 @@ async function runAssignmentForSlot(
           : Promise.resolve([] as { id: number }[]),
       ]);
       for (const s of derivedStarsRows) busyUserIds.add(s.userId);
-      for (const p of placedOverlappingByOtherSubmitter) busyUserIds.add(p.submitterId);
+      for (const p of overlapPlacedSessions) {
+        for (const iid of effectiveSpeakerIdentityIds(p)) busyUserIds.add(iid);
+      }
       if (hasMandatoryOverlap) {
         for (const i of allIdentitiesForMandatory) busyUserIds.add(i.id);
       }
@@ -531,19 +646,21 @@ async function runAssignmentForSlot(
           overlapExcludedSubs.push({ id: s.id, title: s.title, reason: "same_session" });
           return false;
         }
-        const hosting = placementsBySubmitter.get(s.submitterId);
-        if (hosting) {
-          // Check for a *different* session — if the submitter's only
-          // overlapping placement is this same session itself (allowed via
-          // the (c) escape), no (b) conflict.
-          let hasDifferent = false;
-          for (const sid of hosting) {
+        // Busy speaker: any of THIS candidate's effective speaker keys already
+        // presents a *different* session in an overlapping slot. Same-session
+        // occurrences are the (c) case (handled above), so we ignore them here.
+        let hasDifferent = false;
+        for (const key of effectiveSpeakerKeys(s)) {
+          const presenting = placementsBySpeakerKey.get(key);
+          if (!presenting) continue;
+          for (const sid of presenting) {
             if (sid !== s.id) { hasDifferent = true; break; }
           }
-          if (hasDifferent) {
-            overlapExcludedSubs.push({ id: s.id, title: s.title, reason: "busy_submitter" });
-            return false;
-          }
+          if (hasDifferent) break;
+        }
+        if (hasDifferent) {
+          overlapExcludedSubs.push({ id: s.id, title: s.title, reason: "busy_submitter" });
+          return false;
         }
         return true;
       });
@@ -2290,7 +2407,10 @@ export const agendaRouter = {
     // participant, the mod creates a Submission for them first.
     const submission = await context.prisma.submission.findFirst({
       where: { id: input.submission_id, conferenceId: context.conferenceId },
-      select: { id: true, title: true },
+      select: {
+        id: true, title: true, submitterId: true,
+        speakers: { select: { identityId: true, name: true } },
+      },
     });
     if (!submission) throw new ORPCError("BAD_REQUEST", { message: "submission_not_in_conference" });
     const speakers = (input.speakers ?? "").trim() || null;
@@ -2403,7 +2523,13 @@ export const agendaRouter = {
       });
     }
     publishAgendaChanged(context.conferenceId);
-    return { kind: "ok" as const };
+    // Non-blocking heads-up if a speaker of this session is already presenting
+    // in a time-overlapping slot (the track committed regardless).
+    const speaker_warning = await computeSpeakerWarning(
+      context.prisma, context.conferenceId,
+      { id: slot.id, startsAt: slot.startsAt, endsAt: slot.endsAt }, submission,
+    );
+    return { kind: "ok" as const, speaker_warning };
   }),
 
   clearTrack: requireConf("moderator").agenda.clearTrack.handler(async ({ input, context }) => {
@@ -2461,8 +2587,10 @@ export const agendaRouter = {
       select: {
         id: true,
         title: true,
+        submitterId: true,
         preAssignedRoomId: true,
         roomRequirements: { select: { value: true } },
+        speakers: { select: { identityId: true, name: true } },
       },
     });
     if (!submission) {
@@ -2640,11 +2768,16 @@ export const agendaRouter = {
     });
 
     publishAgendaChanged(context.conferenceId);
+    const speaker_warning = await computeSpeakerWarning(
+      context.prisma, context.conferenceId,
+      { id: slot.id, startsAt: slot.startsAt, endsAt: slot.endsAt }, submission,
+    );
     return {
       kind: "ok" as const,
       track_id: track.id,
       room_id: chosenRoomId!,
       room_name: chosenRoom.name,
+      speaker_warning,
     };
   }),
 
@@ -3079,6 +3212,7 @@ export const agendaRouter = {
         id: true, title: true, submitterId: true, preAssignedRoomId: true,
         allowOverlappingPlacements: true,
         roomRequirements: { select: { value: true } },
+        speakers: { select: { identityId: true, name: true } },
       },
     });
     if (!submission) {
@@ -3292,10 +3426,14 @@ export const agendaRouter = {
       })));
     }
     publishAgendaChanged(context.conferenceId);
+    const speaker_warning = await computeSpeakerWarning(
+      context.prisma, context.conferenceId,
+      { id: slot.id, startsAt: slot.startsAt, endsAt: slot.endsAt }, submission,
+    );
     // `track_id` is vestigial here (placements have no track) — it exists only
     // because this endpoint reuses the `ScheduleSubmissionResult` shape; the
     // client ignores it.
-    return { kind: "ok" as const, track_id: 0, room_id: chosenRoomId, room_name: room.name };
+    return { kind: "ok" as const, track_id: 0, room_id: chosenRoomId, room_name: room.name, speaker_warning };
   }),
 
   unplaceSubmission: requireConf("moderator").agenda.unplaceSubmission.handler(async ({ input, context }) => {

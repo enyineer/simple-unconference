@@ -184,6 +184,14 @@ export interface SubmissionOut {
   // there's actually a profile to land on. Mods/owners can navigate to any
   // identity's profile regardless (the profiles.get endpoint allows it).
   submitter_profile_published: boolean;
+  // The EFFECTIVE presenters of this session, in display order. Always
+  // populated: when no explicit speaker rows exist it contains a single entry
+  // derived from the submitter, so every client renders presenters uniformly.
+  // A registered speaker carries its `identity_id` (+ `profile_published` for
+  // ProfileLink); a free-form speaker has `identity_id: null`. `name` is the
+  // display name (empty string when unknown). Authorship stays on the
+  // `submitter_*` fields — this list is "who presents", not "who owns".
+  speakers: { identity_id: number | null; name: string; profile_published: boolean }[];
   title: string;
   description: string;
   status: SubmissionStatus;
@@ -449,8 +457,10 @@ export interface OverlapExclusions {
     // Why this session was filtered:
     //   - "same_session": the session is already placed in an overlapping
     //     slot AND its allow_overlapping_placements flag is false.
-    //   - "busy_submitter": a *different* session by the same submitter is
-    //     placed in an overlapping slot.
+    //   - "busy_submitter": a *different* session sharing one of this
+    //     session's effective speakers is placed in an overlapping slot. (The
+    //     reason string is retained for compatibility; effective speakers
+    //     default to the submitter when a session has no explicit speaker rows.)
     reason: "same_session" | "busy_submitter";
   }[];
   // User identity IDs assigned to an overlapping slot in this conference.
@@ -510,6 +520,9 @@ export type ScheduleSubmissionResult =
       track_id: number;
       room_id: number;
       room_name: string;
+      // Non-blocking heads-up: a speaker of the scheduled session is already
+      // presenting in a time-overlapping slot. The placement still committed.
+      speaker_warning?: SpeakerOverlapHolder;
     }
   | {
       kind: "conflict";
@@ -586,13 +599,28 @@ export interface RoomOverlapHolder {
   room_name: string;
 }
 
+// A NON-blocking heads-up returned alongside a successful manual placement:
+// one of the placed session's effective speakers is already presenting in a
+// time-overlapping slot. Purely informational (the placement still commits) —
+// mirrors the room-overlap holder note so mods can catch a double-booked
+// presenter without it blocking a deliberate override. `speaker_name` is the
+// shared speaker's display name; `session_title` + `slot_label` + `room_name`
+// locate the clashing session. `room_name` is null only when the holder has no
+// resolvable room.
+export interface SpeakerOverlapHolder {
+  speaker_name: string;
+  slot_label: string;
+  session_title: string;
+  room_name: string | null;
+}
+
 // Result of `agenda.setTrack`. Hand-scheduling normally succeeds, but a room
 // physically occupied by a time-overlapping slot is refused with a structured
 // conflict that names the holder (so the UI can say what's using it, not just
 // that it's busy). Editing a track already in a room is never blocked by its
-// own room.
+// own room. `speaker_warning` is a non-blocking heads-up on the ok path.
 export type SetTrackResult =
-  | { kind: "ok" }
+  | { kind: "ok"; speaker_warning?: SpeakerOverlapHolder }
   | { kind: "conflict"; reason: "room_overlap_taken"; holder: RoomOverlapHolder }
   | ({ kind: "conflict" } & RoomDedicatedConflict)
   | ({ kind: "conflict" } & RoomUnavailableConflict);

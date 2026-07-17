@@ -3,6 +3,29 @@
 import * as v from "valibot";
 import { LabelList, NonEmpty, PosInt } from "./primitives";
 
+// One speaker row for the mod-only Speakers editor. EXACTLY ONE of `identity_id`
+// (a registered conference identity) or `name` (a free-form typed name) must be
+// set — the server rejects a row with neither or both. Modeled with both keys
+// optional (rather than a union) so the "both set" case survives validation and
+// can be rejected explicitly. Free-form names are trimmed + length-bounded here.
+export const SpeakerInputSchema = v.object({
+  identity_id: v.optional(PosInt),
+  name: v.optional(v.pipe(
+    v.string(),
+    v.trim(),
+    v.minLength(1, "Speaker name is required."),
+    v.maxLength(80, "Keep speaker names under 80 characters."),
+  )),
+});
+export type SpeakerInput = v.InferOutput<typeof SpeakerInputSchema>;
+
+// The effective-speaker list a mod sets on a session. Capped at 10. Empty /
+// omitted means "default to the submitter" (the server clears explicit rows).
+export const SpeakerList = v.pipe(
+  v.array(SpeakerInputSchema),
+  v.maxLength(10, "Too many speakers — keep it under 10."),
+);
+
 export const CreateSubmissionSchema = v.object({
   title: NonEmpty("Title"),
   description: v.optional(v.string()),
@@ -25,6 +48,10 @@ export const CreateSubmissionSchema = v.object({
    * actor when omitted. Mods use this when they submit on someone else's
    * behalf so the speaker appears as the author from day one. */
   submitter_id: v.optional(PosInt),
+  /** Mod-only effective-speaker list. When provided, REPLACES the session's
+   * speaker rows (registered identities and/or free-form names). Omitted =
+   * leave unchanged; empty array = clear back to "default to the submitter". */
+  speakers: v.optional(SpeakerList),
 });
 export type CreateSubmissionInput = v.InferOutput<typeof CreateSubmissionSchema>;
 
@@ -60,5 +87,9 @@ export const UpdateSubmissionSchema = v.object({
   // mod. The server validates the target identity belongs to this
   // conference.
   submitter_id: v.optional(PosInt),
+  // Mod-only effective-speaker list. When provided, REPLACES the session's
+  // speaker rows. Omitted = leave unchanged; empty array = clear back to
+  // "default to the submitter".
+  speakers: v.optional(SpeakerList),
 });
 export type UpdateSubmissionInput = v.InferOutput<typeof UpdateSubmissionSchema>;
