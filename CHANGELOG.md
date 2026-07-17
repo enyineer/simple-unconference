@@ -1,5 +1,13 @@
 # simple-unconference
 
+## 0.13.3
+
+### Patch Changes
+
+- [#32](https://github.com/enyineer/simple-unconference/pull/32) [`c5a9270`](https://github.com/enyineer/simple-unconference/commit/c5a92701967153ab2713187a5c0d17efc51b7e48) Thanks [@enyineer](https://github.com/enyineer)! - Each conference can now be installed as its own separate app. The app moved from hash-based URLs (`/#/conferences/<slug>`) to real paths (`/conferences/<slug>/`), and each conference's web app manifest now has a distinct path-scoped `scope`/`start_url`. Previously every conference shared `scope: "/"`, so Chrome treated them as one app — installing a second conference just showed "Open <the first one>". Now Chrome installs each conference as its own icon.
+
+  Old `/#/…` links (bookmarks, already-sent verification / password-reset emails, existing push and board links) are transparently redirected to the new path form at load, so nothing breaks.
+
 ## 0.13.2
 
 ### Patch Changes
