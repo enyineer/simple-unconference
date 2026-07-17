@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { getPrisma } from "./db";
 import { calendarRoutes } from "./routes/calendar";
 import { avatarRoutes } from "./routes/avatars";
+import { conferenceIconRoutes } from "./routes/conference-icons";
+import { manifestRoutes } from "./routes/manifest";
 import { realtimeRoutes } from "./routes/realtime";
 import { boardRoutes } from "./routes/board";
 import { handleRpc } from "./rpc";
@@ -41,6 +43,14 @@ export function buildApp(prisma = getPrisma()) {
   // because multipart uploads and image/webp responses don't fit the oRPC
   // contract. See src/server/routes/avatars.ts for the privacy contract.
   app.route("/api/avatars", avatarRoutes(prisma));
+
+  // Per-conference PWA install: the app manifest + the owner-uploaded custom
+  // icon. Both mounted before the oRPC catch-all (application/manifest+json and
+  // multipart/image/png don't fit the oRPC contract). The icon GET route never
+  // 404s so the manifest icon always resolves. See routes/manifest.ts +
+  // routes/conference-icons.ts.
+  app.route("/api/manifest", manifestRoutes(prisma));
+  app.route("/api/conference-icons", conferenceIconRoutes(prisma));
 
   // Realtime SSE stream: one global connection per browser tab, mounted
   // before the oRPC catch-all because text/event-stream doesn't fit the

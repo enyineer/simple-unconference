@@ -97,6 +97,11 @@ export interface ConfDetail extends ConfCreated {
   // the caller is moderator or owner. Surfaces in the Settings tab's Usage
   // card.
   usage: ConfUsage | null;
+  // Content hash of the owner-uploaded custom app (PWA) icon, or null when the
+  // conference uses the default icons. The client builds cache-busted icon URLs
+  // (`/api/conference-icons/<slug>/<size>/<hash>`) for the dynamic web app
+  // manifest link + the Settings preview from this.
+  icon_hash: string | null;
 }
 
 export interface ParticipantOut {

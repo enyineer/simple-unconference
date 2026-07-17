@@ -29,6 +29,7 @@ import {
   identityResetUrl,
 } from "../lib/password-reset";
 import { sendPasswordResetEmail } from "../lib/email";
+import { deleteConferenceIcon } from "../lib/conference-icons";
 
 // When an anonymous claim/join is made while a verified global account with the
 // SAME email is signed in on this browser, the new per-conference identity is
@@ -154,7 +155,21 @@ export const conferenceRouter = {
       my_role: context.principal.role,
       my_session_count: mySessionCount,
       usage,
+      icon_hash: conf.iconHash,
     };
+  }),
+
+  // Owner-only: remove the custom PWA icon (files + columns), reverting to the
+  // built-in defaults. Best-effort file cleanup; the served GET route already
+  // falls back to defaults, so a residual file never leaks. Upload is a
+  // separate HTTP multipart route (see routes/conference-icons.ts).
+  clearIcon: requireConf("owner").conferences.clearIcon.handler(async ({ context }) => {
+    deleteConferenceIcon(context.conferenceId);
+    await context.prisma.conference.update({
+      where: { id: context.conferenceId },
+      data: { iconPath: null, iconHash: null },
+    });
+    return { ok: true as const };
   }),
 
   update: requireConf("owner").conferences.update.handler(async ({ input, context }) => {

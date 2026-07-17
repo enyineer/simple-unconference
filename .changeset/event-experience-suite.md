@@ -11,4 +11,6 @@ participant instantly, and an Event report sheet turns the conference into print
 Sessions collect takeaways that roll into a personal post-event recap. First-time participants
 get a three-step welcome rail, owners can duplicate a past conference (rooms, slots, settings -
 re-anchored to a new date), and the whole app now works as an installable PWA that keeps showing
-your schedule when the venue wifi drops.
+your schedule when the venue wifi drops. Each conference installs as its own app - its own name,
+its own owner-uploaded home-screen icon, and a launch that drops you straight into that
+conference.

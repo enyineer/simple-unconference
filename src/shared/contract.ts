@@ -168,6 +168,11 @@ export const contract = {
     list: oc.output(type<ConfSummary[]>()),
     create: oc.input(CreateConferenceSchema).output(type<ConfCreated>()),
     get: oc.input(InConf).output(type<ConfDetail>()),
+    // Owner-only: remove the custom app (PWA) icon, reverting to the built-in
+    // defaults. The multipart UPLOAD lives on a separate HTTP route
+    // (POST /api/conference-icons/:slug/upload) since oRPC can't model binary
+    // bodies; clearing is a plain no-body mutation, so it fits the contract.
+    clearIcon: oc.input(InConf).output(type<Ok>()),
     update: oc
       .input(v.object({ slug: Slug, ...UpdateConferenceSchema.entries }))
       .output(type<Ok>()),

@@ -53,6 +53,10 @@ export interface ConferenceDetail {
   my_session_count: number;
   /** Mod-only quota snapshot. Null when the caller is a participant. */
   usage: ConferenceUsage | null;
+  /** Content hash of the owner-uploaded custom app (PWA) icon, or null for the
+   *  default icons. Used to build cache-busted icon URLs for the dynamic web
+   *  app manifest link + the Settings icon preview. */
+  icon_hash: string | null;
 }
 
 export interface Participant {

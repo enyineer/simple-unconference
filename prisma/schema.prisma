@@ -97,6 +97,13 @@ model Conference {
   // /#/board/<slug>?t=<token>. Null = board disabled. Rotating it mints a new
   // token and invalidates the old link. Never exposed except to the owner.
   boardToken    String?  @unique @map("board_token")
+  // Owner-uploaded custom app icon (per-conference PWA). `iconPath` is the
+  // on-disk location under data/conference-icons/<confId>/; `iconHash` is a
+  // short content hash for cache-busting the served icon + manifest URLs.
+  // Both null = fall back to the built-in default icons. Mirrors the identity
+  // avatarPath/avatarHash pair.
+  iconPath      String?  @map("icon_path")
+  iconHash      String?  @map("icon_hash")
   // The session currently in "spotlight" (Pitch Mode) on the Live Board.
   // Persisted so it survives worker restarts and late board joiners. Cleared
   // to null when the mod ends the spotlight. SetNull on submission delete so a
