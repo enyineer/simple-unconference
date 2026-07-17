@@ -58,6 +58,7 @@ export function InstallNudge({
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
 
   return (
+    <div style={{ marginTop: 20 }}>
     <Card>
       <Stack gap="condensed">
         <Stack direction="row" gap="normal" align="center" justify="between">
@@ -116,5 +117,6 @@ export function InstallNudge({
         )}
       </Stack>
     </Card>
+    </div>
   );
 }
