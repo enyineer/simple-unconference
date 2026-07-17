@@ -18,6 +18,7 @@ import { useNow } from "../../useNow";
 import { api, errorCode } from "../../api";
 import type { AgendaData, Room, Submission } from "../types";
 import { AssignmentRulesTrigger } from "../ui/AssignmentRulesModal";
+import { EventReportSheet } from "../ui/EventReportSheet";
 import { Tip } from "../ui/Tip";
 import { useRequirementsConfirm } from "../ui/RequirementsConfirm";
 import { ASSIGN_STEPS } from "../ui/agendaGuide";
@@ -25,6 +26,7 @@ import { Calendar, CalendarLegend } from "./Calendar";
 import { slotSheetTitle } from "./agenda/types";
 import { NewSlotForm } from "./agenda/NewSlotForm";
 import { SlotBlock } from "./agenda/SlotBlock";
+import { PitchModeSheet } from "./agenda/PitchModeSheet";
 import { OnboardingChecklist } from "./agenda/OnboardingChecklist";
 
 export function AgendaTab({
@@ -59,6 +61,8 @@ export function AgendaTab({
     try { return localStorage.getItem(assignConfirmKey) === "1"; } catch { return false; }
   });
   const [selectedSlotId, setSelectedSlotId] = useState<number | null>(null);
+  const [pitchOpen, setPitchOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
 
   // Open the confirm, or assign straight away if the mod opted out of it.
   function requestAssignAll() {
@@ -97,7 +101,7 @@ export function AgendaTab({
       })
       .catch(() => {
         if (cancelled) return;
-        setData({ slots: [], slot_series: [], tracks: [], placements: [], mixer_placements: [], participant_count: null });
+        setData({ slots: [], slot_series: [], tracks: [], placements: [], mixer_placements: [], participant_count: null, spotlight_submission_id: null });
       });
     return () => { cancelled = true; };
   }, [fetchAgenda]);
@@ -245,16 +249,28 @@ export function AgendaTab({
     <Stack gap="spacious">
       {requirementsConfirm.modal}
 
-      <Stack direction="row" justify="between" align="center">
+      <Stack direction="row" justify="between" align="center" wrap gap="normal">
         <Stack gap="condensed">
           <Heading level={2}>Agenda</Heading>
           <CalendarLegend />
         </Stack>
-        <Stack direction="row" gap="condensed" align="center">
+        {/* wrap: on narrow screens the actions drop below the title (and among
+            themselves) instead of overflowing off the right edge. */}
+        <Stack direction="row" gap="condensed" align="center" wrap>
           {/* "Update seating" lives in the two-step card below, where it has
               the "place → seat" context. Keeping it only there avoids two
               identical primary actions competing on one screen. */}
           <AssignmentRulesTrigger isMod={isMod} label="How it works" />
+          {isMod && (
+            <Button onClick={() => setReportOpen(true)}>
+              Event report
+            </Button>
+          )}
+          {isMod && (
+            <Button onClick={() => setPitchOpen(true)}>
+              Pitch mode
+            </Button>
+          )}
           {isMod && (
             <Button variant="primary" onClick={() => setAdding(true)}>
               + Add slot
@@ -361,6 +377,25 @@ export function AgendaTab({
           </Stack>
         </Stack>
       </Sheet>
+
+      {isMod && (
+        <PitchModeSheet
+          slug={slug}
+          open={pitchOpen}
+          onClose={() => setPitchOpen(false)}
+          subs={subs}
+          activeId={data.spotlight_submission_id}
+          onChanged={refresh}
+        />
+      )}
+
+      {isMod && (
+        <EventReportSheet
+          slug={slug}
+          open={reportOpen}
+          onClose={() => setReportOpen(false)}
+        />
+      )}
 
       <Sheet open={adding} onClose={() => setAdding(false)} title="Add slot">
         <NewSlotForm

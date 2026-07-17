@@ -99,6 +99,32 @@ something the next session would need to know.
   attach a track to an unassigned room when they want to. Don't iterate
   `rooms.map(…)` in slot displays without filtering by `tracks.find`.
 
+## Event Experience Suite (Live Board, broadcast, takeaways, PWA)
+
+- **Live Board privacy + spotlight truth.** The board payload rules live in the
+  Realtime section below. The CURRENT spotlight is mod-readable via
+  `AgendaOut.spotlight_submission_id` — the Pitch Mode sheet seeds from it;
+  never reintroduce client-side spotlight guessing (localStorage etc.).
+- **Takeaways UI is ONE component**: `src/web/conference/ui/TakeawaysPanel.tsx`
+  (lazy-loads on first Disclosure expand), used by SessionCard and the Me-tab
+  RecapSection. Server caps: 500 chars, 10 per identity per submission;
+  visibility = published-or-own; author or mod deletes. Payloads carry display
+  names only, never emails.
+- **conferences.duplicate** clones CONFIG + rooms (tags, availability windows
+  offset to the new first day) + slot/series skeleton (incl. SlotRoom/SeriesRoom
+  scoping remapped) — never people, submissions, placements, experts, or
+  tokens. It shares `generateUniqueSlug` and the conference quota guard with
+  `create`; keep them shared.
+- **Service worker** (`src/web/public/sw.js`, prod-only registration): bump
+  `CACHE_VERSION` whenever its caching behavior changes; NEVER let it cache
+  non-GET, `/api/realtime*`, or `/api/board/*/stream`. The static server sends
+  `Cache-Control: no-cache` for sw.js — keep that, or stale workers can pin old
+  code forever. Read-only offline is the deliberate scope: no write queueing.
+- **Announcements** (`announcements.send`) fan out through `createNotifications`
+  (kind `announcement`, no dedupeKey). The live toast for in-app users lives in
+  NotificationBell's fetch path (baseline-guarded so mounts don't replay the
+  backlog) — don't add a second delivery surface.
+
 ## Stack gotchas you will hit if you forget
 
 - **Prisma adapter:** we use `@prisma/adapter-libsql` (pure JS), not
@@ -158,6 +184,25 @@ something the next session would need to know.
   carries the `conversationId` so per-conversation subscribers can filter
   cheaply. Drop a payload without it and ConversationView will silently
   ignore the event.
+- **Live Board topic events** (`agenda.changed`, `board.spotlight`) are
+  routed on a CONFERENCE key, not an identity: `recipientId =
+  boardTopicKey(confId)` (a NEGATIVE number, so it never collides with a
+  positive ConferenceIdentity.id). The board SSE
+  ([src/server/routes/board.ts](src/server/routes/board.ts)) is the only
+  subscriber; the notification/chat stream never sees them. Publish via
+  `publishAgendaChanged(confId)` / `publishBoardSpotlight(confId, subId)`
+  from [src/server/realtime/bus.ts](src/server/realtime/bus.ts), AFTER the
+  mutating tx commits. `publishAgendaChanged` is wired into every agenda
+  mutation (slot/track/placement/series writes, per-slot assign, mixer run,
+  `assignAll`, refit, spotlight) PLUS `submissions.star`/`unstar` (star
+  counts drive the board). Grep for `publishAgendaChanged(` before adding a
+  new agenda-mutating path — it must call it too.
+- **The public board payload MUST stay email-free.** `GET /api/board/:slug`
+  is token-gated (`Conference.boardToken`) but PUBLIC — display names, titles,
+  room names, star/attendee counts ONLY. Never add an email or unpublished-
+  profile-sensitive field. A spotlighted session is hidden once unpublished.
+  Late board joiners get current state from the payload route, so the board
+  SSE does NO replay — it only forwards events that arrive after connect.
 
 ## Notifications (single entrypoint)
 
@@ -192,6 +237,24 @@ something the next session would need to know.
   unconference `placeSubmission` room-move reuses the same kind + dedupeKey
   but targets the currently-SEATED users (UserAssignment rows), not starrers.
   Call it AFTER the surrounding transaction commits (the standard rule above).
+
+- **Web Push AUGMENTS the bell — it never replaces it.** `createNotification`
+  fire-and-forgets `sendPushForNotification` (in
+  [src/server/lib/webpush.ts](src/server/lib/webpush.ts)) after the row write +
+  bus publish. It's BEST-EFFORT: wrapped so a push failure can never affect the
+  notification write, and fully INERT (zero DB work) when VAPID isn't
+  configured (`webPushConfigured()` gates on `VAPID_PUBLIC_KEY` +
+  `VAPID_PRIVATE_KEY`). It reuses the notification's own `title`/`body`/`ctaHref`
+  — no duplicated copy — and the payload is privacy-safe (names/titles only,
+  NEVER emails; mirror this in any new push surface). `ctaHref` → hash deep-link
+  via `deepLinkForNotification`. Subscriptions live on `PushSubscription` (one
+  per device, unique `(identity, endpoint)`); a 404/410 from the push service
+  deletes the stale row. RPC opt-in: `push.subscribe`/`unsubscribe`
+  ([src/server/rpc/push.ts](src/server/rpc/push.ts), participant role). Client
+  opt-in is `PushOptIn` in the notification bell (self-hides unless
+  `config.vapid_public_key` + `PushManager` + a SW registration exist). The SW
+  (`sw.js`) handles `push`/`notificationclick` — bump `CACHE_VERSION` if you
+  touch it. Generate keys with `bun run scripts/gen-vapid.ts`.
 
 ## Room constraints (dedication + availability)
 

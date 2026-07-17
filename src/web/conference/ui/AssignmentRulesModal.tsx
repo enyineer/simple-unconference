@@ -215,9 +215,12 @@ export function AssignmentRulesModal({
             slot can&apos;t be used twice at the same time.
           </Rule>
           <Rule>
-            <strong>Same speaker:</strong> a submitter hosting a session
-            in one slot can&apos;t host a <em>different</em> session in an
-            overlapping slot.
+            <strong>Same speaker:</strong> a speaker presenting a session
+            in one slot can&apos;t present a <em>different</em> session in an
+            overlapping slot. A session&apos;s speakers default to its
+            submitter, but a mod can set an explicit speaker list (registered
+            people or typed names) — the schedule keeps each speaker out of two
+            rooms at once.
           </Rule>
           <Rule>
             <strong>Same session:</strong> the same session isn&apos;t placed

@@ -178,6 +178,24 @@ spec:
             - name: TURNSTILE_SECRET_KEY
               value: {{ .Values.turnstile.secretKey | quote }}
             {{- end }}
+            {{- if and .Values.webPush .Values.webPush.publicKey }}
+            - name: VAPID_PUBLIC_KEY
+              value: {{ .Values.webPush.publicKey | quote }}
+            {{- if and .Values.webPush.privateKeySecret .Values.webPush.privateKeySecret.name }}
+            - name: VAPID_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.webPush.privateKeySecret.name | quote }}
+                  key: {{ .Values.webPush.privateKeySecret.key | quote }}
+            {{- else if .Values.webPush.privateKey }}
+            - name: VAPID_PRIVATE_KEY
+              value: {{ .Values.webPush.privateKey | quote }}
+            {{- end }}
+            {{- if .Values.webPush.subject }}
+            - name: VAPID_SUBJECT
+              value: {{ .Values.webPush.subject | quote }}
+            {{- end }}
+            {{- end }}
             {{- if and .Values.metrics .Values.metrics.enabled }}
             - name: METRICS_PORT
               value: {{ .Values.metrics.port | quote }}

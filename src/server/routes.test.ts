@@ -214,6 +214,7 @@ describe("public config + DISABLE_SIGNUP", () => {
         email_enabled: false,
         max_conferences_per_user: LIMITS.maxConferencesPerUser,
         max_sessions_per_user_per_conference: LIMITS.maxSessionsPerUserPerConference,
+        vapid_public_key: null,
       });
       await open.rpc.auth.signup({ email: "before@example.com", password: "secret123" });
 
@@ -226,6 +227,7 @@ describe("public config + DISABLE_SIGNUP", () => {
         email_enabled: false,
         max_conferences_per_user: LIMITS.maxConferencesPerUser,
         max_sessions_per_user_per_conference: LIMITS.maxSessionsPerUserPerConference,
+        vapid_public_key: null,
       });
       try {
         await locked.rpc.auth.signup({ email: "blocked@example.com", password: "secret123" });

@@ -15,4 +15,7 @@ export * from "./schemas/slots";
 export * from "./schemas/experts";
 export * from "./schemas/profiles";
 export * from "./schemas/chat";
+export * from "./schemas/announcements";
+export * from "./schemas/takeaways";
+export * from "./schemas/push";
 export * from "./schemas/utils";

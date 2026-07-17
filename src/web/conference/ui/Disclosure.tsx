@@ -7,12 +7,14 @@ import { Badge } from "../../design-system";
 // header uses. Originally local to AssignmentRulesModal; lifted here so other
 // surfaces (e.g. the by-hand placement author) share one implementation.
 export function Disclosure({
-  summary, children, modOnly, defaultOpen,
+  summary, children, modOnly, defaultOpen, onToggle,
 }: {
   summary: string;
   children: React.ReactNode;
   modOnly?: boolean;
   defaultOpen?: boolean;
+  /** Fires on every open/close, e.g. to lazy-load content on first expand. */
+  onToggle?: (open: boolean) => void;
 }) {
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
   // Track open state so the chevron can rotate — native <details> doesn't let
@@ -22,7 +24,7 @@ export function Disclosure({
   return (
     <details
       open={defaultOpen}
-      onToggle={(e) => setOpen(e.currentTarget.open)}
+      onToggle={(e) => { setOpen(e.currentTarget.open); onToggle?.(e.currentTarget.open); }}
       style={{
         borderRadius: 8,
         border: "1px solid var(--borderColor-muted, var(--uncon-border-muted, #e5e7eb))",

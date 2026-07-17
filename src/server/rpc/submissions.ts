@@ -7,8 +7,11 @@ import {
   resolveFinished,
 } from "./shared";
 import { createNotification, createNotifications, modIdentityIds } from "../notifications";
+import { publishAgendaChanged } from "../realtime/bus";
 import { LIMITS, assertQuota, recordWrite } from "../lib/limits";
 import { expertDedicationOf } from "../lib/room-constraints";
+import { effectiveSpeakers, normalizeSpeakerName } from "../lib/speakers";
+import type { SpeakerInput } from "../../shared/schemas/submissions";
 
 async function setStatus(prisma: PrismaClient, confId: number, id: number, status: SubmissionStatus) {
   await prisma.submission.updateMany({ where: { id, conferenceId: confId }, data: { status } });
@@ -21,6 +24,14 @@ const submissionInclude = (myIdentityId: number) => ({
   tags: { select: { value: true }, orderBy: { value: "asc" as const } },
   requirements: { select: { value: true }, orderBy: { value: "asc" as const } },
   roomRequirements: { select: { value: true }, orderBy: { value: "asc" as const } },
+  speakers: {
+    select: {
+      identityId: true,
+      name: true,
+      identity: { select: { name: true, profilePublished: true } },
+    },
+    orderBy: { position: "asc" as const },
+  },
   trackAssignments: {
     include: {
       slot: { select: { startsAt: true, endsAt: true } },
@@ -51,6 +62,15 @@ function toSubmissionOut(
     submitter_name: s.submitter.name,
     submitter_email: ctx.isMod ? s.submitter.email : null,
     submitter_profile_published: s.submitter.profilePublished,
+    speakers: effectiveSpeakers({
+      submitterId: s.submitterId,
+      submitter: { name: s.submitter.name, profilePublished: s.submitter.profilePublished },
+      speakers: s.speakers,
+    }).map((sp) => ({
+      identity_id: sp.identityId,
+      name: sp.name,
+      profile_published: sp.profilePublished,
+    })),
     title: s.title,
     description: s.description,
     status: s.status,
@@ -75,6 +95,55 @@ function toSubmissionOut(
       room_name: t.room.name,
     })),
   };
+}
+
+// Validate + normalize a mod-supplied speaker list into DB-ready rows.
+//   - Each row must set EXACTLY ONE of `identity_id` / `name` (reject both/neither).
+//   - Registered `identity_id`s must resolve to an identity in this conference.
+//   - Dedupe: registered by identity id, free-form by normalized name.
+//   - `position` follows input order (dropped duplicates don't advance it).
+// Throws a BAD_REQUEST on any invalid row so the caller can surface it.
+async function resolveSpeakerRows(
+  prisma: PrismaClient,
+  conferenceId: number,
+  speakers: SpeakerInput[],
+): Promise<{ identityId: number | null; name: string | null; position: number }[]> {
+  const rows: { identityId: number | null; name: string | null; position: number }[] = [];
+  const seenIdentity = new Set<number>();
+  const seenName = new Set<string>();
+  let position = 0;
+  for (const sp of speakers) {
+    const hasId = sp.identity_id !== undefined;
+    const hasName = sp.name !== undefined;
+    if (hasId === hasName) {
+      // Both set or neither set — the row is ambiguous.
+      throw new ORPCError("BAD_REQUEST", { message: "speaker_invalid" });
+    }
+    if (hasId) {
+      const id = sp.identity_id!;
+      if (seenIdentity.has(id)) continue;
+      seenIdentity.add(id);
+      rows.push({ identityId: id, name: null, position: position++ });
+    } else {
+      const name = sp.name!;
+      const norm = normalizeSpeakerName(name);
+      if (seenName.has(norm)) continue;
+      seenName.add(norm);
+      rows.push({ identityId: null, name, position: position++ });
+    }
+  }
+  // Validate all registered identities belong to this conference in one query.
+  const identityIds = [...seenIdentity];
+  if (identityIds.length > 0) {
+    const found = await prisma.conferenceIdentity.findMany({
+      where: { id: { in: identityIds }, conferenceId },
+      select: { id: true },
+    });
+    if (found.length !== identityIds.length) {
+      throw new ORPCError("BAD_REQUEST", { message: "speaker_not_in_conference" });
+    }
+  }
+  return rows;
 }
 
 function visibilityWhere(
@@ -210,7 +279,15 @@ export const submissionsRouter = {
       "maxPlacements" | "manuallyFinished" | "allowOverlappingPlacements" | "preAssignedRoomId" | "priority"
     > = {};
     let submitterId = actorIdentityId(context);
+    // Mod-only effective-speaker rows, resolved + validated below. Left
+    // undefined (no speaker rows → defaults to the submitter) for participants.
+    let speakerRows: { identityId: number | null; name: string | null; position: number }[] | undefined;
     if (isMod) {
+      if (input.speakers !== undefined) {
+        speakerRows = await resolveSpeakerRows(
+          context.prisma, context.conferenceId, input.speakers,
+        );
+      }
       if (input.max_placements !== undefined) {
         modData.maxPlacements = input.max_placements;
       }
@@ -286,6 +363,11 @@ export const submissionsRouter = {
         tags:             { create: tags.map((value) => ({ value })) },
         requirements:     { create: requirements.map((value) => ({ value })) },
         roomRequirements: { create: roomRequirements.map((value) => ({ value })) },
+        ...(speakerRows
+          ? { speakers: { create: speakerRows.map((r) => ({
+              identityId: r.identityId, name: r.name, position: r.position,
+            })) } }
+          : {}),
       },
     });
     // Notify mods/owners so they know there's something in the review queue.
@@ -371,6 +453,11 @@ export const submissionsRouter = {
         modPatch.submitter = { connect: { id: identity.id } };
       }
     }
+    // Mod-only speaker replacement. Resolved (and validated) BEFORE the write
+    // transaction so a bad row rejects with a clean 400 and no partial write.
+    const speakerRows = isMod && input.speakers !== undefined
+      ? await resolveSpeakerRows(context.prisma, context.conferenceId, input.speakers)
+      : undefined;
     const ops: Prisma.PrismaPromise<unknown>[] = [
       context.prisma.submission.update({
         where: { id: input.id },
@@ -405,6 +492,16 @@ export const submissionsRouter = {
       ops.push(context.prisma.submissionRoomRequirement.createMany({
         data: roomReqs.map((value) => ({ submissionId: input.id, value })),
       }));
+    }
+    if (speakerRows !== undefined) {
+      ops.push(context.prisma.submissionSpeaker.deleteMany({ where: { submissionId: input.id } }));
+      if (speakerRows.length > 0) {
+        ops.push(context.prisma.submissionSpeaker.createMany({
+          data: speakerRows.map((r) => ({
+            submissionId: input.id, identityId: r.identityId, name: r.name, position: r.position,
+          })),
+        }));
+      }
     }
     await context.prisma.$transaction(ops);
     return { ok: true as const };
@@ -498,6 +595,9 @@ export const submissionsRouter = {
       create: { userId: myIdentityId, submissionId: input.id },
       update: {},
     });
+    // Star counts drive the Live Board (and the pitch spotlight card), so a
+    // star toggle is an agenda change for board purposes.
+    publishAgendaChanged(context.conferenceId);
     return { ok: true as const };
   }),
 
@@ -509,6 +609,7 @@ export const submissionsRouter = {
     await context.prisma.star.deleteMany({
       where: { userId: actorIdentityId(context), submissionId: input.id },
     });
+    publishAgendaChanged(context.conferenceId);
     return { ok: true as const };
   }),
 };

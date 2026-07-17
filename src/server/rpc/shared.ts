@@ -114,6 +114,22 @@ export function slugify(name: string): string {
   );
 }
 
+// Slugify `name` and append `-2`, `-3`, … until the slug is free across all
+// conferences. Shared by `conferences.create` and `conferences.duplicate`.
+export async function generateUniqueSlug(
+  prisma: PrismaClient,
+  name: string,
+): Promise<string> {
+  const baseSlug = slugify(name);
+  let slug = baseSlug;
+  let n = 1;
+  while (await prisma.conference.findUnique({ where: { slug }, select: { id: true } })) {
+    n++;
+    slug = `${baseSlug}-${n}`;
+  }
+  return slug;
+}
+
 export function normalizeLabels(input: string[] | undefined): string[] {
   if (!input) return [];
   const seen = new Set<string>();
@@ -201,6 +217,15 @@ export function newOpaqueToken(): string {
 
 export function joinUrl(slug: string, token: string): string {
   return `/c/${slug}/join?t=${token}`;
+}
+
+// Relative path to the public read-only Live Board. Hashless, exactly like
+// `joinUrl` above: the web client turns it absolute with `absoluteUrl`, which
+// prepends `${origin}/#`. Returning the `/#` here too would double it
+// (`${origin}/#/#/board/...`) and break the hash-route match. The token is the
+// secret — anyone with this URL can view the board.
+export function boardUrl(slug: string, token: string): string {
+  return `/board/${slug}?t=${token}`;
 }
 
 export function calendarFeedPath(token: string): string {

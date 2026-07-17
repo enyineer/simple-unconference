@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { getPrisma } from "./db";
 import { calendarRoutes } from "./routes/calendar";
 import { avatarRoutes } from "./routes/avatars";
+import { conferenceIconRoutes } from "./routes/conference-icons";
+import { manifestRoutes } from "./routes/manifest";
 import { realtimeRoutes } from "./routes/realtime";
+import { boardRoutes } from "./routes/board";
 import { handleRpc } from "./rpc";
 import { startMetricsPusher } from "./metrics/push";
 import { startPendingUserReaper } from "./lib/reaper";
@@ -41,11 +44,24 @@ export function buildApp(prisma = getPrisma()) {
   // contract. See src/server/routes/avatars.ts for the privacy contract.
   app.route("/api/avatars", avatarRoutes(prisma));
 
+  // Per-conference PWA install: the app manifest + the owner-uploaded custom
+  // icon. Both mounted before the oRPC catch-all (application/manifest+json and
+  // multipart/image/png don't fit the oRPC contract). The icon GET route never
+  // 404s so the manifest icon always resolves. See routes/manifest.ts +
+  // routes/conference-icons.ts.
+  app.route("/api/manifest", manifestRoutes(prisma));
+  app.route("/api/conference-icons", conferenceIconRoutes(prisma));
+
   // Realtime SSE stream: one global connection per browser tab, mounted
   // before the oRPC catch-all because text/event-stream doesn't fit the
   // oRPC contract. See src/server/routes/realtime.ts for the wire format
   // and Last-Event-ID replay semantics.
   app.route("/api/realtime", realtimeRoutes(prisma));
+
+  // Public read-only Live Board: token-gated JSON snapshot + its own SSE
+  // stream. Mounted before the oRPC catch-all (public + text/event-stream).
+  // See src/server/routes/board.ts — the payload MUST stay email-free.
+  app.route("/api/board", boardRoutes(prisma));
 
   // All other API traffic flows through oRPC (contract-driven; see
   // src/shared/contract.ts + src/server/rpc.ts).
@@ -75,13 +91,19 @@ function serveStatic(req: Request, distDir: string): Response | null {
     });
   }
   const type = mimeFor(filePath);
-  return new Response(readFileSync(filePath), { headers: { "content-type": type } });
+  const headers: Record<string, string> = { "content-type": type };
+  // The service worker script must be revalidated on every request — an
+  // aggressively browser-cached sw.js would prevent PWA updates from ever
+  // reaching returning visitors. Everything else keeps default heuristics.
+  if (filePath.endsWith("/sw.js")) headers["cache-control"] = "no-cache";
+  return new Response(readFileSync(filePath), { headers });
 }
 
 function mimeFor(path: string): string {
   if (path.endsWith(".html")) return "text/html; charset=utf-8";
   if (path.endsWith(".js")) return "application/javascript; charset=utf-8";
   if (path.endsWith(".css")) return "text/css; charset=utf-8";
+  if (path.endsWith(".webmanifest")) return "application/manifest+json; charset=utf-8";
   if (path.endsWith(".json")) return "application/json; charset=utf-8";
   if (path.endsWith(".svg")) return "image/svg+xml";
   if (path.endsWith(".png")) return "image/png";

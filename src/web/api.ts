@@ -63,6 +63,30 @@ export async function uploadAvatar(
   return { hash: body.hash };
 }
 
+// Multipart conference-icon upload (the per-conference PWA install icon).
+// Same rationale as uploadAvatar: binary body, so it lives behind a plain Hono
+// route instead of the oRPC client. Owner-only server-side. Returns the new
+// content hash so the caller can compose the cacheable icon URL + refresh the
+// live manifest/apple-touch-icon links without refetching.
+export async function uploadConferenceIcon(
+  slug: string,
+  file: File,
+): Promise<{ hash: string }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await fetch(`/api/conference-icons/${encodeURIComponent(slug)}/upload`, {
+    method: "POST",
+    body: fd,
+    credentials: "same-origin",
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({})) as { error?: string };
+    throw new Error(body.error ?? "upload_failed");
+  }
+  const body = (await r.json()) as { ok: boolean; hash: string };
+  return { hash: body.hash };
+}
+
 // Flatten Standard-Schema validation issues into a `{ path → message }` map
 // (the shape `useForm.applyServerErrors` already understands).
 type Issue = { path?: ReadonlyArray<{ key: PropertyKey } | PropertyKey>; message?: string };

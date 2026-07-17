@@ -9,8 +9,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { useToast } from "../design-system/hooks";
 import { realtimeBus } from "../realtime/realtimeBus";
 import { useRoute } from "../router";
+import { PushOptIn } from "./PushOptIn";
 
 type NotificationKind =
   | "submission_published"
@@ -24,7 +26,8 @@ type NotificationKind =
   | "chat_message"
   | "chat_report"
   | "chat_warning"
-  | "schedule_changed";
+  | "schedule_changed"
+  | "announcement";
 
 interface NotificationItem {
   id: number;
@@ -57,13 +60,33 @@ export function NotificationBell({
   const [unread, setUnread] = useState(0);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const { navigate } = useRoute();
+  const toast = useToast();
+  // Notification ids seen in a prior fetch. `null` until the first load so we
+  // don't toast the whole backlog on mount — only rows that appear *after*
+  // we've established a baseline count as "arrived live."
+  const seenIdsRef = useRef<Set<number> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    // Reset the arrival baseline when switching conferences so the new
+    // inbox's existing rows aren't announced as fresh.
+    seenIdsRef.current = null;
     const tick = () => {
       api.notifications.list({ slug })
         .then((res) => {
           if (cancelled) return;
+          // Surface a live toast for announcements that arrived since the last
+          // fetch — in-app users see the broadcast immediately, not just as a
+          // bell badge. Guarded by the baseline so mount/first-load is silent.
+          const seen = seenIdsRef.current;
+          if (seen) {
+            for (const it of res.items) {
+              if (it.kind === "announcement" && it.read_at === null && !seen.has(it.id)) {
+                toast.info(it.body ?? it.title);
+              }
+            }
+          }
+          seenIdsRef.current = new Set(res.items.map((i) => i.id));
           setItems(res.items);
           setUnread(res.unread_count);
         })
@@ -98,7 +121,7 @@ export function NotificationBell({
       if (refetchTimer) clearTimeout(refetchTimer);
       for (const off of offs) off();
     };
-  }, [slug]);
+  }, [slug, toast]);
 
   // Close on outside click + Escape (same pattern as AccountMenu).
   useEffect(() => {
@@ -311,6 +334,9 @@ export function NotificationBell({
               ))
             )}
           </div>
+
+          {/* Web Push opt-in — self-hides unless push is configured + supported. */}
+          <PushOptIn slug={slug} />
         </div>
       )}
     </div>
@@ -444,6 +470,7 @@ function KindIcon({ kind }: { kind: NotificationKind }) {
     chat_report: "var(--bgColor-attention-muted, rgba(187,128,9,0.16))",
     chat_warning: "var(--bgColor-danger-muted, rgba(207,34,46,0.14))",
     schedule_changed: "var(--bgColor-accent-muted, rgba(64,132,246,0.16))",
+    announcement: "var(--bgColor-accent-muted, rgba(64,132,246,0.16))",
   };
   const fgByKind: Record<NotificationKind, string> = {
     submission_published: "var(--fgColor-success, #1f883d)",
@@ -458,6 +485,7 @@ function KindIcon({ kind }: { kind: NotificationKind }) {
     chat_report: "var(--fgColor-attention, #9a6700)",
     chat_warning: "var(--fgColor-danger, #cf222e)",
     schedule_changed: "var(--fgColor-accent, #2563eb)",
+    announcement: "var(--fgColor-accent, #2563eb)",
   };
   const glyph: Record<NotificationKind, string> = {
     submission_published: "✓",
@@ -472,6 +500,7 @@ function KindIcon({ kind }: { kind: NotificationKind }) {
     chat_report: "⚑",
     chat_warning: "!",
     schedule_changed: "→",
+    announcement: "📣",
   };
   return (
     <span

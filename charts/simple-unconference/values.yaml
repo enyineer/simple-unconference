@@ -172,6 +172,20 @@ turnstile:
   siteKey: ""    # TURNSTILE_SITE_KEY (sent to clients; safe to expose)
   secretKey: ""  # TURNSTILE_SECRET_KEY (used server-side to verify tokens)
 
+# Web Push (OS-level notifications). Set BOTH keys to enable the opt-in in the
+# notification bell; leave empty for a no-op. Generate a keypair with
+# `bun run scripts/gen-vapid.ts`. The public key is sent to clients (safe); the
+# private key is a secret - prefer privateKeySecret over the plain privateKey.
+webPush:
+  publicKey: ""   # VAPID_PUBLIC_KEY (sent to clients; safe to expose)
+  privateKey: ""  # VAPID_PRIVATE_KEY (plain). Prefer privateKeySecret below.
+  privateKeySecret:
+    name: ""      # Secret name (takes precedence over privateKey when set)
+    key: ""       # Key within that Secret
+  # VAPID_SUBJECT: mailto: address or https: URL. Blank defaults to appUrl (when
+  # https) or a mailto placeholder.
+  subject: ""
+
 # Prometheus-compatible /metrics endpoint. Served on a DEDICATED port
 # (metrics.port, default 9090) — never on the main API port — so the chart's
 # main Service can stay public-only while metrics scraping stays in-cluster.

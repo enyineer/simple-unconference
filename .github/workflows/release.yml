@@ -54,6 +54,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # The default PWA icons (src/web/public/icon-*.png) are Git LFS
+          # objects baked into the image by `bun run build`. Without this the
+          # image would ship LFS pointer text as the default icons, so the
+          # server would serve broken bytes for any conference with no custom
+          # icon.
+          lfs: true
 
       - name: Read package version
         id: pkg

@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   PageLayout, Heading, Stack, Button, TextInput, Form, Sheet, Spinner, Text,
+  DateTime,
 } from "../design-system";
 import { useToast } from "../design-system/hooks";
 import type { ColorMode } from "../design-system/core/contract";
 import { AccountMenu } from "../components/AccountMenu";
 import { api, errorCode } from "../api";
 import { quotaErrorMessage } from "../quotaErrors";
-import { detectLocalTimeZone, listTimeZones } from "../../shared/tz";
+import { detectLocalTimeZone, listTimeZones, startOfDayInstant } from "../../shared/tz";
 import { SearchableSelect } from "../conference/ui/SearchableSelect";
 import { LinkedConferencesSection } from "./LinkedConferences";
 
@@ -33,6 +34,7 @@ export function ConferencesPage({
 }: ConferencesPageProps) {
   const [confs, setConfs] = useState<Conf[] | null>(null);
   const [creating, setCreating] = useState(false);
+  const [duplicating, setDuplicating] = useState<Conf | null>(null);
   // null limit = no per-account cap on this instance; null overall = still
   // loading config.get. We hide the quota line in both cases.
   const [maxConferences, setMaxConferences] = useState<number | null | undefined>(undefined);
@@ -101,6 +103,24 @@ export function ConferencesPage({
           />
         </Sheet>
 
+        <Sheet
+          open={!!duplicating}
+          onClose={() => setDuplicating(null)}
+          title={duplicating ? `Duplicate "${duplicating.name}"` : ""}
+        >
+          {duplicating && (
+            <DuplicateConferenceForm
+              source={duplicating}
+              onCancel={() => setDuplicating(null)}
+              onDuplicated={async (slug) => {
+                setDuplicating(null);
+                await refresh();
+                onOpen(slug);
+              }}
+            />
+          )}
+        </Sheet>
+
         {confs === null ? (
           <Spinner label="Loading…" />
         ) : confs.length === 0 ? (
@@ -112,6 +132,7 @@ export function ConferencesPage({
                 key={c.id}
                 conference={c}
                 onOpen={() => onOpen(c.slug)}
+                onDuplicate={c.role === "owner" ? () => setDuplicating(c) : undefined}
               />
             ))}
           </Stack>
@@ -140,8 +161,8 @@ export function ConferencesPage({
 // ---- one row in the conferences list -------------------------------------
 
 function ConferenceCard({
-  conference, onOpen,
-}: { conference: Conf; onOpen: () => void }) {
+  conference, onOpen, onDuplicate,
+}: { conference: Conf; onOpen: () => void; onDuplicate?: () => void }) {
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
   // Role-coloured left accent: owner = accent, moderator = attention,
   // participant = neutral. Mirrors the Badge variants used elsewhere.
@@ -156,12 +177,26 @@ function ConferenceCard({
       : conference.role === "moderator" ? "Moderator"
         : "Participant";
 
+  // The whole card is clickable (opens the conference), so this can't be a
+  // native <button> once it needs to host a real nested "Duplicate" button —
+  // interactive elements can't nest. A div with a button role + keyboard
+  // handling gets the same behavior; the Duplicate button stops propagation
+  // so it doesn't also trigger onOpen.
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onOpen}
+      onKeyDown={(e) => {
+        // Ignore key events bubbling up from the nested Duplicate button —
+        // only the card itself (not a descendant) should open on Enter/Space.
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
       style={{
-        all: "unset",
         display: "grid",
         gridTemplateColumns: "1fr auto",
         gap: "4px 12px",
@@ -193,15 +228,29 @@ function ConferenceCard({
 
       <div style={{
         gridColumn: 2, gridRow: 1,
-        display: "inline-flex", alignItems: "center",
-        padding: "2px 10px", borderRadius: 999,
-        background: roleBgFor(conference.role),
-        color: roleFgFor(conference.role),
-        fontSize: 11, fontWeight: 600,
-        textTransform: "uppercase", letterSpacing: 0.4,
-        whiteSpace: "nowrap",
+        display: "flex", alignItems: "center", gap: 8,
       }}>
-        {roleLabel}
+        {onDuplicate && (
+          // Stop the click from bubbling to the card's own onClick (which
+          // opens the conference) — Button's onClick takes no event, so the
+          // guard has to live on a wrapper instead.
+          <span onClick={(e) => e.stopPropagation()}>
+            <Button size="small" variant="invisible" onClick={onDuplicate}>
+              Duplicate
+            </Button>
+          </span>
+        )}
+        <div style={{
+          display: "inline-flex", alignItems: "center",
+          padding: "2px 10px", borderRadius: 999,
+          background: roleBgFor(conference.role),
+          color: roleFgFor(conference.role),
+          fontSize: 11, fontWeight: 600,
+          textTransform: "uppercase", letterSpacing: 0.4,
+          whiteSpace: "nowrap",
+        }}>
+          {roleLabel}
+        </div>
       </div>
 
       <div style={{
@@ -217,7 +266,7 @@ function ConferenceCard({
         <span aria-hidden style={{ opacity: 0.5 }}>·</span>
         <span>{conference.timezone}</span>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -311,6 +360,84 @@ function NewConferenceForm({
         <Stack direction="row" gap="condensed">
           <Button type="submit" variant="primary" disabled={busy || !name.trim()}>
             Create conference
+          </Button>
+          <Button onClick={onCancel} disabled={busy}>Cancel</Button>
+        </Stack>
+      </Form>
+    </Stack>
+  );
+}
+
+// ---- duplicate sheet body -------------------------------------------------
+
+// Clones a conference's settings, rooms, and slot skeleton into a fresh one —
+// never identities or sessions (see the muted caption below). "First day"
+// only needs a date (the server re-anchors every slot/availability window to
+// its local midnight in the source timezone), but the design system's only
+// date-capable field is the full datetime picker already used for slot
+// times elsewhere — reusing it (with the source conference's own timezone)
+// keeps this consistent with the rest of the app instead of dropping in a
+// raw unstyled <input type="date">. The time-of-day the owner leaves it at
+// is discarded server-side.
+function DuplicateConferenceForm({
+  source, onCancel, onDuplicated,
+}: {
+  source: Conf;
+  onCancel: () => void;
+  onDuplicated: (slug: string) => Promise<void>;
+}) {
+  const toast = useToast();
+  const [name, setName] = useState(`${source.name} (copy)`);
+  // Today's local midnight in the source timezone — computed once (not on
+  // every render) so it can double as both the picker's floor and the base
+  // for tomorrow's default.
+  const [todayStart] = useState(() => startOfDayInstant(Date.now(), source.timezone));
+  const [firstDay, setFirstDay] = useState<number>(
+    () => startOfDayInstant(todayStart + 24 * 60 * 60 * 1000, source.timezone),
+  );
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const conf = await api.conferences.duplicate({
+        slug: source.slug,
+        name,
+        first_day: firstDay,
+      });
+      await onDuplicated(conf.slug);
+    } catch (e) {
+      toast.error(quotaErrorMessage(e) ?? errorCode(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Stack gap="condensed">
+      <Form onSubmit={submit}>
+        <TextInput
+          label="Name"
+          required
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <DateTime
+          label="First day"
+          value={firstDay}
+          onChange={setFirstDay}
+          timeZone={source.timezone}
+          min={todayStart}
+        />
+        <Text>
+          <span style={{ fontSize: 12, color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))" }}>
+            Copies rooms, time slots, and settings - no people or sessions.
+          </span>
+        </Text>
+        <Stack direction="row" gap="condensed">
+          <Button type="submit" variant="primary" disabled={busy || !name.trim()}>
+            Duplicate
           </Button>
           <Button onClick={onCancel} disabled={busy}>Cancel</Button>
         </Stack>

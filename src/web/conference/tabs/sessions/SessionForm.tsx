@@ -20,6 +20,45 @@ import type { SessionFormProps } from "./types";
 import { RoomTagPicker } from "./RoomTagPicker";
 import { CheckboxField } from "./CheckboxField";
 
+// One row in the mod-only Speakers editor: either a registered conference
+// identity (picked from the roster) or a free-form typed name. Kept as edit
+// state; converted to the wire payload on submit.
+type SpeakerRow =
+  | { kind: "registered"; identityId: string }
+  | { kind: "name"; name: string };
+
+type SpeakerPayload = { identity_id: number } | { name: string };
+
+// Seed the editor from a session's EFFECTIVE speakers (always populated —
+// defaults to a single submitter-derived entry). Registered rows map back to
+// their identity option; free-form rows to their text.
+function seedSpeakerRows(
+  existing: { speakers: { identity_id: number | null; name: string }[] } | null,
+): SpeakerRow[] {
+  if (!existing) return [];
+  return existing.speakers.map((sp) =>
+    sp.identity_id !== null
+      ? { kind: "registered", identityId: String(sp.identity_id) }
+      : { kind: "name", name: sp.name },
+  );
+}
+
+// Convert editor rows to the wire payload, dropping empties (an unpicked
+// registered row or a blank name row contributes nothing).
+function speakerRowsToPayload(rows: SpeakerRow[]): SpeakerPayload[] {
+  const out: SpeakerPayload[] = [];
+  for (const r of rows) {
+    if (r.kind === "registered") {
+      const id = Number.parseInt(r.identityId, 10);
+      if (Number.isFinite(id)) out.push({ identity_id: id });
+    } else {
+      const name = r.name.trim();
+      if (name) out.push({ name });
+    }
+  }
+  return out;
+}
+
 // Unified create/edit form for a submission. Same UI for both — at create
 // time the mod-only fields default to "auto"/empty, at edit time they're
 // hydrated from the existing submission. Rendered inside a Sheet, so we
@@ -84,6 +123,11 @@ export function SessionForm(props: SessionFormProps) {
   const [submitterId, setSubmitterId] = useState<string>(
     existing ? String(existing.submitter_id) : "",
   );
+  // Mod-only speakers editor. Seeded from the current effective speakers; only
+  // sent on submit when it actually differs from the seed (like submitter_id).
+  const [speakers, setSpeakers] = useState<SpeakerRow[]>(() =>
+    seedSpeakerRows(existing),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -102,6 +146,7 @@ export function SessionForm(props: SessionFormProps) {
         allow_overlapping_placements?: boolean;
         priority?: "low" | "normal" | "high";
         submitter_id?: number;
+        speakers?: SpeakerPayload[];
       } = {};
       if (isMod) {
         let next: number | null;
@@ -134,6 +179,26 @@ export function SessionForm(props: SessionFormProps) {
               modFields.submitter_id = parsed;
             }
           }
+        }
+        // Speakers: validate client-side (server also enforces these), then
+        // only send when the list actually differs from the seeded effective
+        // speakers — an untouched edit is a no-op.
+        const nextSpeakers = speakerRowsToPayload(speakers);
+        if (nextSpeakers.length > 10) {
+          setError("A session can have at most 10 speakers.");
+          setBusy(false);
+          return;
+        }
+        for (const r of speakers) {
+          if (r.kind === "name" && r.name.trim().length > 80) {
+            setError("Speaker names must be 80 characters or fewer.");
+            setBusy(false);
+            return;
+          }
+        }
+        const seededSpeakers = speakerRowsToPayload(seedSpeakerRows(existing));
+        if (JSON.stringify(nextSpeakers) !== JSON.stringify(seededSpeakers)) {
+          modFields.speakers = nextSpeakers;
         }
       }
 
@@ -199,6 +264,40 @@ export function SessionForm(props: SessionFormProps) {
       value: String(existing.submitter_id),
       label: submitterLabel(existing) ?? `User #${existing.submitter_id}`,
     });
+  }
+
+  // Registered-speaker options: the same roster the Submitter picker uses,
+  // augmented with any seeded speaker identity that's no longer in the roster
+  // (so an existing pick never silently disappears from the control).
+  const speakerIdentityOptions: SearchableSelectOption[] = participants.map(
+    (p) => ({
+      value: String(p.user_id),
+      label: p.name && p.name.trim() ? p.name : p.email,
+      hint: p.name && p.name.trim() ? p.email : undefined,
+    }),
+  );
+  if (existing) {
+    for (const sp of existing.speakers) {
+      if (
+        sp.identity_id !== null &&
+        !participants.some((p) => p.user_id === sp.identity_id)
+      ) {
+        speakerIdentityOptions.push({
+          value: String(sp.identity_id),
+          label: sp.name || `User #${sp.identity_id}`,
+        });
+      }
+    }
+  }
+
+  function updateSpeaker(idx: number, row: SpeakerRow) {
+    setSpeakers((prev) => prev.map((r, i) => (i === idx ? row : r)));
+  }
+  function removeSpeaker(idx: number) {
+    setSpeakers((prev) => prev.filter((_, i) => i !== idx));
+  }
+  function addSpeaker(row: SpeakerRow) {
+    setSpeakers((prev) => [...prev, row]);
   }
 
   // Expert-dedicated rooms can't be pinned (the server rejects the write), so
@@ -290,6 +389,88 @@ export function SessionForm(props: SessionFormProps) {
                 </div>
               </>
             )}
+            <div>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 500,
+                  marginBottom: 4,
+                  color: "var(--fgColor-default, var(--uncon-fg, inherit))",
+                }}
+              >
+                Speakers
+              </div>
+              <Stack gap="condensed">
+                {speakers.map((row, idx) => (
+                  <Stack
+                    key={idx}
+                    direction="row"
+                    gap="condensed"
+                    align="end"
+                    wrap
+                  >
+                    <div style={{ flex: 1, minWidth: 160 }}>
+                      {row.kind === "registered" ? (
+                        <SearchableSelect
+                          value={row.identityId}
+                          onChange={(v) =>
+                            updateSpeaker(idx, { kind: "registered", identityId: v })
+                          }
+                          options={speakerIdentityOptions}
+                          placeholder="Search by name or email…"
+                        />
+                      ) : (
+                        <TextInput
+                          value={row.name}
+                          placeholder="Speaker name"
+                          onChange={(e) =>
+                            updateSpeaker(idx, { kind: "name", name: e.target.value })
+                          }
+                        />
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      size="small"
+                      onClick={() => removeSpeaker(idx)}
+                    >
+                      Remove
+                    </Button>
+                  </Stack>
+                ))}
+                <Stack direction="row" gap="condensed" wrap>
+                  {participants.length > 0 && (
+                    <Button
+                      type="button"
+                      size="small"
+                      onClick={() =>
+                        addSpeaker({ kind: "registered", identityId: "" })
+                      }
+                    >
+                      + Add registered speaker
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    size="small"
+                    onClick={() => addSpeaker({ kind: "name", name: "" })}
+                  >
+                    + Add speaker by name
+                  </Button>
+                </Stack>
+              </Stack>
+              <div
+                style={{
+                  fontSize: 12,
+                  marginTop: 4,
+                  color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
+                }}
+              >
+                Defaults to the submitter. Add speakers who aren&apos;t
+                registered by name; the schedule keeps a speaker out of two
+                rooms at once.
+              </div>
+            </div>
             <Select
               label="How many times can this session be assigned?"
               value={capMode}

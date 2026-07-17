@@ -2,6 +2,7 @@ import { DragScrollRow } from "../../ui/DragScrollRow";
 import { MICRO_MAX_HEIGHT_PX } from "./constants";
 import type { CalMixerPlacement, CalPlacement, CalRoom, CalSlot, CalSubmission, CalTrack } from "./types";
 import { fmtTime } from "./helpers";
+import { speakerLabel } from "../../helpers";
 import { SubEventCard } from "./SubEventCard";
 
 // ----- a single slot block on the calendar --------------------------------
@@ -83,9 +84,9 @@ export function SlotEvent({
           key: `p-${p.submission_id}`,
           roomName: room?.name ?? "?",
           title: sub?.title ?? `#${p.submission_id}`,
-          // For unconference placements the "speaker" is the proposer of the
-          // submission — that's the user the room is hosting.
-          speakers: sub?.submitter_name ?? null,
+          // The "speaker" line is the session's effective presenter(s) —
+          // defaults to the submitter, but a mod may have set explicit speakers.
+          speakers: sub ? speakerLabel(sub) : null,
           star: sub && onToggleSubmissionStar
             ? {
                 count: sub.star_count,

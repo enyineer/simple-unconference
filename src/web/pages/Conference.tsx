@@ -16,6 +16,9 @@ import { isTab } from "../conference/types";
 import { TabBar } from "../conference/ui/TabBar";
 import { AccountMenu } from "../components/AccountMenu";
 import { NotificationBell } from "../components/NotificationBell";
+import { BroadcastButton } from "../components/BroadcastButton";
+import { InstallButton } from "../components/InstallButton";
+import { InstallNudge } from "../components/InstallNudge";
 import { AgendaTab } from "../conference/tabs/AgendaTab";
 import { DirectoryTab } from "../conference/tabs/DirectoryTab";
 import { ExpertsTab } from "../conference/tabs/ExpertsTab";
@@ -153,6 +156,8 @@ export function ConferencePage({
         slug={slug}
       />
 
+      <InstallNudge slug={slug} conferenceName={conf.name} iconHash={conf.icon_hash} />
+
       <div style={{ marginTop: 20 }}>
         {tab === "people"   && <PeopleTab slug={slug} role={conf.my_role} />}
         {tab === "rooms"    && <RoomsTab slug={slug} isMod={isMod} timeZone={conf.timezone} />}
@@ -192,6 +197,7 @@ export function ConferencePage({
           <MyAssignmentsTab
             slug={slug}
             timeZone={conf.timezone}
+            isMod={isMod}
           />
         )}
         {tab === "settings" && isOwner && (
@@ -203,6 +209,7 @@ export function ConferencePage({
             currentMixerAvoidRepeats={conf.mixer_avoid_repeats_default}
             currentSubmissionMaxPlacements={conf.submission_max_placements_default}
             currentParticipantSubmissionsEnabled={conf.participant_submissions_enabled}
+            currentIconHash={conf.icon_hash}
             usage={conf.usage}
             onNameChange={(name) => setFetchedConf({ ...conf, name })}
             onDsChange={(id) => {
@@ -219,6 +226,7 @@ export function ConferencePage({
             onParticipantSubmissionsEnabledChange={(v) =>
               setFetchedConf({ ...conf, participant_submissions_enabled: v })
             }
+            onIconHashChange={(v) => setFetchedConf({ ...conf, icon_hash: v })}
             onDeleted={onBack}
             onTransferred={onBack}
           />
@@ -265,6 +273,7 @@ function ConferenceHeader({
   const navigateTab = (tabKey: string) => {
     if ((tabs as string[]).includes(tabKey)) onTabChange(tabKey as Tab);
   };
+  const isMod = conf.my_role === "owner" || conf.my_role === "moderator";
   const [showCompact, setShowCompact] = useState(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -300,6 +309,8 @@ function ConferenceHeader({
             current={conf.name}
           />
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            {isMod && <BroadcastButton slug={slug} />}
+            <InstallButton conferenceName={conf.name} />
             <NotificationBell slug={slug} onNavigateTab={navigateTab} />
             <AccountMenu
               name={me.name}
@@ -357,6 +368,7 @@ function ConferenceHeader({
                 inlineRole={conf.my_role}
               />
               <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                {isMod && <BroadcastButton slug={slug} />}
                 <NotificationBell slug={slug} onNavigateTab={navigateTab} />
                 <AccountMenu
                   name={me.name}
@@ -390,20 +402,32 @@ function Breadcrumb({
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
   return (
     <nav aria-label="Breadcrumb" style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 6 }}>
+      {/* Root crumb is a compact home icon (not the "Your conferences" text) so
+          the breadcrumb never wraps to two lines on narrow screens. The label
+          is preserved for assistive tech + as a hover tooltip. */}
       <button
         type="button"
         onClick={onParentClick}
+        aria-label={parent}
+        title={parent}
         style={{
           appearance: "none", border: "none", background: "transparent",
           padding: 0, margin: 0,
-          color: muted, fontFamily: "inherit", fontSize: 13,
-          cursor: "pointer",
-          textDecoration: "none",
+          width: 22, height: 22, flex: "0 0 auto",
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          color: muted, cursor: "pointer",
+          borderRadius: 6, transition: "color 120ms",
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.textDecoration = "underline"; }}
-        onMouseLeave={(e) => { e.currentTarget.style.textDecoration = "none"; }}
+        onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fgColor-default, var(--uncon-fg, inherit))"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.color = muted; }}
       >
-        {parent}
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
+          <path
+            d="M2 7.5 8 2.5l6 5M3.5 6.5v6a.5.5 0 0 0 .5.5h2.5v-3.5h3V13H12a.5.5 0 0 0 .5-.5v-6"
+            fill="none" stroke="currentColor" strokeWidth="1.3"
+            strokeLinecap="round" strokeLinejoin="round"
+          />
+        </svg>
       </button>
       <span aria-hidden style={{ color: muted, fontSize: 13 }}>›</span>
       <span style={{

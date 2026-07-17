@@ -10,6 +10,8 @@ import { SettingsSection } from "../ui/SettingsSection";
 import { SearchableSelect } from "../ui/SearchableSelect";
 import { DangerZone } from "./settings/DangerZone";
 import { JoinLinkSection } from "./settings/JoinLinkSection";
+import { BoardLinkSection } from "./settings/BoardLinkSection";
+import { AppIconSection } from "./settings/AppIconSection";
 import { UsageCard } from "./settings/UsageCard";
 import { useMemoTimezones } from "./settings/helpers";
 import type { SavedKey, UsageCounters } from "./settings/types";
@@ -17,9 +19,11 @@ import type { SavedKey, UsageCounters } from "./settings/types";
 export function SettingsTab({
   slug, currentName, currentDs, currentTz, currentMixerAvoidRepeats,
   currentSubmissionMaxPlacements, currentParticipantSubmissionsEnabled,
+  currentIconHash,
   usage,
   onNameChange, onDsChange, onTzChange, onMixerAvoidRepeatsChange,
   onSubmissionMaxPlacementsChange, onParticipantSubmissionsEnabledChange,
+  onIconHashChange,
   onDeleted, onTransferred,
 }: {
   slug: string;
@@ -29,6 +33,9 @@ export function SettingsTab({
   currentMixerAvoidRepeats: boolean;
   currentSubmissionMaxPlacements: number | null;
   currentParticipantSubmissionsEnabled: boolean;
+  /** Current custom PWA icon hash (null = default). Drives the App icon
+   *  preview + the live manifest/apple-touch-icon links. */
+  currentIconHash: string | null;
   /** Live mod-only quota snapshot from conferences.get. `null` for non-mods. */
   usage: UsageCounters | null;
   onNameChange: (name: string) => void;
@@ -37,6 +44,7 @@ export function SettingsTab({
   onMixerAvoidRepeatsChange: (v: boolean) => void;
   onSubmissionMaxPlacementsChange: (v: number | null) => void;
   onParticipantSubmissionsEnabledChange: (v: boolean) => void;
+  onIconHashChange: (v: string | null) => void;
   /** Called after the owner confirms and the server deletes the conference.
    *  The parent should navigate away — every subsequent request scoped to
    *  this slug 404s. */
@@ -338,6 +346,14 @@ export function SettingsTab({
       </SettingsSection>
 
       <JoinLinkSection slug={slug} />
+
+      <BoardLinkSection slug={slug} />
+
+      <AppIconSection
+        slug={slug}
+        iconHash={currentIconHash}
+        onIconHashChange={onIconHashChange}
+      />
 
       <DangerZone
         slug={slug}

@@ -97,6 +97,11 @@ export interface ConfDetail extends ConfCreated {
   // the caller is moderator or owner. Surfaces in the Settings tab's Usage
   // card.
   usage: ConfUsage | null;
+  // Content hash of the owner-uploaded custom app (PWA) icon, or null when the
+  // conference uses the default icons. The client builds cache-busted icon URLs
+  // (`/api/conference-icons/<slug>/<size>/<hash>`) for the dynamic web app
+  // manifest link + the Settings preview from this.
+  icon_hash: string | null;
 }
 
 export interface ParticipantOut {
@@ -134,6 +139,13 @@ export interface JoinLinkOut {
   expires_at: number | null;
   max_uses: number | null;
   used_count: number;
+}
+// Owner-facing state of the public Live Board link. `url` is the relative hash
+// path to the board (with the token embedded); null while disabled.
+export interface BoardLinkOut {
+  enabled: boolean;
+  token: string | null;
+  url: string | null;
 }
 export interface ConfMeOut {
   id: number;
@@ -177,6 +189,14 @@ export interface SubmissionOut {
   // there's actually a profile to land on. Mods/owners can navigate to any
   // identity's profile regardless (the profiles.get endpoint allows it).
   submitter_profile_published: boolean;
+  // The EFFECTIVE presenters of this session, in display order. Always
+  // populated: when no explicit speaker rows exist it contains a single entry
+  // derived from the submitter, so every client renders presenters uniformly.
+  // A registered speaker carries its `identity_id` (+ `profile_published` for
+  // ProfileLink); a free-form speaker has `identity_id: null`. `name` is the
+  // display name (empty string when unknown). Authorship stays on the
+  // `submitter_*` fields — this list is "who presents", not "who owns".
+  speakers: { identity_id: number | null; name: string; profile_published: boolean }[];
   title: string;
   description: string;
   status: SubmissionStatus;
@@ -331,6 +351,10 @@ export interface AgendaOut {
   /** Number of conference identities. Moderator-only — `null` for participants
    *  so the conference's size isn't leaked to non-mods. */
   participant_count: number | null;
+  /** The submission currently spotlighted on the Live Board (Pitch Mode), or
+   *  null. Lets the mod Pitch Mode sheet reflect the real state across devices
+   *  and moderators instead of guessing locally. */
+  spotlight_submission_id: number | null;
 }
 
 // Response of `agenda.updateSeries`. When the requested patch would orphan
@@ -438,8 +462,10 @@ export interface OverlapExclusions {
     // Why this session was filtered:
     //   - "same_session": the session is already placed in an overlapping
     //     slot AND its allow_overlapping_placements flag is false.
-    //   - "busy_submitter": a *different* session by the same submitter is
-    //     placed in an overlapping slot.
+    //   - "busy_submitter": a *different* session sharing one of this
+    //     session's effective speakers is placed in an overlapping slot. (The
+    //     reason string is retained for compatibility; effective speakers
+    //     default to the submitter when a session has no explicit speaker rows.)
     reason: "same_session" | "busy_submitter";
   }[];
   // User identity IDs assigned to an overlapping slot in this conference.
@@ -499,6 +525,9 @@ export type ScheduleSubmissionResult =
       track_id: number;
       room_id: number;
       room_name: string;
+      // Non-blocking heads-up: a speaker of the scheduled session is already
+      // presenting in a time-overlapping slot. The placement still committed.
+      speaker_warning?: SpeakerOverlapHolder;
     }
   | {
       kind: "conflict";
@@ -575,13 +604,28 @@ export interface RoomOverlapHolder {
   room_name: string;
 }
 
+// A NON-blocking heads-up returned alongside a successful manual placement:
+// one of the placed session's effective speakers is already presenting in a
+// time-overlapping slot. Purely informational (the placement still commits) —
+// mirrors the room-overlap holder note so mods can catch a double-booked
+// presenter without it blocking a deliberate override. `speaker_name` is the
+// shared speaker's display name; `session_title` + `slot_label` + `room_name`
+// locate the clashing session. `room_name` is null only when the holder has no
+// resolvable room.
+export interface SpeakerOverlapHolder {
+  speaker_name: string;
+  slot_label: string;
+  session_title: string;
+  room_name: string | null;
+}
+
 // Result of `agenda.setTrack`. Hand-scheduling normally succeeds, but a room
 // physically occupied by a time-overlapping slot is refused with a structured
 // conflict that names the holder (so the UI can say what's using it, not just
 // that it's busy). Editing a track already in a room is never blocked by its
-// own room.
+// own room. `speaker_warning` is a non-blocking heads-up on the ok path.
 export type SetTrackResult =
-  | { kind: "ok" }
+  | { kind: "ok"; speaker_warning?: SpeakerOverlapHolder }
   | { kind: "conflict"; reason: "room_overlap_taken"; holder: RoomOverlapHolder }
   | ({ kind: "conflict" } & RoomDedicatedConflict)
   | ({ kind: "conflict" } & RoomUnavailableConflict);
@@ -705,7 +749,10 @@ export type NotificationKind =
   | "chat_message"
   | "chat_report"
   | "chat_warning"
-  | "schedule_changed";
+  | "schedule_changed"
+  // Mod broadcast to every conference identity (announcements.send). One-shot
+  // (no dedupe) so each announcement is its own bell row.
+  | "announcement";
 
 export interface NotificationOut {
   id: number;
@@ -808,6 +855,10 @@ export interface PublicConfigOut {
   // Sessions tab can show "X of N submitted" before the user tries to add
   // their (N+1)th one.
   max_sessions_per_user_per_conference: number | null;
+  // VAPID public key for Web Push, or null when push isn't configured on this
+  // instance. Non-null means the client may render the "Enable push
+  // notifications" opt-in and pass this key to `pushManager.subscribe`.
+  vapid_public_key: string | null;
 }
 
 // ----- chat (see plans/chat.md) ------------------------------------------
@@ -912,4 +963,108 @@ export interface ChatSettingsOut {
   read_receipts_enabled: boolean;
   chat_banned: boolean;
   chat_ban_reason: string | null;
+}
+
+// ----- takeaways (Harvest & Wrap-up, F3) ----------------------------------
+//
+// A short learning / link captured against a session. Public within the
+// conference: author DISPLAY NAME + identity id only, NEVER an email.
+export interface TakeawayOut {
+  id: number;
+  submission_id: number;
+  text: string;
+  url: string | null;
+  created_at: number;
+  // Author's display name, or null when they have none set.
+  author_name: string | null;
+  author_identity_id: number;
+  // True when the calling identity authored this row (drives the delete
+  // affordance; mods can delete any takeaway regardless of this flag).
+  mine: boolean;
+}
+
+// ----- wrap-up event report (F3, moderator-only) --------------------------
+export interface EventReportTopSession {
+  title: string;
+  star_count: number;
+  submitter_name: string | null;
+}
+export interface EventReportRoom {
+  name: string;
+  capacity: number;
+  // Distinct slots where this room hosts a planned track or unconference placement.
+  used_slots: number;
+  // Total agenda slots in the conference — a KISS proxy for "slots this room
+  // could have hosted" (every room shares the same figure).
+  available_slots: number;
+}
+export interface EventReportOut {
+  participant_count: number;
+  sessions: {
+    submitted: number;
+    published: number;
+    // Distinct submissions with at least one track assignment or placement.
+    placed_or_scheduled: number;
+  };
+  // Total attendee seats filled across unconference slots (UserAssignment rows).
+  seats_filled: number;
+  stars_total: number;
+  // Top 5 published sessions by star count, most-starred first.
+  top_sessions: EventReportTopSession[];
+  rooms: EventReportRoom[];
+  expert_bookings_count: number;
+  takeaway_count: number;
+  generated_at: number;
+}
+
+// ----- public Live Board (F1) ---------------------------------------------
+//
+// Shape of the token-gated, read-only board payload served at
+// GET /api/board/:slug?t=<token> (a plain Hono route, not an oRPC procedure —
+// it is public and text/event-stream-adjacent). Declared here so the W3 board
+// page can import the exact type. PUBLIC-SAFE: display names only, NEVER
+// emails, NEVER unpublished-profile-sensitive data.
+export interface BoardSpotlightOut {
+  submission_id: number;
+  title: string;
+  star_count: number;
+  // Submitter display name, or null when the submitter has no name set.
+  submitter_name: string | null;
+}
+export interface BoardSlotOut {
+  id: number;
+  type: "unconference" | "mixer" | "normal";
+  title: string | null;
+  starts_at: number;
+  ends_at: number;
+}
+export interface BoardRoomOut {
+  id: number;
+  name: string;
+  capacity: number;
+}
+// A scheduled session on the board — a planned track OR an unconference
+// placement, unified for rendering the room x slot grid.
+export interface BoardEntryOut {
+  slot_id: number;
+  room_id: number;
+  submission_id: number;
+  title: string;
+  star_count: number;
+  submitter_name: string | null;
+  // Attendees seated into this session (unconference placements) — 0 for
+  // planned tracks, which have no per-seat rows on the board.
+  attendee_count: number;
+  // True for a planned (type "normal") track; false for an unconference
+  // placement. Mandatory planned tracks additionally set `mandatory`.
+  planned: boolean;
+  mandatory: boolean;
+}
+export interface BoardPayloadOut {
+  name: string;
+  timezone: string;
+  spotlight: BoardSpotlightOut | null;
+  slots: BoardSlotOut[];
+  rooms: BoardRoomOut[];
+  entries: BoardEntryOut[];
 }

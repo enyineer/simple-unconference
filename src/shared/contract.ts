@@ -25,11 +25,16 @@ import {
   CreateRoomSchema,
   CreateSlotSchema,
   CreateSubmissionSchema,
+  DuplicateConferenceSchema,
   DuplicateSlotSchema,
+  TakeawayAddSchema,
   InviteClaimSchema,
   InviteCreateSchema,
   InviteImportSchema,
   JoinLinkSetSchema,
+  BoardLinkSetSchema,
+  SpotlightSchema,
+  AnnouncementSendSchema,
   LinkConferenceSchema,
   LoginSchema,
   ProfileDeleteAvatarSchema,
@@ -38,6 +43,8 @@ import {
   ProfileUpdateAnySchema,
   ProfileUpdateMineSchema,
   PromoteExpertSchema,
+  PushSubscribeSchema,
+  PushUnsubscribeSchema,
   RequestPasswordResetSchema,
   ResetPasswordSchema,
   VerifyEmailSchema,
@@ -83,6 +90,7 @@ import {
   type ConfDetail,
   type ConfMeOut,
   type ConfSummary,
+  type EventReportOut,
   type ExpertBookingCreatedOut,
   type ExpertOut,
   type ExpertPoolOut,
@@ -90,6 +98,7 @@ import {
   type InviteOut,
   type InvitePreviewOut,
   type JoinLinkOut,
+  type BoardLinkOut,
   type LinkableConferenceOut,
   type MyAssignmentsOut,
   type NotificationListOut,
@@ -104,6 +113,7 @@ import {
   type SetTrackResult,
   type SubmissionCreated,
   type SubmissionOut,
+  type TakeawayOut,
   type UpdateSeriesResult,
   type UserOut,
 } from "./contract/types";
@@ -158,10 +168,23 @@ export const contract = {
     list: oc.output(type<ConfSummary[]>()),
     create: oc.input(CreateConferenceSchema).output(type<ConfCreated>()),
     get: oc.input(InConf).output(type<ConfDetail>()),
+    // Owner-only: remove the custom app (PWA) icon, reverting to the built-in
+    // defaults. The multipart UPLOAD lives on a separate HTTP route
+    // (POST /api/conference-icons/:slug/upload) since oRPC can't model binary
+    // bodies; clearing is a plain no-body mutation, so it fits the contract.
+    clearIcon: oc.input(InConf).output(type<Ok>()),
     update: oc
       .input(v.object({ slug: Slug, ...UpdateConferenceSchema.entries }))
       .output(type<Ok>()),
     delete: oc.input(InConf).output(type<Ok>()),
+    // Wrap-up report (F3): aggregate counts for the whole conference. Mod-only.
+    report: oc.input(InConf).output(type<EventReportOut>()),
+    // Templates / duplicate (F5): owner clones settings + rooms + a slot/series
+    // skeleton into a fresh conference (no identities, submissions, or tokens).
+    // Returns the new conference's slug.
+    duplicate: oc
+      .input(v.object({ slug: Slug, ...DuplicateConferenceSchema.entries }))
+      .output(type<{ slug: string }>()),
     listParticipants: oc
       .input(v.object({ slug: Slug, ...PageInputEntries }))
       .output(type<Page<ParticipantOut>>()),
@@ -215,6 +238,16 @@ export const contract = {
       .input(v.object({ slug: Slug, ...JoinLinkSetSchema.entries }))
       .output(type<JoinLinkOut>()),
     rotateJoinLink: oc.input(InConf).output(type<JoinLinkOut>()),
+
+    // ----- public Live Board link (owner-only) ----------------------------
+    // Mirrors the join-link trio. `getBoardLink` reports current state;
+    // `setBoardLink({enabled})` mints/keeps or clears the token;
+    // `rotateBoardLink` issues a fresh token (invalidating the old URL).
+    getBoardLink: oc.input(InConf).output(type<BoardLinkOut>()),
+    setBoardLink: oc
+      .input(v.object({ slug: Slug, ...BoardLinkSetSchema.entries }))
+      .output(type<BoardLinkOut>()),
+    rotateBoardLink: oc.input(InConf).output(type<BoardLinkOut>()),
 
     // ----- anonymous onboarding -------------------------------------------
     // No auth required; the token in the input is the secret.
@@ -411,6 +444,12 @@ export const contract = {
     unpickAssignment: oc
       .input(v.object({ slug: Slug, slot_id: Id }))
       .output(type<Ok>()),
+    // Pitch Mode (F1): set/clear the conference's spotlight session for the
+    // Live Board. Mod-only. Persists `Conference.spotlightSubmissionId` and
+    // fans out `board.spotlight` + `agenda.changed` on the bus.
+    spotlight: oc
+      .input(v.object({ slug: Slug, ...SpotlightSchema.entries }))
+      .output(type<Ok>()),
   },
   experts: {
     // ----- room pools (mod+) ---------------------------------------------
@@ -451,12 +490,43 @@ export const contract = {
       .input(v.object({ slug: Slug, booking_id: Id }))
       .output(type<Ok>()),
   },
+  // Day-of broadcast (F2). A moderator sends one short message that fans out
+  // as an `announcement` notification to every conference identity.
+  announcements: {
+    send: oc
+      .input(v.object({ slug: Slug, ...AnnouncementSendSchema.entries }))
+      .output(type<Ok>()),
+  },
+  // Harvest & Wrap-up (F3). Short takeaways captured against a session, public
+  // within the conference. Author display names only — never emails.
+  takeaways: {
+    list: oc
+      .input(v.object({ slug: Slug, submission_id: Id }))
+      .output(type<TakeawayOut[]>()),
+    add: oc
+      .input(v.object({ slug: Slug, ...TakeawayAddSchema.entries }))
+      .output(type<TakeawayOut>()),
+    remove: oc
+      .input(v.object({ slug: Slug, id: Id }))
+      .output(type<Ok>()),
+  },
   notifications: {
     list: oc.input(InConf).output(type<NotificationListOut>()),
     markRead: oc
       .input(v.object({ slug: Slug, id: Id }))
       .output(type<Ok>()),
     markAllRead: oc.input(InConf).output(type<Ok>()),
+  },
+  // Web Push (OS-level notifications) opt-in. Per conference identity: the
+  // browser's subscription (endpoint + keys) is upserted on subscribe and
+  // dropped on unsubscribe. Both require at least a participant role.
+  push: {
+    subscribe: oc
+      .input(v.object({ slug: Slug, ...PushSubscribeSchema.entries }))
+      .output(type<Ok>()),
+    unsubscribe: oc
+      .input(v.object({ slug: Slug, ...PushUnsubscribeSchema.entries }))
+      .output(type<Ok>()),
   },
   profiles: {
     // Fetch a single profile. Returns NOT_FOUND for non-mod viewers when the

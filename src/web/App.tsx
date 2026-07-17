@@ -7,6 +7,8 @@ import { api, ApiError } from "./api";
 import { useRoute, matchRoute } from "./router";
 import type { Tab } from "./conference/types";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { OfflineBanner } from "./components/OfflineBanner";
+import { updateInstallLinks } from "./pwa/links";
 
 // Lazy-load each page in its own chunk.
 const LoginPage = lazy(() =>
@@ -20,6 +22,9 @@ const ConferencePage = lazy(() =>
 );
 const JoinPage = lazy(() =>
   import("./pages/Join").then((m) => ({ default: m.JoinPage })),
+);
+const BoardPage = lazy(() =>
+  import("./pages/Board").then((m) => ({ default: m.BoardPage })),
 );
 const ConferenceLoginPage = lazy(() =>
   import("./pages/ConferenceLogin").then((m) => ({
@@ -76,6 +81,9 @@ export interface ConfMe {
 interface ConferenceSummary {
   slug: string;
   design_system: string;
+  /** Content hash of the owner's custom PWA icon, or null for the default.
+   *  Drives the per-conference apple-touch-icon link. */
+  icon_hash?: string | null;
 }
 
 function MinimalLoading() {
@@ -220,6 +228,7 @@ export function App() {
   const { path, navigate } = useRoute();
 
   // Routes (parsed up front; some are anonymous, some require auth).
+  const boardMatch = matchRoute("/board/:slug", path);
   const joinMatch = matchRoute("/c/:slug/join", path);
   const confLoginMatch = matchRoute("/c/:slug/login", path);
   const confResetMatch = matchRoute("/c/:slug/reset", path);
@@ -245,12 +254,31 @@ export function App() {
   // Per-conference identity / design system. `fetchedX` is what the most
   // recent fetch (or event handler) wrote; `loadedXSlug` is which slug that
   // value belongs to. The derived `confMe` / `confDs` collapse back to their
-  // "no conference active" defaults whenever those don't match, so we don't
-  // need a synchronous reset-in-effect on confSlug change.
+  // "no conference active" defaults whenever those don't match.
   const [fetchedConfMe, setFetchedConfMe] = useState<ConfMe | null | undefined>(undefined);
   const [loadedConfMeSlug, setLoadedConfMeSlug] = useState<string | undefined>(undefined);
   const [fetchedConfDs, setFetchedConfDs] = useState<string | null>(null);
   const [loadedConfDsSlug, setLoadedConfDsSlug] = useState<string | undefined>(undefined);
+  // Custom PWA icon hash for the active conference. Drives the dynamic
+  // apple-touch-icon link; null = the default icon. Undefined while unknown.
+  const [confIconHash, setConfIconHash] = useState<string | null | undefined>(undefined);
+
+  // Drop the cached identity result the moment the active conference changes,
+  // so a stale value — especially a `null` cached from an earlier
+  // *unauthenticated* visit to the same slug (deep link → bounced to the
+  // conference login → sign in → land back on this slug) — can never be read
+  // as authoritative before the fetch below settles. Without this, that stale
+  // `null` makes `confMe` resolve to `null` synchronously and fires an instant,
+  // incorrect redirect back to login that ALSO cancels the in-flight refetch,
+  // stranding the user in a loop only a hard reload escapes. This render-time
+  // reset (React's "adjust state while rendering" pattern) is preferred over a
+  // setState-in-effect, which would cascade an extra render.
+  const [confMeSlugTracked, setConfMeSlugTracked] = useState<string | undefined>(confSlug);
+  if (confSlug !== confMeSlugTracked) {
+    setConfMeSlugTracked(confSlug);
+    setFetchedConfMe(undefined);
+    setLoadedConfMeSlug(undefined);
+  }
   // Owner-side color mode lives in memory only (Users have no persisted
   // colorMode in the new identity model). Each conference identity persists
   // its own preference server-side.
@@ -306,17 +334,33 @@ export function App() {
       .then((c: ConferenceSummary) => {
         if (cancelled) return;
         setFetchedConfDs(c.design_system || DEFAULT_PLUGIN_ID);
+        setConfIconHash(c.icon_hash ?? null);
         setLoadedConfDsSlug(confSlug);
       })
       .catch(() => {
         if (cancelled) return;
         setFetchedConfDs(DEFAULT_PLUGIN_ID);
+        setConfIconHash(null);
         setLoadedConfDsSlug(confSlug);
       });
     return () => {
       cancelled = true;
     };
   }, [confSlug]);
+
+  // Point the document's manifest + apple-touch-icon links at the active
+  // conference (its own installable app + home-screen icon), removing them when
+  // leaving. The manifest link is set as soon as the slug is known — it needs
+  // only the slug (the server route resolves the name/icon itself), and adding
+  // it EARLY (not waiting for the conferences.get fetch) is what lets Chrome's
+  // installability check see it and fire `beforeinstallprompt`. The icon hash
+  // arrives with that fetch; until it settles for THIS slug we pass null (the
+  // default icon) rather than a stale previous-conference hash.
+  useEffect(() => {
+    const slug = confSlug ?? null;
+    const iconHash = slug && loadedConfDsSlug === confSlug ? confIconHash ?? null : null;
+    updateInstallLinks(slug, iconHash);
+  }, [confSlug, loadedConfDsSlug, confIconHash]);
 
   // Hide stale data while a new slug is in flight (or there's no active
   // conference). The settled-slug tracking above guarantees these flip back
@@ -353,6 +397,10 @@ export function App() {
   );
 
   function renderPage() {
+    // ----- public Live Board — full-screen, no conference chrome -----
+    if (boardMatch && boardMatch.slug) {
+      return <BoardPage slug={boardMatch.slug} />;
+    }
     // ----- anonymous, conference-scoped routes -----
     if (joinMatch && joinMatch.slug) {
       return (
@@ -508,6 +556,7 @@ export function App() {
       fallback={<MinimalLoading />}
     >
       <ToastProvider>
+        <OfflineBanner />
         <ErrorBoundary resetKey={path}>
           {/* Single tab-wide SSE stream. Mounted once the initial
               loadOwner call has settled (owner is no longer `undefined`)
@@ -524,7 +573,11 @@ export function App() {
             </RealtimeProvider>
           )}
         </ErrorBoundary>
-        <Footer />
+        {/* The public Live Board is a full-screen surface with its own chrome
+            (and its own understated credit footnote). The app footer would
+            otherwise sit at the top of the empty document flow behind the
+            fixed board and bleed into its header. */}
+        {!boardMatch && <Footer />}
       </ToastProvider>
     </DesignSystemProvider>
   );

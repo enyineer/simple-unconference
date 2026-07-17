@@ -17,6 +17,13 @@
     <meta name="generator" content="simple-unconference" />
     <meta name="application-name" content="Unconf" />
     <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#0a0d12" />
+    <!-- No manifest link here on purpose: the root (landing / dashboard) is NOT
+         an installable app. Installing means installing a specific conference,
+         so the manifest + apple-touch-icon links are added at runtime only while
+         inside a conference (see src/web/pwa/links.ts). The service worker
+         (offline) is still registered app-wide. -->
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
 
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
