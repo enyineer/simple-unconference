@@ -249,12 +249,14 @@ export function AgendaTab({
     <Stack gap="spacious">
       {requirementsConfirm.modal}
 
-      <Stack direction="row" justify="between" align="center">
+      <Stack direction="row" justify="between" align="center" wrap gap="normal">
         <Stack gap="condensed">
           <Heading level={2}>Agenda</Heading>
           <CalendarLegend />
         </Stack>
-        <Stack direction="row" gap="condensed" align="center">
+        {/* wrap: on narrow screens the actions drop below the title (and among
+            themselves) instead of overflowing off the right edge. */}
+        <Stack direction="row" gap="condensed" align="center" wrap>
           {/* "Update seating" lives in the two-step card below, where it has
               the "place → seat" context. Keeping it only there avoids two
               identical primary actions competing on one screen. */}

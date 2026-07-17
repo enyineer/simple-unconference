@@ -106,12 +106,12 @@ export function ScheduleCard({
           {manual && <Pill variant="primary">manual pick</Pill>}
           {isSubmitter && <Pill variant="success">you&apos;re speaking</Pill>}
           {showCapacityWarning && (
-            <Pill variant="attention">
+            <Pill variant="attention" wrap>
               room may be crowded ({expectedAttendance}/{roomCapacity}) - arrive early
             </Pill>
           )}
           {conflicts.length > 0 && (
-            <Pill variant="attention">
+            <Pill variant="attention" wrap>
               conflicts with {conflicts[0]}{conflicts.length > 1 ? ` (+${conflicts.length - 1})` : ""}
             </Pill>
           )}

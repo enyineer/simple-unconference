@@ -402,20 +402,32 @@ function Breadcrumb({
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
   return (
     <nav aria-label="Breadcrumb" style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 6 }}>
+      {/* Root crumb is a compact home icon (not the "Your conferences" text) so
+          the breadcrumb never wraps to two lines on narrow screens. The label
+          is preserved for assistive tech + as a hover tooltip. */}
       <button
         type="button"
         onClick={onParentClick}
+        aria-label={parent}
+        title={parent}
         style={{
           appearance: "none", border: "none", background: "transparent",
           padding: 0, margin: 0,
-          color: muted, fontFamily: "inherit", fontSize: 13,
-          cursor: "pointer",
-          textDecoration: "none",
+          width: 22, height: 22, flex: "0 0 auto",
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          color: muted, cursor: "pointer",
+          borderRadius: 6, transition: "color 120ms",
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.textDecoration = "underline"; }}
-        onMouseLeave={(e) => { e.currentTarget.style.textDecoration = "none"; }}
+        onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fgColor-default, var(--uncon-fg, inherit))"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.color = muted; }}
       >
-        {parent}
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
+          <path
+            d="M2 7.5 8 2.5l6 5M3.5 6.5v6a.5.5 0 0 0 .5.5h2.5v-3.5h3V13H12a.5.5 0 0 0 .5-.5v-6"
+            fill="none" stroke="currentColor" strokeWidth="1.3"
+            strokeLinecap="round" strokeLinejoin="round"
+          />
+        </svg>
       </button>
       <span aria-hidden style={{ color: muted, fontSize: 13 }}>›</span>
       <span style={{

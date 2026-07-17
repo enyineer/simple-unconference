@@ -11,7 +11,7 @@
 // the dismissal.
 
 import { useState } from "react";
-import { Button, Card, Heading, Stack, Text } from "../design-system";
+import { Button, Card, Stack, Text } from "../design-system";
 import { useInstallPrompt } from "../hooks/useInstallPrompt";
 import { appleTouchIconHref, shouldShowNudge } from "../pwa/install";
 import { DesktopInstallSteps, IosInstallSteps } from "./InstallButton";
@@ -61,37 +61,37 @@ export function InstallNudge({
     <div style={{ marginTop: 20 }}>
     <Card>
       <Stack gap="condensed">
-        <Stack direction="row" gap="normal" align="center" justify="between">
-          <Stack direction="row" gap="normal" align="center">
-            <img
-              src={appleTouchIconHref(slug, iconHash)}
-              alt=""
-              width={44}
-              height={44}
-              style={{
-                width: 44,
-                height: 44,
-                borderRadius: 10,
-                objectFit: "cover",
-                flex: "0 0 auto",
-                background: "var(--bgColor-muted, var(--uncon-bg-subtle, rgba(0,0,0,0.05)))",
-                border: "1px solid var(--borderColor-muted, var(--uncon-border-muted, #e5e7eb))",
-              }}
-            />
-            <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
-              <Heading level={3}>Install {conferenceName} as an app</Heading>
-              <Text muted>
-                Open it in its own window from your dock or home screen, and get
-                notifications.
-              </Text>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+          <img
+            src={appleTouchIconHref(slug, iconHash)}
+            alt=""
+            width={40}
+            height={40}
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 10,
+              objectFit: "cover",
+              flex: "0 0 auto",
+              background: "var(--bgColor-muted, var(--uncon-bg-subtle, rgba(0,0,0,0.05)))",
+              border: "1px solid var(--borderColor-muted, var(--uncon-border-muted, #e5e7eb))",
+            }}
+          />
+          <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: "1 1 auto" }}>
+            <div style={{ fontSize: 15, fontWeight: 600, lineHeight: "20px", wordBreak: "break-word" }}>
+              Install {conferenceName} as an app
             </div>
-          </Stack>
+            <Text muted>
+              Open it in its own window from your dock or home screen, and get
+              notifications even when it isn&apos;t open.
+            </Text>
+          </div>
+        </div>
+
+        <Stack direction="row" gap="condensed" justify="end" align="center" wrap>
           <Button size="small" variant="invisible" onClick={dismiss}>
             Dismiss
           </Button>
-        </Stack>
-
-        <Stack direction="row" gap="condensed" wrap>
           <Button variant="primary" size="small" onClick={onInstall}>
             Install
           </Button>

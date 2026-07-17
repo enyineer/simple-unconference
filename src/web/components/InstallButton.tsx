@@ -5,7 +5,7 @@
 // installed or there's no install path (e.g. desktop Firefox). All the
 // decision logic lives in the pure module behind useInstallPrompt.
 
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { Sheet, Stack, Text } from "../design-system";
 import { useInstallPrompt } from "../hooks/useInstallPrompt";
 import { desktopInstallKind } from "../pwa/install";
@@ -73,6 +73,17 @@ export function InstallButton({ conferenceName }: { conferenceName: string }) {
   );
 }
 
+// Shared body style for the install walkthroughs. The design-system <Text>
+// renders at the default body size (~16px, loose leading), which looked
+// oversized next to the 14px numbered list. Match the list (14px / 22px) so
+// the intro copy and the steps read as one block.
+const STEP_BODY: CSSProperties = {
+  margin: 0,
+  fontSize: 14,
+  lineHeight: "22px",
+  color: "var(--fgColor-default, var(--uncon-fg, inherit))",
+};
+
 // Desktop fallback steps: shown when the browser can install a web app but
 // didn't hand us a `beforeinstallprompt` (Chrome fires it only heuristically).
 // Detects the browser so it shows ONE clear path (not a list of every browser),
@@ -83,27 +94,28 @@ export function DesktopInstallSteps({ conferenceName }: { conferenceName: string
 
   return (
     <Stack gap="condensed">
-      <Text>
+      <p style={STEP_BODY}>
         Install <strong>{conferenceName}</strong> and it opens in its own window,
-        launches from your dock, and can show notifications.
-      </Text>
+        launches from your dock, and can send you notifications even when it
+        isn&apos;t open.
+      </p>
       {kind === "chromium" ? (
         <>
-          <Text>
+          <p style={STEP_BODY}>
             Click the <strong>install icon</strong> at the right of the address
             bar &mdash; or open the browser menu (<strong>&#8942;</strong>) and
             choose <strong>Install {conferenceName}</strong>.
-          </Text>
+          </p>
           <Text muted>
             Don&apos;t see the icon yet? Browsers reveal it after a moment on the
             page &mdash; give it a few seconds and check again.
           </Text>
         </>
       ) : (
-        <Text>
+        <p style={STEP_BODY}>
           Open the <strong>Share</strong> menu in the Safari toolbar and choose{" "}
           <strong>Add to Dock</strong>.
-        </Text>
+        </p>
       )}
     </Stack>
   );
@@ -115,11 +127,11 @@ export function DesktopInstallSteps({ conferenceName }: { conferenceName: string
 export function FirefoxInstallSteps({ conferenceName }: { conferenceName: string }) {
   return (
     <Stack gap="condensed">
-      <Text>
+      <p style={STEP_BODY}>
         Firefox can&apos;t install web apps. To use <strong>{conferenceName}</strong>{" "}
         as its own app, open it in <strong>Chrome</strong>, <strong>Edge</strong>,
         or <strong>Safari</strong> and install it from there.
-      </Text>
+      </p>
       <Text muted>
         In Firefox you can still bookmark this page (or pin the tab) to keep it
         one click away.
@@ -133,15 +145,20 @@ export function FirefoxInstallSteps({ conferenceName }: { conferenceName: string
 export function IosInstallSteps({ conferenceName }: { conferenceName: string }) {
   return (
     <Stack gap="condensed">
-      <Text>
+      <p style={STEP_BODY}>
         On iPhone or iPad, add <strong>{conferenceName}</strong> to your Home
         Screen so it opens like an app:
-      </Text>
+      </p>
       <ol style={{ margin: 0, paddingLeft: 20, fontSize: 14, lineHeight: "22px", color: "var(--fgColor-default, var(--uncon-fg, inherit))" }}>
         <li>Tap the <strong>Share</strong> button in Safari&apos;s toolbar.</li>
         <li>Choose <strong>Add to Home Screen</strong>.</li>
         <li>Tap <strong>Add</strong> to confirm.</li>
       </ol>
+      <Text muted>
+        Adding it to the Home Screen is also what lets it send you notifications -
+        on iPhone and iPad, notifications only reach installed apps, not an open
+        Safari tab.
+      </Text>
       <Text muted>
         This only works in Safari - other iOS browsers can&apos;t add apps to
         the Home Screen.

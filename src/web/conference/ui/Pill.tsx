@@ -6,10 +6,15 @@
 import type { ReactNode } from "react";
 
 export function Pill({
-  children, variant = "default",
+  children, variant = "default", wrap = false,
 }: {
   children: ReactNode;
   variant?: "default" | "primary" | "success" | "attention";
+  /** Allow the pill to wrap onto multiple lines. Off by default (short chips
+   *  like "planned" / a star count stay on one line); turn ON for pills that
+   *  carry long free text (a conflicting session title, a capacity warning) so
+   *  they don't overflow their container on narrow screens. */
+  wrap?: boolean;
 }) {
   const bg = variant === "primary"
     ? "var(--bgColor-accent-muted, var(--uncon-badge-primary-bg, rgba(64,132,246,0.12)))"
@@ -28,12 +33,14 @@ export function Pill({
   return (
     <span style={{
       display: "inline-block",
+      maxWidth: "100%",
       padding: "1px 8px",
-      borderRadius: 999,
+      borderRadius: wrap ? 10 : 999,
       fontSize: 11,
       fontWeight: 500,
       lineHeight: "16px",
-      whiteSpace: "nowrap",
+      whiteSpace: wrap ? "normal" : "nowrap",
+      overflowWrap: wrap ? "anywhere" : "normal",
       background: bg,
       color: fg,
     }}>
