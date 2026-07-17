@@ -28,6 +28,35 @@ import { DuplicateSlotForm } from "./DuplicateSlotForm";
 import { SeriesEditForm } from "./SeriesEditForm";
 import { ResolveConflictsPanel } from "./ResolveConflictsPanel";
 
+// Turn the overlap-excluded submissions into a mod-readable clause that NAMES
+// the sessions and says WHY they were held out of this slot: a speaker is
+// already presenting in a time-overlapping slot, vs the same session already
+// placed in one. Without this the mod just sees a count and can't tell a
+// speaker clash (the common surprise when pre-planning with custom speakers)
+// from anything else. The wire `reason` is still "busy_submitter" for
+// compatibility; effective speakers default to the submitter, so it reads as
+// "a speaker" here. Titles are capped so the toast stays short.
+function describeExcludedSubmissions(
+  subs: { title: string; reason: "same_session" | "busy_submitter" }[],
+): string {
+  const names = (list: typeof subs): string => {
+    const titles = list.map((s) => `"${s.title}"`);
+    return titles.length <= 2
+      ? titles.join(" and ")
+      : `${titles.slice(0, 2).join(", ")} +${titles.length - 2} more`;
+  };
+  const speaker = subs.filter((s) => s.reason === "busy_submitter");
+  const sameSession = subs.filter((s) => s.reason === "same_session");
+  const parts: string[] = [];
+  if (speaker.length > 0) {
+    parts.push(`${names(speaker)} (a speaker is already presenting in a parallel slot)`);
+  }
+  if (sameSession.length > 0) {
+    parts.push(`${names(sameSession)} (already placed in a parallel slot)`);
+  }
+  return parts.join("; ");
+}
+
 export interface SlotBlockProps {
   slug: string;
   slot: Slot;
@@ -192,7 +221,7 @@ export function SlotBlock({
         );
       }
       if (ex.submissions.length > 0) {
-        exParts.push(`${ex.submissions.length} session(s)`);
+        exParts.push(describeExcludedSubmissions(ex.submissions));
       }
       if (ex.user_ids.length > 0) {
         exParts.push(`${ex.user_ids.length} ${noun}(s)`);
