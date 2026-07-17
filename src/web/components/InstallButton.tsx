@@ -63,6 +63,8 @@ export function InstallButton({ conferenceName }: { conferenceName: string }) {
       <Sheet open={hintOpen} onClose={() => setHintOpen(false)} title="Install this app">
         {affordance === "ios-hint" ? (
           <IosInstallSteps conferenceName={conferenceName} />
+        ) : affordance === "android-hint" ? (
+          <AndroidInstallSteps conferenceName={conferenceName} />
         ) : affordance === "firefox-hint" ? (
           <FirefoxInstallSteps conferenceName={conferenceName} />
         ) : (
@@ -135,6 +137,34 @@ export function FirefoxInstallSteps({ conferenceName }: { conferenceName: string
       <Text muted>
         In Firefox you can still bookmark this page (or pin the tab) to keep it
         one click away.
+      </Text>
+    </Stack>
+  );
+}
+
+// Android fallback steps: shown when we couldn't capture `beforeinstallprompt`
+// (Chrome fires it only heuristically and may miss it; Firefox / other Android
+// browsers never fire it). Every Android browser can still add the app from its
+// own menu, so we point at that instead of showing nothing.
+export function AndroidInstallSteps({ conferenceName }: { conferenceName: string }) {
+  return (
+    <Stack gap="condensed">
+      <p style={STEP_BODY}>
+        Add <strong>{conferenceName}</strong> to your home screen so it opens
+        like an app and can send you notifications:
+      </p>
+      <ol style={{ margin: 0, paddingLeft: 20, fontSize: 14, lineHeight: "22px", color: "var(--fgColor-default, var(--uncon-fg, inherit))" }}>
+        <li>Open your browser&apos;s menu (the <strong>&#8942;</strong> button).</li>
+        <li>
+          Tap <strong>Install app</strong> (Chrome) or{" "}
+          <strong>Add to Home screen</strong> (Firefox).
+        </li>
+        <li>Confirm to add it.</li>
+      </ol>
+      <Text muted>
+        Chrome installs it as a full app with its own icon and notifications.
+        Other Android browsers add a shortcut that still opens straight to the
+        event.
       </Text>
     </Stack>
   );

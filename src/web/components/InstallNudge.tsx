@@ -14,7 +14,7 @@ import { useState } from "react";
 import { Button, Card, Stack, Text } from "../design-system";
 import { useInstallPrompt } from "../hooks/useInstallPrompt";
 import { appleTouchIconHref, shouldShowNudge } from "../pwa/install";
-import { DesktopInstallSteps, IosInstallSteps } from "./InstallButton";
+import { AndroidInstallSteps, DesktopInstallSteps, IosInstallSteps } from "./InstallButton";
 
 const STORAGE_PREFIX = "install-nudge:";
 
@@ -110,6 +110,8 @@ export function InstallNudge({
           >
             {affordance === "ios-hint" ? (
               <IosInstallSteps conferenceName={conferenceName} />
+            ) : affordance === "android-hint" ? (
+              <AndroidInstallSteps conferenceName={conferenceName} />
             ) : (
               <DesktopInstallSteps conferenceName={conferenceName} />
             )}

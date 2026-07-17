@@ -80,11 +80,20 @@ export interface ConfMe {
 
 interface ConferenceSummary {
   slug: string;
+  name?: string;
   design_system: string;
   /** Content hash of the owner's custom PWA icon, or null for the default.
    *  Drives the per-conference apple-touch-icon link. */
   icon_hash?: string | null;
 }
+
+// The default document title (set in index.html). Snapshotted at load so we can
+// restore it when leaving a conference. While inside a conference we set the
+// title to the conference name — it's the browser-tab label AND what Firefox
+// Android uses for an "Add to Home screen" shortcut (Firefox reads the title,
+// not the manifest name).
+const BASE_DOCUMENT_TITLE =
+  typeof document !== "undefined" ? document.title : "Unconf";
 
 function MinimalLoading() {
   return (
@@ -262,6 +271,9 @@ export function App() {
   // Custom PWA icon hash for the active conference. Drives the dynamic
   // apple-touch-icon link; null = the default icon. Undefined while unknown.
   const [confIconHash, setConfIconHash] = useState<string | null | undefined>(undefined);
+  // Active conference display name, for the document title (browser tab +
+  // Firefox Android home-screen shortcut label). Null when unknown / outside.
+  const [confName, setConfName] = useState<string | null>(null);
 
   // Drop the cached identity result the moment the active conference changes,
   // so a stale value — especially a `null` cached from an earlier
@@ -335,12 +347,14 @@ export function App() {
         if (cancelled) return;
         setFetchedConfDs(c.design_system || DEFAULT_PLUGIN_ID);
         setConfIconHash(c.icon_hash ?? null);
+        setConfName(c.name ?? null);
         setLoadedConfDsSlug(confSlug);
       })
       .catch(() => {
         if (cancelled) return;
         setFetchedConfDs(DEFAULT_PLUGIN_ID);
         setConfIconHash(null);
+        setConfName(null);
         setLoadedConfDsSlug(confSlug);
       });
     return () => {
@@ -361,6 +375,15 @@ export function App() {
     const iconHash = slug && loadedConfDsSlug === confSlug ? confIconHash ?? null : null;
     updateInstallLinks(slug, iconHash);
   }, [confSlug, loadedConfDsSlug, confIconHash]);
+
+  // Reflect the active conference in the document title: the browser-tab label
+  // and, importantly, the name Firefox Android puts on an "Add to Home screen"
+  // shortcut (it uses document.title, not the manifest). Restore the default
+  // title when leaving the conference.
+  useEffect(() => {
+    const name = confSlug && loadedConfDsSlug === confSlug ? confName : null;
+    document.title = name ?? BASE_DOCUMENT_TITLE;
+  }, [confSlug, loadedConfDsSlug, confName]);
 
   // Hide stale data while a new slug is in flight (or there's no active
   // conference). The settled-slug tracking above guarantees these flip back

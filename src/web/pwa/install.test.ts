@@ -5,6 +5,7 @@ import {
   confIconHref,
   desktopInstallKind,
   installAffordance,
+  isAndroid,
   isFirefoxDesktop,
   isIosSafari,
   manifestHref,
@@ -99,18 +100,35 @@ describe("isFirefoxDesktop", () => {
   });
 });
 
+describe("isAndroid", () => {
+  test("true for Android Chrome and Android Firefox", () => {
+    expect(isAndroid(UA.androidChrome)).toBe(true);
+    expect(isAndroid(UA.androidFirefox)).toBe(true);
+  });
+  test("false for iOS and desktop", () => {
+    expect(isAndroid(UA.iphoneSafari)).toBe(false);
+    expect(isAndroid(UA.desktopChrome)).toBe(false);
+    expect(isAndroid(UA.desktopFirefox)).toBe(false);
+  });
+});
+
 describe("installAffordance", () => {
-  const base = { standalone: false, hasInstallPrompt: false, isIos: false, canManualInstall: false, isFirefoxDesktop: false };
+  const base = { standalone: false, hasInstallPrompt: false, isIos: false, isAndroid: false, canManualInstall: false, isFirefoxDesktop: false };
   test("standalone always wins → none", () => {
-    expect(installAffordance({ ...base, standalone: true, hasInstallPrompt: true, isIos: true, canManualInstall: true })).toBe("none");
+    expect(installAffordance({ ...base, standalone: true, hasInstallPrompt: true, isIos: true, isAndroid: true, canManualInstall: true })).toBe("none");
     expect(installAffordance({ ...base, standalone: true })).toBe("none");
   });
   test("captured prompt → prompt (beats every fallback)", () => {
     expect(installAffordance({ ...base, hasInstallPrompt: true })).toBe("prompt");
-    expect(installAffordance({ ...base, hasInstallPrompt: true, isIos: true, canManualInstall: true, isFirefoxDesktop: true })).toBe("prompt");
+    expect(installAffordance({ ...base, hasInstallPrompt: true, isIos: true, isAndroid: true, canManualInstall: true, isFirefoxDesktop: true })).toBe("prompt");
   });
-  test("iOS Safari, no prompt → ios-hint (beats manual)", () => {
+  test("iOS Safari, no prompt → ios-hint (beats android/manual)", () => {
     expect(installAffordance({ ...base, isIos: true })).toBe("ios-hint");
+  });
+  test("Android without a captured prompt → android-hint (never 'none')", () => {
+    expect(installAffordance({ ...base, isAndroid: true })).toBe("android-hint");
+    // Android Firefox reports isAndroid too and gets the same fallback.
+    expect(installAffordance({ ...base, isAndroid: true, isFirefoxDesktop: false })).toBe("android-hint");
   });
   test("desktop that can install but has no prompt → manual", () => {
     expect(installAffordance({ ...base, canManualInstall: true })).toBe("manual");
@@ -134,6 +152,10 @@ describe("shouldShowNudge", () => {
   });
   test("manual affordance is nudged too", () => {
     expect(shouldShowNudge({ affordance: "manual", dismissed: false })).toBe(true);
+  });
+  test("android-hint is nudged (so Android users see it)", () => {
+    expect(shouldShowNudge({ affordance: "android-hint", dismissed: false })).toBe(true);
+    expect(shouldShowNudge({ affordance: "android-hint", dismissed: true })).toBe(false);
   });
   test("hidden when there's no affordance, dismissed or not", () => {
     expect(shouldShowNudge({ affordance: "none", dismissed: false })).toBe(false);
