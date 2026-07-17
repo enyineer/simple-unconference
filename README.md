@@ -1,6 +1,6 @@
 # Simple Unconference Web App - Unconf
 
-A self-hostable platform for running unconferences end-to-end: people, rooms, sessions, scheduling, mixers, expert bookings and notifications — all in one app.
+A self-hostable platform for running unconferences end-to-end: people, rooms, sessions, custom speakers, scheduling, mixers, expert bookings, a public live projector board, day-of broadcasts, web-push + offline PWA, and notifications — all in one app.
 
 > **Public instance:** A free, public, hosted instance lives at **<https://unconference.enking.dev>** — feel free to try it before deciding to self-host. The instance runs the same chart this repo ships, with [Public-instance hardening](#public-instance-hardening) enabled (per-account quotas, login lockout, Cloudflare Turnstile on signup/login/join). It targets events up to ~2000 attendees; for larger events please self-host.
 
@@ -179,6 +179,10 @@ Anyone can submit a session idea. Moderators publish, reject, or delete; partici
 
 A per-conference cap (`submission_max_placements_default`) limits how many times a published session can be placed before it drops out of the unconference algorithm pool. Capped sessions get a *Fully scheduled* badge (or *Marked complete* when the mod flips the manual override) — informational only: participants can still see and star them, and the star still derives any linked planned-slot offerings onto their schedule.
 
+**Custom & multiple speakers (mod-only).** A moderator can set a session's speaker list — any mix of registered participants and free-form typed names for guests who aren't in the system — separate from whoever authored the submission. With no speakers set, the session's speaker defaults to its submitter, so nothing changes for existing sessions. The scheduler keeps each *real* speaker (not just the author) out of two overlapping rooms at once, which lets a mod who created several sessions on other people's behalf schedule them in parallel. Hand-scheduling a session whose speaker is already presenting in an overlapping slot shows a non-blocking heads-up instead of silently double-booking.
+
+**Session priority (mod-only).** A moderator can mark a session `high` / `normal` / `low`. High-priority sessions fill rooms first (and low fill last) in the per-slot placement cut and the seating router — only among a user's starred options; it never overrides manual placements, pins, or capacity.
+
 #### What “star” means {#stars}
 
 A single concept, two effects. Starring a published session on the Sessions tab or via the star toggle in the Agenda calendar both write the same record:
@@ -200,9 +204,9 @@ When the same Submission is scheduled in multiple offerings (sibling slots of a 
 - **Required room features** — pick from the conference's actual room tags (no free text; picker only offers tags that exist on at least one room). The assignment algorithm restricts the session's candidate rooms to those whose tag set is a superset of the requested features. Approval is implicit when the session is published — submitters can't edit a published session's tag set, mods can.
 - **Allow overlapping placements** — opt-in for sessions meant to run in parallel (e.g. recurring workshops). Off by default, in which case the same session is never placed in two overlapping slots and its submitter never hosts two different sessions in overlapping slots.
 
-| Sessions list | Submit a session |
-| --- | --- |
-| ![Sessions](screenshots/session-overview.webp) | ![Create](screenshots/session-create.webp) |
+| Sessions list | Submit a session | Speakers |
+| --- | --- | --- |
+| ![Sessions](screenshots/session-overview.webp) | ![Create](screenshots/session-create.webp) | ![Speakers](screenshots/session-speakers.webp) |
 
 ### Agenda + slot types
 
@@ -215,6 +219,8 @@ The agenda mixes three slot types on a single timeline:
 Moderators can also **duplicate any slot as a linked offering**, which forms a `SlotSeries`: shared room pool / submission pool / config across the offerings, edited once via the series form. Sibling offerings can rotate participants (`avoidRepeatsAcrossSiblings`, default on) so the same starred person doesn't land on the same Submission twice across siblings, or explicitly allow re-attendance for open-discussion-style repeats.
 
 A **"How assignment works"** modal (the `?` icon next to the slot's actions and in the Agenda header) renders a plain-language explanation of every rule the algorithm applies — including the mod-only conflict-resolution flow when sessions can't be placed.
+
+**Planned-slot room refit** (mod-only) is a stable, minimal-move repair of a normal slot's room assignment — not a re-rank. It moves only the tracks that no longer fit (interest outgrew the room, a pin points elsewhere, room requirements aren't met, or a time-overlapping slot double-books the room) into the best free room, leaving every non-misfit put. No room is ever double-booked across time-overlapping slots: an overlap-held room is off-limits to every room-authoring path (refit, track picks, and unconference placement alike).
 
 | Static slot | Unconference slot | Mixer slot |
 | --- | --- | --- |
@@ -246,6 +252,11 @@ Per-conference identities — the same email can exist in multiple conferences a
 
 Rooms have a name, capacity, free-text description and tags (*projector*, *wheelchair-accessible*, *quiet*, …). Capacity feeds directly into the assignment algorithm.
 
+**Room constraints.** Two optional limits keep the scheduler off rooms it shouldn't touch:
+
+- **Expert-dedicated rooms** — any room in an expert's booking pool (or pinned to an expert) is excluded from *every* slot assignment, so a 1:1 room is never grabbed by an unconference session. Automatic assignment drops them silently; a manual placement onto one is refused with a clear conflict.
+- **Availability windows** — optionally give a room one or more time windows in which it's usable (no windows = always available, so existing conferences are unaffected). The scheduler only places a session in a room when the slot fits fully inside one of its windows; an availability edit that would strand an existing track / placement / booking is rejected.
+
 | Rooms | Add room |
 | --- | --- |
 | ![Rooms](screenshots/room-overview.webp) | ![Add room](screenshots/room-add-room.webp) |
@@ -260,11 +271,45 @@ Promote any identity to an *expert*; give them a room pool (or a fixed set of ro
 
 ### Notifications
 
-Per-identity in-app inbox with unread badges. Events covered: submission received / published / rejected, unconference + mixer placement, expert booking confirmed / cancelled. Each notification carries an optional CTA that deep-links to the relevant tab.
+Per-identity in-app inbox with unread badges. Events covered: submission received / published / rejected, unconference + mixer placement, expert booking confirmed / cancelled, schedule changes, and broadcast announcements. Each notification carries an optional CTA that deep-links to the relevant tab.
+
+### Live Board & Pitch Mode
+
+A public, token-gated projector board for the hallway screen: a read-only schedule grid that fills in live (no reload) and carries a join QR so anyone can pull the agenda onto their phone. The board is email-free by design — display names, titles, room names, and star / attendee counts only. It auto-fits any screen: rooms and time windows are paginated into pages that each fit the display and auto-rotate on a calm cadence, headlining the current day and a "Rooms X of Y" indicator, and a multi-day conference never mixes two days on one page. **Pitch Mode** lets a moderator spotlight the session currently being pitched — the wall highlights it and shows its star count climb in real time.
+
+Owners enable the board from Settings; the link can be rotated to revoke old copies.
+
+| Live Board | Pitch Mode spotlight |
+| --- | --- |
+| ![Live Board](screenshots/board-live.webp) | ![Pitch Mode spotlight](screenshots/board-pitch-spotlight.webp) |
+
+### Day-of live mode
+
+Everything to run the event on the day. The Me / *My schedule* tab gets a **Right Now** card that anchors each participant to their current session and room with up-next preview and one-tap switching. Moderators get a **broadcast** megaphone: one short announcement fans out as an in-app notification (and toast) to every participant instantly.
+
+| Right Now | Broadcast |
+| --- | --- |
+| ![Right Now](screenshots/right-now.webp) | ![Broadcast](screenshots/broadcast.webp) |
+
+### Wrap-up & takeaways
+
+Each session collects **takeaways** — short notes anyone who attended can add — which roll up into a personal post-event recap on the Me tab. Moderators get an **Event report** sheet that turns the conference into printable numbers: participants, seats filled, stars, top sessions, and room utilization.
+
+![Event report](screenshots/event-report.webp)
+
+### Onboarding & duplication
+
+First-time participants get a three-step **welcome rail** that orients them (star sessions, check your schedule, explore people). Owners can **duplicate** a past conference — rooms, slots, and settings are cloned and re-anchored to a new date; people, submissions, placements, and tokens are never copied.
+
+![Welcome rail](screenshots/welcome-rail.webp)
+
+### Web Push & offline (PWA)
+
+The app installs as a PWA and keeps showing your schedule when the venue wifi drops (read-only offline; no write queueing). It also supports opt-in OS-level **Web Push**, enabled per browser from the notification bell, so notifications reach participants even when the app is closed. Push augments — never replaces — the in-app bell and toast, is best-effort (a push failure never affects the in-app notification), and stays privacy-safe (names and titles only, never emails). It's fully inert until the instance configures VAPID keys (`VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` — see [Configuration](#configuration-environment-variables)).
 
 ### Settings (per-conference, owner-only)
 
-Timezone, design system, mixer-avoid-repeats default, submission placement cap default, participant-submissions toggle. Settings auto-save with inline checkmark feedback — no save buttons.
+Timezone, design system, mixer-avoid-repeats default, submission placement cap default, participant-submissions toggle, the public Live Board link (enable / rotate), and one-click conference duplication. Settings auto-save with inline checkmark feedback — no save buttons.
 
 ![Settings](screenshots/conference-settings.webp)
 
@@ -311,13 +356,20 @@ Server and client share valibot schemas in [`src/shared/schemas.ts`](src/shared/
 | Publish / reject submissions | | ✓ | ✓ |
 | Edit a session's *required room features* (after publish) | | ✓ | ✓ |
 | Pin a session to a room / allow overlapping placements / mark finished / set assignment priority | | ✓ | ✓ |
+| Set a session's speakers (custom / multiple presenters) | | ✓ | ✓ |
 | Add / delete agenda slots | | ✓ | ✓ |
-| Pick talks for static-slot tracks | | ✓ | ✓ |
+| Pick talks for static-slot tracks, refit planned-slot rooms | | ✓ | ✓ |
+| Set per-room availability windows (dedicated rooms via expert pools) | | ✓ | ✓ |
 | Run unconference / mixer assignment, resolve pre-assignment conflicts | | ✓ | ✓ |
+| Spotlight a session on the Live Board (Pitch Mode) | | ✓ | ✓ |
+| Send broadcast announcements | | ✓ | ✓ |
+| View / print the event report | | ✓ | ✓ |
 | Manage expert pools, promote experts, manage timeframes | | ✓ | ✓ |
 | Cancel any expert booking | | ✓ | ✓ |
+| Add session takeaways, view own post-event recap | ✓ | ✓ | ✓ |
 | Promote / demote moderator, remove a moderator | | | ✓ |
 | Change conference settings (design system, timezone, …) | | | ✓ |
+| Enable / rotate the public Live Board link, duplicate a conference | | | ✓ |
 | View own profile + published profiles in the directory | ✓ | ✓ | ✓ |
 | Edit own profile (bio, links, contacts, tags, avatar) | ✓ | ✓ | ✓ |
 | View unpublished profiles, see members' canonical emails | | ✓ | ✓ |
