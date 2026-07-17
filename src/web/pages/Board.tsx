@@ -1,6 +1,6 @@
 // Public Live Board (F1) — full-screen, no-login, projector-first.
 //
-// Reached at `/#/board/<slug>?t=<token>` (rendered OUTSIDE the conference shell
+// Reached at `/board/<slug>?t=<token>` (rendered OUTSIDE the conference shell
 // by App.tsx). It owns its own dark palette (see boardStyles) and never imports
 // the per-conference design system: the board is public and must look identical
 // regardless of app theme. Data comes from the plain Hono route via
@@ -27,12 +27,10 @@ type State =
   | { kind: "not_active" }
   | { kind: "error" };
 
-// Read `?t=<token>` out of the hash tail (same shape as Join.tsx / Login).
+// Read `?t=<token>` from the URL query. Routing is path-based, so the token is a
+// real search param (/board/<slug>?t=…), not part of a hash fragment.
 function readToken(): string | null {
-  const hash = window.location.hash;
-  const qIdx = hash.indexOf("?");
-  if (qIdx === -1) return null;
-  return new URLSearchParams(hash.slice(qIdx + 1)).get("t");
+  return new URLSearchParams(window.location.search).get("t");
 }
 
 // Map a fetch result onto board state. A transient error keeps the last good
@@ -136,7 +134,7 @@ function BoardView({
   now: number;
 }) {
   const timeFmt = useMemo(() => makeTimeFmt(payload.timezone), [payload.timezone]);
-  const joinUrl = `${window.location.origin}/#/conferences/${slug}`;
+  const joinUrl = `${window.location.origin}/conferences/${slug}/`;
   const connLabel = conn === "live" ? "Live" : conn === "reconnecting" ? "Reconnecting" : "Connecting";
   // The visible page's day / rooms / time, reported up from the grid so it can
   // headline the header — the wayfinding a projector audience actually needs.

@@ -16,16 +16,9 @@ const REPO_API = "https://api.github.com/repos/enyineer/simple-unconference";
 
 // Pull the optional post-login `?next=` target. Used to bounce conference
 // owners back to the conference they came from after they sign in with their
-// organizer account. Two places to look: the hash-router path covers directly
-// opened links like `/#/?next=…`, while wouter's hash navigate() hoists any
-// `?query` out of the fragment into the real URL search (`/?next=…#/`), so
-// in-app navigation from the conference login lands there instead.
-function readNext(path: string): string | null {
-  const qIdx = path.indexOf("?");
-  const fromHash = qIdx === -1
-    ? null
-    : new URLSearchParams(path.slice(qIdx + 1)).get("next");
-  return fromHash ?? new URLSearchParams(window.location.search).get("next");
+// organizer account. Path-based routing: `?next=` is a real search param.
+function readNext(): string | null {
+  return new URLSearchParams(window.location.search).get("next");
 }
 
 // Drop a consumed (or abandoned) `?next=` from the real URL search so it
@@ -353,11 +346,11 @@ function Features() {
 
 export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
   const toast = useToast();
-  const { path, navigate } = useRoute();
+  const { navigate } = useRoute();
   // Where to land after a successful sign-in (e.g. the conference an owner was
   // trying to open). Ignored for unverified accounts so the email-verification
   // wall still takes over at `/`.
-  const nextTarget = safeNext(readNext(path));
+  const nextTarget = safeNext(readNext());
   const [mode, setMode] = useState<"login" | "signup" | "forgot">("login");
   const [busy, setBusy] = useState(false);
   // Set after a forgot-password request so we can show the (deliberately

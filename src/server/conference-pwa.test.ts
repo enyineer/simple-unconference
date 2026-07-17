@@ -84,9 +84,11 @@ describe("conference PWA manifest + custom icon", () => {
     };
     expect(m.name).toBe("Manifest Fest");
     expect(m.short_name).toBe("Manifest Fest");
-    expect(m.start_url).toBe(`/#/conferences/${conf.slug}`);
-    expect(m.scope).toBe("/");
-    expect(m.id).toBe(`/?app=${conf.slug}`);
+    // Path-based, trailing-slash scope so each conference is a distinct
+    // installable app and one slug can't capture another it prefixes.
+    expect(m.start_url).toBe(`/conferences/${conf.slug}/`);
+    expect(m.scope).toBe(`/conferences/${conf.slug}/`);
+    expect(m.id).toBe(`/conferences/${conf.slug}/`);
     expect(m.display).toBe("standalone");
     expect(m.theme_color).toBe("#0a0d12");
     expect(m.background_color).toBe("#0a0d12");

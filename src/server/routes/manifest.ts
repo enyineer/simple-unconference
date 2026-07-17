@@ -67,13 +67,15 @@ export function manifestRoutes(prisma: PrismaClient) {
     const manifest = {
       name: conf.name,
       short_name: conf.name,
-      // Deep-link into the conference so launching the installed icon lands the
-      // user straight inside it (hash router).
-      start_url: `/#/conferences/${slug}`,
-      scope: "/",
-      // Stable, per-conference identity so browsers treat each conference as a
-      // separate installable app (multiple installs coexist).
-      id: `/?app=${slug}`,
+      // Launching the installed icon lands straight in the conference. The
+      // trailing slash is REQUIRED: `scope` is matched as a path prefix, so a
+      // slash-terminated scope (/conferences/foo/) is what stops one conference
+      // from capturing another whose slug it prefixes (e.g. `ai` vs `ai-2026`).
+      start_url: `/conferences/${slug}/`,
+      scope: `/conferences/${slug}/`,
+      // Per-conference identity within scope so browsers treat each conference
+      // as a separate installable app (multiple installs coexist).
+      id: `/conferences/${slug}/`,
       display: "standalone",
       theme_color: THEME_COLOR,
       background_color: THEME_COLOR,

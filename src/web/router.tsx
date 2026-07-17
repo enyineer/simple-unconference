@@ -1,20 +1,17 @@
 // Thin wrappers over wouter that keep the project's existing import surface
-// stable. URLs use the hash-fragment form (#/conferences/<slug>/...) — single
-// SPA bundle, no server-side routing config, works under any path / domain.
+// stable. URLs are real paths (/conferences/<slug>/...) — the single SPA bundle
+// is served for any path via the server's index.html fallback, and path-based
+// routing is what lets each conference install as its own PWA (see AppRouter).
 //
 // New code should prefer wouter's hooks directly; `useRouteMatch` here is an
-// alias kept around so existing callers don't churn. The component (<HashRouter>)
-// lives in ./HashRouter to keep this file hooks-only — that's what makes
+// alias kept around so existing callers don't churn. The component (<AppRouter>)
+// lives in ./AppRouter to keep this file hooks-only — that's what makes
 // react-refresh's only-export-components rule pass.
 
+import type { MouseEvent } from "react";
 import { useLocation } from "wouter";
-import { useHashLocation as wouterUseHashLocation } from "wouter/use-hash-location";
 
 export { useRoute as useRouteMatch } from "wouter";
-
-// Use this as the outermost <Router hook={useHashLocation}> in App.tsx so
-// every hook reads from the URL hash, not the pathname.
-export const useHashLocation = wouterUseHashLocation;
 
 // Compatibility shim for the project's pre-existing `useRoute()` shape:
 // returns `{ path, navigate }`. New code should prefer `useLocation()` /
@@ -24,14 +21,39 @@ export function useRoute(): { path: string; navigate: (to: string) => void } {
   return { path, navigate: (to: string) => setLocation(to.startsWith("/") ? to : "/" + to) };
 }
 
+// Props for an internal SPA link rendered as a plain <a> (or the design-system
+// <Link>). Under PATH routing a bare same-origin href would trigger a full page
+// reload; this keeps a real `href` (so open-in-new-tab / middle-click / a11y
+// work) but intercepts plain left-clicks and routes them through wouter for
+// client-side navigation. Use for any in-app anchor that used to point at `#/…`.
+export function useNavLink(): (href: string) => {
+  href: string;
+  onClick: (e: MouseEvent) => void;
+} {
+  const [, setLocation] = useLocation();
+  return (href: string) => ({
+    href,
+    onClick: (e: MouseEvent) => {
+      // Let the browser handle modified / non-primary clicks (new tab, etc.).
+      if (
+        e.defaultPrevented || e.button !== 0
+        || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey
+      ) return;
+      e.preventDefault();
+      setLocation(href);
+    },
+  });
+}
+
 // Compatibility shim for the project's pre-existing pure `matchRoute(pattern, path)`
 // helper. Pure function — no router context required, safe to call outside
 // React. Kept verbatim because callers (App.tsx) still use it for legacy
 // route resolution; new routing should use wouter's <Route> / useRouteMatch.
 export function matchRoute(pattern: string, path: string): Record<string, string> | null {
-  // wouter's useHashLocation returns the full hash payload, including any
-  // `?query` / `#fragment` tail (e.g. `/c/foo/join?t=...`). Strip those before
-  // segment matching so the last path segment doesn't carry the query string.
+  // `path` is the pathname from wouter's location. Defensively strip any
+  // `?query` / `#fragment` tail before segment matching so the last path segment
+  // never carries a query string. `filter(Boolean)` below also drops the empty
+  // trailing segment, so a canonical trailing slash (/conferences/foo/) matches.
   const queryIdx = path.search(/[?#]/);
   const cleanPath = queryIdx === -1 ? path : path.slice(0, queryIdx);
   const pParts = pattern.split("/").filter(Boolean);

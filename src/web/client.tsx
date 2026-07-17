@@ -1,15 +1,23 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
-import { HashRouter } from "./HashRouter";
+import { AppRouter } from "./AppRouter";
+import { legacyHashToPath } from "./pwa/legacyRoute";
+
+// Back-compat: the app moved from hash routing to real paths. Migrate any
+// incoming legacy `/#/…` URL (old bookmarks, already-sent verify/reset emails,
+// existing push CTAs, shared board links) to its path form BEFORE React mounts,
+// so wouter reads the right route on first render. No-op for path URLs.
+const migrated = legacyHashToPath(window.location.hash, window.location.search);
+if (migrated) history.replaceState(null, "", migrated);
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root element not found");
 createRoot(root).render(
   <StrictMode>
-    <HashRouter>
+    <AppRouter>
       <App />
-    </HashRouter>
+    </AppRouter>
   </StrictMode>,
 );
 

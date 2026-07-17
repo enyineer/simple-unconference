@@ -97,22 +97,22 @@ export async function sendWebPush(
   }
 }
 
-// Translate a notification's `ctaHref` into a hash deep-link the service worker
+// Translate a notification's `ctaHref` into a path deep-link the service worker
 // can open. Mirrors NotificationBell's click routing:
-//   - "tab:<key>"  → /#/conferences/<slug>/<key>   (the tab sub-route)
-//   - "/<path>"    → /#<path>                       (a full SPA path)
-//   - null / other → /#/conferences/<slug>          (the conference home)
+//   - "tab:<key>"  → /conferences/<slug>/<key>   (the tab sub-route)
+//   - "/<path>"    → <path>                       (a full SPA path)
+//   - null / other → /conferences/<slug>/         (the conference home)
 export function deepLinkForNotification(
   slug: string,
   ctaHref: string | null | undefined,
 ): string {
   if (ctaHref && ctaHref.startsWith("tab:")) {
-    return `/#/conferences/${slug}/${ctaHref.slice("tab:".length)}`;
+    return `/conferences/${slug}/${ctaHref.slice("tab:".length)}`;
   }
   if (ctaHref && ctaHref.startsWith("/")) {
-    return `/#${ctaHref}`;
+    return ctaHref;
   }
-  return `/#/conferences/${slug}`;
+  return `/conferences/${slug}/`;
 }
 
 // Injectable send fn — real one by default; tests pass a fake so the stale-row

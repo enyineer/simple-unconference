@@ -14,20 +14,16 @@ import { Tip } from "../ui/Tip";
 import { useNow } from "../../useNow";
 import { usePaginatedList } from "../usePaginatedList";
 import { ChatReportsSection } from "./people/ChatReportsSection";
+import { absoluteUrl } from "./settings/helpers";
+import { useNavLink } from "../../router";
 
 type PendingInvite = InviteOut;
-
-function absoluteUrl(relative: string): string {
-  // The router is hash-based, so paths live after the `#`. Combine with
-  // origin so moderators can paste the URL into email/Slack and the
-  // recipient lands on the right page.
-  return `${window.location.origin}/#${relative}`;
-}
 
 export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
   const isMod = role === "owner" || role === "moderator";
   const isOwner = role === "owner";
   const toast = useToast();
+  const navLink = useNavLink();
 
   const people = usePaginatedList<ParticipantOut>(
     (input) => api.conferences.listParticipants({ slug, ...input }),
@@ -148,7 +144,7 @@ export function PeopleTab({ slug, role }: { slug: string; role: Role }) {
           {isOwner ? (
             <>
               Don&apos;t want to invite everyone manually? Enable the join link in{" "}
-              <Link href={`#/conferences/${encodeURIComponent(slug)}/settings`}>Settings</Link>
+              <Link {...navLink(`/conferences/${encodeURIComponent(slug)}/settings`)}>Settings</Link>
               {" "}- a shared URL anyone can use to sign up themselves.
             </>
           ) : (

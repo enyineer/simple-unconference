@@ -6,8 +6,11 @@ export function useMemoTimezones() {
   return useMemo(() => listTimeZones().map((tz) => ({ value: tz, label: tz })), []);
 }
 
+// Turn an app-relative path (e.g. "/c/foo/join?t=…", "/board/foo?t=…") into an
+// absolute URL a moderator can paste into email/Slack. Routing is path-based, so
+// the relative path is appended to the origin directly (no `#`).
 export function absoluteUrl(relative: string): string {
-  return `${window.location.origin}/#${relative}`;
+  return `${window.location.origin}${relative}`;
 }
 
 export function toDatetimeLocal(ms: number): string {
