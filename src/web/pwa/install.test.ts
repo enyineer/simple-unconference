@@ -10,6 +10,7 @@ import {
   isIosSafari,
   manifestHref,
   shouldShowNudge,
+  shouldShowPushNudge,
 } from "./install";
 
 // Representative real UA strings. Kept literal so a regression in isIosSafari
@@ -163,6 +164,31 @@ describe("shouldShowNudge", () => {
   });
   test("firefox-hint is NOT nudged (header button only)", () => {
     expect(shouldShowNudge({ affordance: "firefox-hint", dismissed: false })).toBe(false);
+  });
+});
+
+describe("shouldShowPushNudge", () => {
+  const base = {
+    available: true, subscribed: false, denied: false,
+    dismissed: false, installNudgeShowing: false,
+  };
+  test("shown when push is available, not subscribed/denied/dismissed, no install nudge", () => {
+    expect(shouldShowPushNudge(base)).toBe(true);
+  });
+  test("hidden when push isn't available", () => {
+    expect(shouldShowPushNudge({ ...base, available: false })).toBe(false);
+  });
+  test("hidden once already subscribed", () => {
+    expect(shouldShowPushNudge({ ...base, subscribed: true })).toBe(false);
+  });
+  test("hidden when the browser has denied notifications", () => {
+    expect(shouldShowPushNudge({ ...base, denied: true })).toBe(false);
+  });
+  test("hidden when dismissed", () => {
+    expect(shouldShowPushNudge({ ...base, dismissed: true })).toBe(false);
+  });
+  test("defers to the install nudge when it's showing", () => {
+    expect(shouldShowPushNudge({ ...base, installNudgeShowing: true })).toBe(false);
   });
 });
 

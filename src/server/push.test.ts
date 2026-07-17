@@ -76,6 +76,26 @@ describe("push.subscribe / unsubscribe", () => {
     await b.client.rpc.push.subscribe({ slug: conf.slug, endpoint, keys: { p256dh: "p", auth: "y" } });
     expect(await ctx.prisma.pushSubscription.count({ where: { endpoint } })).toBe(2);
   });
+
+  test("status is per identity: one identity's registration doesn't mark another's", async () => {
+    const { owner, conf } = await makeOwnerConf("push-status");
+    const a = await inviteAndClaim(ctx.app, owner, conf.slug, "a@example.com", "secret123", "A");
+    const b = await inviteAndClaim(ctx.app, owner, conf.slug, "b@example.com", "secret123", "B");
+    const endpoint = "https://push.example.com/device-1";
+
+    // Before anyone subscribes: not subscribed.
+    expect((await a.client.rpc.push.status({ slug: conf.slug, endpoint })).subscribed).toBe(false);
+
+    await a.client.rpc.push.subscribe({ slug: conf.slug, endpoint, keys: { p256dh: "p", auth: "x" } });
+
+    // A is on for this endpoint; a different endpoint is still off.
+    expect((await a.client.rpc.push.status({ slug: conf.slug, endpoint })).subscribed).toBe(true);
+    expect((await a.client.rpc.push.status({ slug: conf.slug, endpoint: "https://push.example.com/other" })).subscribed).toBe(false);
+
+    // B (a different identity) shares the SAME browser endpoint but is NOT
+    // registered — the crux of the per-conference model (the bug this guards).
+    expect((await b.client.rpc.push.status({ slug: conf.slug, endpoint })).subscribed).toBe(false);
+  });
 });
 
 describe("sendPushForNotification (best-effort + stale cleanup)", () => {

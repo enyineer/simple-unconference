@@ -137,6 +137,26 @@ export function shouldShowNudge(x: {
   return x.affordance !== "none" && x.affordance !== "firefox-hint" && !x.dismissed;
 }
 
+/**
+ * Whether the proactive "turn on notifications" nudge should show. Web Push has
+ * a hidden opt-in in the bell that users miss, so we surface a dismissible card
+ * — but only when push can actually be enabled (supported + configured + not
+ * already subscribed + not browser-denied), the user hasn't dismissed it, and
+ * the install nudge isn't already competing for the same spot (install first —
+ * an installed app gives the best push experience, and on iOS it's required).
+ */
+export function shouldShowPushNudge(x: {
+  available: boolean;
+  subscribed: boolean;
+  denied: boolean;
+  dismissed: boolean;
+  installNudgeShowing: boolean;
+}): boolean {
+  return (
+    x.available && !x.subscribed && !x.denied && !x.dismissed && !x.installNudgeShowing
+  );
+}
+
 // --- URL builders ---------------------------------------------------------
 // These MUST match the server routes exactly (routes/manifest.ts +
 // routes/conference-icons.ts). Duplicating them here (rather than importing

@@ -105,6 +105,7 @@ import {
   type Ok,
   type ParticipantOut,
   type ProfileOut,
+  type PushStatusOut,
   type ProfileSummaryOut,
   type PublicConfigOut,
   type RefitRoomsResult,
@@ -527,6 +528,12 @@ export const contract = {
     unsubscribe: oc
       .input(v.object({ slug: Slug, ...PushUnsubscribeSchema.entries }))
       .output(type<Ok>()),
+    // Whether THIS conference's identity has the given endpoint registered.
+    // Lets the client show accurate per-conference on/off state even though the
+    // browser subscription itself is shared across the origin.
+    status: oc
+      .input(v.object({ slug: Slug, ...PushUnsubscribeSchema.entries }))
+      .output(type<PushStatusOut>()),
   },
   profiles: {
     // Fetch a single profile. Returns NOT_FOUND for non-mod viewers when the

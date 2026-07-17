@@ -17,6 +17,12 @@ export const InConf = v.object({ slug: Slug });
 
 export type Ok = { ok: true };
 
+// Whether THIS conference's identity has the given browser push endpoint
+// registered on the server. Web Push permission + the browser subscription are
+// per-origin (shared across a user's conferences), but delivery is per identity,
+// so the client asks per conference to render an accurate on/off state.
+export type PushStatusOut = { subscribed: boolean };
+
 /**
  * Generic paginated list envelope returned by every server-paginated
  * `list` procedure. `next_cursor` is an opaque token to pass back as
