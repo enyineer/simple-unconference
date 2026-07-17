@@ -250,12 +250,28 @@ export function App() {
   // Per-conference identity / design system. `fetchedX` is what the most
   // recent fetch (or event handler) wrote; `loadedXSlug` is which slug that
   // value belongs to. The derived `confMe` / `confDs` collapse back to their
-  // "no conference active" defaults whenever those don't match, so we don't
-  // need a synchronous reset-in-effect on confSlug change.
+  // "no conference active" defaults whenever those don't match.
   const [fetchedConfMe, setFetchedConfMe] = useState<ConfMe | null | undefined>(undefined);
   const [loadedConfMeSlug, setLoadedConfMeSlug] = useState<string | undefined>(undefined);
   const [fetchedConfDs, setFetchedConfDs] = useState<string | null>(null);
   const [loadedConfDsSlug, setLoadedConfDsSlug] = useState<string | undefined>(undefined);
+
+  // Drop the cached identity result the moment the active conference changes,
+  // so a stale value — especially a `null` cached from an earlier
+  // *unauthenticated* visit to the same slug (deep link → bounced to the
+  // conference login → sign in → land back on this slug) — can never be read
+  // as authoritative before the fetch below settles. Without this, that stale
+  // `null` makes `confMe` resolve to `null` synchronously and fires an instant,
+  // incorrect redirect back to login that ALSO cancels the in-flight refetch,
+  // stranding the user in a loop only a hard reload escapes. This render-time
+  // reset (React's "adjust state while rendering" pattern) is preferred over a
+  // setState-in-effect, which would cascade an extra render.
+  const [confMeSlugTracked, setConfMeSlugTracked] = useState<string | undefined>(confSlug);
+  if (confSlug !== confMeSlugTracked) {
+    setConfMeSlugTracked(confSlug);
+    setFetchedConfMe(undefined);
+    setLoadedConfMeSlug(undefined);
+  }
   // Owner-side color mode lives in memory only (Users have no persisted
   // colorMode in the new identity model). Each conference identity persists
   // its own preference server-side.
