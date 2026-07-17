@@ -137,6 +137,39 @@ export function shouldShowNudge(x: {
   return x.affordance !== "none" && x.affordance !== "firefox-hint" && !x.dismissed;
 }
 
+/**
+ * Whether the proactive "turn on notifications" nudge should show. Web Push has
+ * a hidden opt-in in the bell that users miss, so we surface a dismissible card
+ * — but only when push can actually be enabled (supported + configured + not
+ * already subscribed + not browser-denied), the user hasn't dismissed it, and
+ * the install nudge isn't already competing for the same spot (install first —
+ * an installed app gives the best push experience, and on iOS it's required).
+ */
+export function shouldShowPushNudge(x: {
+  available: boolean;
+  subscribed: boolean;
+  denied: boolean;
+  dismissed: boolean;
+  installNudgeShowing: boolean;
+}): boolean {
+  return (
+    x.available && !x.subscribed && !x.denied && !x.dismissed && !x.installNudgeShowing
+  );
+}
+
+// --- nudge dismissal keys -------------------------------------------------
+// Per-(conference, device) localStorage keys for the one-time nudges. Kept here
+// (a non-component module) so InstallNudge and PushNudge share the exact same
+// key — PushNudge reads the install key reactively to defer to that nudge.
+
+export function installNudgeStorageKey(slug: string): string {
+  return "install-nudge:" + slug;
+}
+
+export function pushNudgeStorageKey(slug: string): string {
+  return "push-nudge:" + slug;
+}
+
 // --- URL builders ---------------------------------------------------------
 // These MUST match the server routes exactly (routes/manifest.ts +
 // routes/conference-icons.ts). Duplicating them here (rather than importing

@@ -19,6 +19,7 @@ import { NotificationBell } from "../components/NotificationBell";
 import { BroadcastButton } from "../components/BroadcastButton";
 import { InstallButton } from "../components/InstallButton";
 import { InstallNudge } from "../components/InstallNudge";
+import { PushNudge } from "../components/PushNudge";
 import { AgendaTab } from "../conference/tabs/AgendaTab";
 import { DirectoryTab } from "../conference/tabs/DirectoryTab";
 import { ExpertsTab } from "../conference/tabs/ExpertsTab";
@@ -157,6 +158,7 @@ export function ConferencePage({
       />
 
       <InstallNudge slug={slug} conferenceName={conf.name} iconHash={conf.icon_hash} />
+      <PushNudge slug={slug} conferenceName={conf.name} />
 
       <div style={{ marginTop: 20 }}>
         {tab === "people"   && <PeopleTab slug={slug} role={conf.my_role} />}

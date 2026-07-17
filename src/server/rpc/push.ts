@@ -40,4 +40,16 @@ export const pushRouter = {
     });
     return { ok: true as const };
   }),
+
+  status: requireConf("participant").push.status.handler(async ({ input, context }) => {
+    const identityId = actorIdentityId(context);
+    // The browser subscription (endpoint) is shared across a user's conferences,
+    // but delivery is per identity — so "on for this conference" means THIS
+    // identity has a row for this exact endpoint.
+    const row = await context.prisma.pushSubscription.findUnique({
+      where: { identityId_endpoint: { identityId, endpoint: input.endpoint } },
+      select: { id: true },
+    });
+    return { subscribed: row !== null };
+  }),
 };
