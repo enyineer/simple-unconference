@@ -3,7 +3,9 @@ import {
   appleTouchIconHref,
   canManualInstall,
   confIconHref,
+  desktopInstallKind,
   installAffordance,
+  isFirefoxDesktop,
   isIosSafari,
   manifestHref,
   shouldShowNudge,
@@ -28,6 +30,8 @@ const UA = {
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
   desktopFirefox:
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:127.0) Gecko/20100101 Firefox/127.0",
+  androidFirefox:
+    "Mozilla/5.0 (Android 14; Mobile; rv:127.0) Gecko/127.0 Firefox/127.0",
   desktopEdge:
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0",
 } as const;
@@ -74,24 +78,48 @@ describe("canManualInstall", () => {
   });
 });
 
-describe("installAffordance", () => {
-  test("standalone always wins → none", () => {
-    expect(installAffordance({ standalone: true, hasInstallPrompt: true, isIos: true, canManualInstall: true })).toBe("none");
-    expect(installAffordance({ standalone: true, hasInstallPrompt: false, isIos: false, canManualInstall: true })).toBe("none");
+describe("desktopInstallKind", () => {
+  test("chromium for Chrome / Edge", () => {
+    expect(desktopInstallKind(UA.desktopChrome)).toBe("chromium");
+    expect(desktopInstallKind(UA.desktopEdge)).toBe("chromium");
   });
-  test("captured prompt (not standalone) → prompt", () => {
-    expect(installAffordance({ standalone: false, hasInstallPrompt: true, isIos: false, canManualInstall: false })).toBe("prompt");
-    // Prompt beats every fallback when both are somehow true.
-    expect(installAffordance({ standalone: false, hasInstallPrompt: true, isIos: true, canManualInstall: true })).toBe("prompt");
+  test("safari for desktop Safari", () => {
+    expect(desktopInstallKind(UA.desktopSafari)).toBe("safari");
+  });
+});
+
+describe("isFirefoxDesktop", () => {
+  test("true for desktop Firefox", () => {
+    expect(isFirefoxDesktop(UA.desktopFirefox)).toBe(true);
+  });
+  test("false for non-Firefox and for mobile Firefox", () => {
+    expect(isFirefoxDesktop(UA.desktopChrome)).toBe(false);
+    expect(isFirefoxDesktop(UA.firefoxIos)).toBe(false);
+    expect(isFirefoxDesktop(UA.androidFirefox)).toBe(false);
+  });
+});
+
+describe("installAffordance", () => {
+  const base = { standalone: false, hasInstallPrompt: false, isIos: false, canManualInstall: false, isFirefoxDesktop: false };
+  test("standalone always wins → none", () => {
+    expect(installAffordance({ ...base, standalone: true, hasInstallPrompt: true, isIos: true, canManualInstall: true })).toBe("none");
+    expect(installAffordance({ ...base, standalone: true })).toBe("none");
+  });
+  test("captured prompt → prompt (beats every fallback)", () => {
+    expect(installAffordance({ ...base, hasInstallPrompt: true })).toBe("prompt");
+    expect(installAffordance({ ...base, hasInstallPrompt: true, isIos: true, canManualInstall: true, isFirefoxDesktop: true })).toBe("prompt");
   });
   test("iOS Safari, no prompt → ios-hint (beats manual)", () => {
-    expect(installAffordance({ standalone: false, hasInstallPrompt: false, isIos: true, canManualInstall: false })).toBe("ios-hint");
+    expect(installAffordance({ ...base, isIos: true })).toBe("ios-hint");
   });
   test("desktop that can install but has no prompt → manual", () => {
-    expect(installAffordance({ standalone: false, hasInstallPrompt: false, isIos: false, canManualInstall: true })).toBe("manual");
+    expect(installAffordance({ ...base, canManualInstall: true })).toBe("manual");
   });
-  test("nothing available (e.g. desktop Firefox) → none", () => {
-    expect(installAffordance({ standalone: false, hasInstallPrompt: false, isIos: false, canManualInstall: false })).toBe("none");
+  test("desktop Firefox (can't install) → firefox-hint", () => {
+    expect(installAffordance({ ...base, isFirefoxDesktop: true })).toBe("firefox-hint");
+  });
+  test("nothing available → none", () => {
+    expect(installAffordance(base)).toBe("none");
   });
 });
 
@@ -104,9 +132,15 @@ describe("shouldShowNudge", () => {
     expect(shouldShowNudge({ affordance: "prompt", dismissed: true })).toBe(false);
     expect(shouldShowNudge({ affordance: "ios-hint", dismissed: true })).toBe(false);
   });
+  test("manual affordance is nudged too", () => {
+    expect(shouldShowNudge({ affordance: "manual", dismissed: false })).toBe(true);
+  });
   test("hidden when there's no affordance, dismissed or not", () => {
     expect(shouldShowNudge({ affordance: "none", dismissed: false })).toBe(false);
     expect(shouldShowNudge({ affordance: "none", dismissed: true })).toBe(false);
+  });
+  test("firefox-hint is NOT nudged (header button only)", () => {
+    expect(shouldShowNudge({ affordance: "firefox-hint", dismissed: false })).toBe(false);
   });
 });
 

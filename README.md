@@ -1,6 +1,6 @@
 # Simple Unconference Web App - Unconf
 
-A self-hostable platform for running unconferences end-to-end: people, rooms, sessions, custom speakers, scheduling, mixers, expert bookings, a public live projector board, day-of broadcasts, web-push + offline PWA, and notifications — all in one app.
+A self-hostable platform for running unconferences end-to-end: people, rooms, sessions, custom speakers, scheduling, mixers, expert bookings, a public live projector board, day-of broadcasts, installable per-conference apps (each with its own icon), web-push + offline, and notifications — all in one app.
 
 > **Public instance:** A free, public, hosted instance lives at **<https://unconference.enking.dev>** — feel free to try it before deciding to self-host. The instance runs the same chart this repo ships, with [Public-instance hardening](#public-instance-hardening) enabled (per-account quotas, login lockout, Cloudflare Turnstile on signup/login/join). It targets events up to ~2000 attendees; for larger events please self-host.
 
@@ -291,6 +291,12 @@ Everything to run the event on the day. The Me / *My schedule* tab gets a **Righ
 | --- | --- |
 | ![Right Now](screenshots/right-now.webp) | ![Broadcast](screenshots/broadcast.webp) |
 
+### Install a conference as an app
+
+Every conference is its own installable app — not the whole site. From inside a conference, an **Install** button in the header (plus a one-time nudge) adds it to your home screen or dock, and the installed icon opens **straight into that conference**. Owners can upload a custom **app icon** (Settings → App icon) so each event is recognizable at a glance, and install two conferences and you get two separate app icons. It fires the browser's native install prompt where available (Android, desktop Chrome/Edge) and otherwise walks you through the browser's own step (Add to Home Screen on iOS Safari, Add to Dock on desktop Safari, the address-bar install icon on Chromium). The landing page and dashboard are deliberately **not** installable — you install the event you're attending, not the app itself. Notifications are per conference, so an installed conference only pings you about that conference.
+
+![Install a conference as an app](screenshots/install-conference.webp)
+
 ### Wrap-up & takeaways
 
 Each session collects **takeaways** — short notes anyone who attended can add — which roll up into a personal post-event recap on the Me tab. Moderators get an **Event report** sheet that turns the conference into printable numbers: participants, seats filled, stars, top sessions, and room utilization.
@@ -303,9 +309,9 @@ First-time participants get a three-step **welcome rail** that orients them (sta
 
 ![Welcome rail](screenshots/welcome-rail.webp)
 
-### Web Push & offline (PWA)
+### Web Push & offline
 
-Each **conference** installs as its own app (not the landing page): a header "Install" button offers the native prompt on Android/desktop and an Add-to-Home-Screen hint on iOS, the installed icon deep-links straight into that conference, and owners can upload a custom home-screen icon (Settings → App icon). A service worker keeps showing your schedule when the venue wifi drops (read-only offline; no write queueing). It also supports opt-in OS-level **Web Push**, enabled per browser from the notification bell, so notifications reach participants even when the app is closed. Push augments — never replaces — the in-app bell and toast, is best-effort (a push failure never affects the in-app notification), and stays privacy-safe (names and titles only, never emails). It's fully inert until the instance configures VAPID keys (`VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` — see [Configuration](#configuration-environment-variables)).
+A service worker keeps showing your schedule when the venue wifi drops (read-only offline; no write queueing) — it works whether or not you [installed the conference as an app](#install-a-conference-as-an-app). The app also supports opt-in OS-level **Web Push**, enabled per browser from the notification bell, so notifications reach participants even when the app is closed. Push augments — never replaces — the in-app bell and toast, is best-effort (a push failure never affects the in-app notification), and stays privacy-safe (names and titles only, never emails). It's fully inert until the instance configures VAPID keys (`VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` — see [Configuration](#configuration-environment-variables)).
 
 ### Settings (per-conference, owner-only)
 

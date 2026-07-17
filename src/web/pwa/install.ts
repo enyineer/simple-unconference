@@ -7,13 +7,21 @@
 // only wire browser events and render; they carry no branching worth testing.
 
 /** The states the install affordance can be in.
- *  - "prompt":   we captured `beforeinstallprompt` -> fire the native dialog.
- *  - "ios-hint": iOS Safari -> show the Add-to-Home-Screen steps.
- *  - "manual":   a desktop browser that CAN install but didn't give us a
- *                prompt (Chrome fires `beforeinstallprompt` only heuristically)
- *                -> point the user at the browser's own install control.
- *  - "none":     already installed, or a browser with no web-app install. */
-export type InstallAffordance = "prompt" | "ios-hint" | "manual" | "none";
+ *  - "prompt":       we captured `beforeinstallprompt` -> fire the native dialog.
+ *  - "ios-hint":     iOS Safari -> show the Add-to-Home-Screen steps.
+ *  - "manual":       a desktop browser that CAN install but didn't give us a
+ *                    prompt (Chrome fires `beforeinstallprompt` only
+ *                    heuristically) -> point at the browser's install control.
+ *  - "firefox-hint": desktop Firefox, which can't install web apps at all ->
+ *                    explain and point at Chrome/Edge/Safari. (Header button
+ *                    only, not the proactive nudge — see shouldShowNudge.)
+ *  - "none":         already installed, or a browser with no path we can help. */
+export type InstallAffordance =
+  | "prompt"
+  | "ios-hint"
+  | "manual"
+  | "firefox-hint"
+  | "none";
 
 /**
  * Desktop browsers that can install/add a web app but do NOT reliably expose
@@ -28,6 +36,26 @@ export function canManualInstall(ua: string): boolean {
   const chromium = /Chrome|Chromium|Edg|OPR/.test(ua);
   const desktopSafari = /Safari/.test(ua) && /Macintosh/.test(ua) && !/Chrome/.test(ua);
   return chromium || desktopSafari;
+}
+
+/**
+ * Which desktop browser's install steps to show for the "manual" affordance.
+ * Only meaningful when `canManualInstall(ua)` is true. Lets the hint show ONE
+ * browser's exact steps (Chromium's address-bar / menu install, or Safari's
+ * Add to Dock) instead of a confusing list of every browser.
+ */
+export function desktopInstallKind(ua: string): "chromium" | "safari" {
+  return /Chrome|Chromium|Edg|OPR/.test(ua) ? "chromium" : "safari";
+}
+
+/**
+ * Desktop Firefox — which can't install web apps at all. We can't help it
+ * install, but we can explain (and point at a browser that can) instead of
+ * showing nothing. Mobile Firefox is excluded (Android's menu can add to home
+ * screen; not worth a separate flow here).
+ */
+export function isFirefoxDesktop(ua: string): boolean {
+  return /Firefox/.test(ua) && !/Mobile|Android|iPhone|iPad|iPod/.test(ua);
 }
 
 /**
@@ -66,23 +94,28 @@ export function installAffordance(x: {
   hasInstallPrompt: boolean;
   isIos: boolean;
   canManualInstall: boolean;
+  isFirefoxDesktop: boolean;
 }): InstallAffordance {
   if (x.standalone) return "none";
   if (x.hasInstallPrompt) return "prompt";
   if (x.isIos) return "ios-hint";
   if (x.canManualInstall) return "manual";
+  if (x.isFirefoxDesktop) return "firefox-hint";
   return "none";
 }
 
 /**
- * Whether the one-time nudge should show: only when there's actually an
- * affordance to act on AND the user hasn't dismissed it on this device.
+ * Whether the one-time nudge should show: only when there's an affordance that
+ * actually leads to an install AND the user hasn't dismissed it on this device.
+ * "firefox-hint" is excluded — we won't prominently nudge a Firefox user toward
+ * something their browser can't do (the header button still offers the
+ * explanation on demand).
  */
 export function shouldShowNudge(x: {
   affordance: InstallAffordance;
   dismissed: boolean;
 }): boolean {
-  return x.affordance !== "none" && !x.dismissed;
+  return x.affordance !== "none" && x.affordance !== "firefox-hint" && !x.dismissed;
 }
 
 // --- URL builders ---------------------------------------------------------

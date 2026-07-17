@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   canManualInstall,
   installAffordance,
+  isFirefoxDesktop,
   isIosSafari,
   type InstallAffordance,
 } from "../pwa/install";
@@ -92,6 +93,7 @@ export function useInstallPrompt(): UseInstallPrompt {
     hasInstallPrompt: deferred !== null,
     isIos,
     canManualInstall: canManualInstall(ua),
+    isFirefoxDesktop: isFirefoxDesktop(ua),
   });
 
   return { affordance, promptInstall, isIos };
