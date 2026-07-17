@@ -174,13 +174,22 @@ turnstile:
 
 # Web Push (OS-level notifications). Set BOTH keys to enable the opt-in in the
 # notification bell; leave empty for a no-op. Generate a keypair with
-# `bun run scripts/gen-vapid.ts`. The public key is sent to clients (safe); the
-# private key is a secret - prefer privateKeySecret over the plain privateKey.
+# `bun run scripts/gen-vapid.ts`, then keep it STABLE - rotating the pair
+# invalidates every existing browser subscription. The public key is sent to
+# clients (safe to expose); the private key is a secret.
+#
+# Two ways to supply the private key:
+#   1. privateKey - set it here (e.g. `--set-file webPush.privateKey=priv.txt`).
+#      The chart stores it in a managed Secret (<release>-webpush) and the
+#      Deployment references it via secretKeyRef, so it's never a plaintext env
+#      on the pod spec.
+#   2. privateKeySecret - point at a Secret you manage yourself. When its
+#      `name` is set it takes precedence and the chart-managed Secret is skipped.
 webPush:
   publicKey: ""   # VAPID_PUBLIC_KEY (sent to clients; safe to expose)
-  privateKey: ""  # VAPID_PRIVATE_KEY (plain). Prefer privateKeySecret below.
+  privateKey: ""  # VAPID_PRIVATE_KEY (stored in a chart-managed Secret)
   privateKeySecret:
-    name: ""      # Secret name (takes precedence over privateKey when set)
+    name: ""      # Existing Secret name (takes precedence over privateKey)
     key: ""       # Key within that Secret
   # VAPID_SUBJECT: mailto: address or https: URL. Blank defaults to appUrl (when
   # https) or a mailto placeholder.

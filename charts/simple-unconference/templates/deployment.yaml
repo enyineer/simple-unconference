@@ -189,7 +189,10 @@ spec:
                   key: {{ .Values.webPush.privateKeySecret.key | quote }}
             {{- else if .Values.webPush.privateKey }}
             - name: VAPID_PRIVATE_KEY
-              value: {{ .Values.webPush.privateKey | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "simple-unconference.webPushSecretName" . }}
+                  key: VAPID_PRIVATE_KEY
             {{- end }}
             {{- if .Values.webPush.subject }}
             - name: VAPID_SUBJECT

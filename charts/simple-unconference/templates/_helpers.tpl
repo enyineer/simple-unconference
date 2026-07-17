@@ -52,6 +52,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
+{{/*
+Name of the chart-managed Secret holding the Web Push VAPID private key.
+Rendered only when `webPush.privateKey` is set (see templates/secret-webpush.yaml)
+and referenced by the deployment. Separate from the DB secret so it's
+independent of the database backend / existingSecret logic.
+*/}}
+{{- define "simple-unconference.webPushSecretName" -}}
+{{- printf "%s-webpush" (include "simple-unconference.fullname" .) -}}
+{{- end -}}
+
 {{/* Secret name holding DATABASE_URL. */}}
 {{- define "simple-unconference.secretName" -}}
 {{- if and (eq .Values.database.type "postgres") .Values.database.postgres.existingSecret -}}
