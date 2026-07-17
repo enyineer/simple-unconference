@@ -17,6 +17,8 @@ import { TabBar } from "../conference/ui/TabBar";
 import { AccountMenu } from "../components/AccountMenu";
 import { NotificationBell } from "../components/NotificationBell";
 import { BroadcastButton } from "../components/BroadcastButton";
+import { InstallButton } from "../components/InstallButton";
+import { InstallNudge } from "../components/InstallNudge";
 import { AgendaTab } from "../conference/tabs/AgendaTab";
 import { DirectoryTab } from "../conference/tabs/DirectoryTab";
 import { ExpertsTab } from "../conference/tabs/ExpertsTab";
@@ -154,6 +156,8 @@ export function ConferencePage({
         slug={slug}
       />
 
+      <InstallNudge slug={slug} conferenceName={conf.name} iconHash={conf.icon_hash} />
+
       <div style={{ marginTop: 20 }}>
         {tab === "people"   && <PeopleTab slug={slug} role={conf.my_role} />}
         {tab === "rooms"    && <RoomsTab slug={slug} isMod={isMod} timeZone={conf.timezone} />}
@@ -205,6 +209,7 @@ export function ConferencePage({
             currentMixerAvoidRepeats={conf.mixer_avoid_repeats_default}
             currentSubmissionMaxPlacements={conf.submission_max_placements_default}
             currentParticipantSubmissionsEnabled={conf.participant_submissions_enabled}
+            currentIconHash={conf.icon_hash}
             usage={conf.usage}
             onNameChange={(name) => setFetchedConf({ ...conf, name })}
             onDsChange={(id) => {
@@ -221,6 +226,7 @@ export function ConferencePage({
             onParticipantSubmissionsEnabledChange={(v) =>
               setFetchedConf({ ...conf, participant_submissions_enabled: v })
             }
+            onIconHashChange={(v) => setFetchedConf({ ...conf, icon_hash: v })}
             onDeleted={onBack}
             onTransferred={onBack}
           />
@@ -304,6 +310,7 @@ function ConferenceHeader({
           />
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
             {isMod && <BroadcastButton slug={slug} />}
+            <InstallButton conferenceName={conf.name} />
             <NotificationBell slug={slug} onNavigateTab={navigateTab} />
             <AccountMenu
               name={me.name}

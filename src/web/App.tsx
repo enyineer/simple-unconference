@@ -8,6 +8,7 @@ import { useRoute, matchRoute } from "./router";
 import type { Tab } from "./conference/types";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { OfflineBanner } from "./components/OfflineBanner";
+import { updateInstallLinks } from "./pwa/links";
 
 // Lazy-load each page in its own chunk.
 const LoginPage = lazy(() =>
@@ -80,6 +81,9 @@ export interface ConfMe {
 interface ConferenceSummary {
   slug: string;
   design_system: string;
+  /** Content hash of the owner's custom PWA icon, or null for the default.
+   *  Drives the per-conference apple-touch-icon link. */
+  icon_hash?: string | null;
 }
 
 function MinimalLoading() {
@@ -255,6 +259,9 @@ export function App() {
   const [loadedConfMeSlug, setLoadedConfMeSlug] = useState<string | undefined>(undefined);
   const [fetchedConfDs, setFetchedConfDs] = useState<string | null>(null);
   const [loadedConfDsSlug, setLoadedConfDsSlug] = useState<string | undefined>(undefined);
+  // Custom PWA icon hash for the active conference. Drives the dynamic
+  // apple-touch-icon link; null = the default icon. Undefined while unknown.
+  const [confIconHash, setConfIconHash] = useState<string | null | undefined>(undefined);
 
   // Drop the cached identity result the moment the active conference changes,
   // so a stale value — especially a `null` cached from an earlier
@@ -327,17 +334,29 @@ export function App() {
       .then((c: ConferenceSummary) => {
         if (cancelled) return;
         setFetchedConfDs(c.design_system || DEFAULT_PLUGIN_ID);
+        setConfIconHash(c.icon_hash ?? null);
         setLoadedConfDsSlug(confSlug);
       })
       .catch(() => {
         if (cancelled) return;
         setFetchedConfDs(DEFAULT_PLUGIN_ID);
+        setConfIconHash(null);
         setLoadedConfDsSlug(confSlug);
       });
     return () => {
       cancelled = true;
     };
   }, [confSlug]);
+
+  // Keep the document's manifest + apple-touch-icon links pointed at the active
+  // conference (its own installable app + home-screen icon), reverting to the
+  // generic defaults when leaving. Keyed on the slug + the loaded icon hash so
+  // an owner uploading/clearing an icon updates the live links too.
+  useEffect(() => {
+    const activeSlug =
+      confSlug && loadedConfDsSlug === confSlug ? confSlug : null;
+    updateInstallLinks(activeSlug, activeSlug ? confIconHash ?? null : null);
+  }, [confSlug, loadedConfDsSlug, confIconHash]);
 
   // Hide stale data while a new slug is in flight (or there's no active
   // conference). The settled-slug tracking above guarantees these flip back
