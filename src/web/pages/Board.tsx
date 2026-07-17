@@ -19,7 +19,6 @@ import { makeClockFmt, makeTimeFmt, timezoneLabel } from "../board/boardFormat";
 
 const REFETCH_DEBOUNCE_MS = 1500;
 const SLOT_TICK_MS = 30_000;
-const AUTOSCROLL_MS = 5 * 60_000;
 
 type Conn = "connecting" | "live" | "reconnecting";
 type State =
@@ -34,11 +33,6 @@ function readToken(): string | null {
   const qIdx = hash.indexOf("?");
   if (qIdx === -1) return null;
   return new URLSearchParams(hash.slice(qIdx + 1)).get("t");
-}
-
-function scrollNowIntoView(): void {
-  const el = document.querySelector("[data-board-now]");
-  if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 // Map a fetch result onto board state. A transient error keeps the last good
@@ -98,16 +92,6 @@ export function BoardPage({ slug }: { slug: string }) {
       es.close();
     };
   }, [slug, token, load]);
-
-  // Auto-scroll the current slot into view: once after first paint, then on a
-  // slow cadence (never on every update — keeps a reader in control).
-  const hasPayload = state.kind === "ok";
-  useEffect(() => {
-    if (!hasPayload) return;
-    const first = setTimeout(scrollNowIntoView, 400);
-    const id = setInterval(scrollNowIntoView, AUTOSCROLL_MS);
-    return () => { clearTimeout(first); clearInterval(id); };
-  }, [hasPayload]);
 
   if (state.kind === "loading") {
     return (

@@ -3,12 +3,14 @@
 // fallback (slot cards with room sub-rows) for phones. The layout is chosen by
 // a matchMedia hook so neither is ever rendered off-screen.
 //
+// The projector never scrolls, so the matrix paginates BOTH axes (see
+// useBoardPages) and auto-rotates through the pages, seeded to the live moment.
+//
 // A cell's INNER content is keyed by submission id, so when the session in a
 // cell changes the entry animation replays; an unchanged cell updates in place
-// (calm — no flicker on every refetch). The slot in progress right now carries
-// `data-board-now` so the page can scroll it into view.
+// (calm — no flicker on every refetch).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   BoardEntryOut,
   BoardPayloadOut,
@@ -16,6 +18,10 @@ import type {
   BoardSlotOut,
 } from "../../shared/contract/types";
 import { formatSlotRange, isSlotNow, slotKindMeta } from "./boardFormat";
+import { useBoardPages, type BoardPage } from "./useBoardPages";
+
+// Calm auto-advance cadence for the projector page rotation.
+const PAGE_ROTATE_MS = 15_000;
 
 function useNarrow(query = "(max-width: 720px)"): boolean {
   const [narrow, setNarrow] = useState(
@@ -93,24 +99,115 @@ export function BoardGrid({
     return <StackedBoard rooms={rooms} slots={slots} byCell={byCell} now={now} timeFmt={timeFmt} />;
   }
 
-  // A FIXED first track (a single clamp length, not a content-sized minmax) so
-  // the sticky head grid and the body rows — two separate grids — resolve their
-  // columns to identical widths and stay aligned.
-  const template = `clamp(150px, 16vw, 210px) repeat(${rooms.length}, minmax(210px, 1fr))`;
+  return (
+    <PagedBoard
+      rooms={rooms}
+      slots={slots}
+      byCell={byCell}
+      now={now}
+      timeFmt={timeFmt}
+      timezone={payload.timezone}
+    />
+  );
+}
+
+// Desktop projector matrix. Owns the measured region ref, the page slices, and
+// the rotation index. Renders exactly one page at a time so nothing is ever cut
+// off or below the fold.
+function PagedBoard({
+  rooms,
+  slots,
+  byCell,
+  now,
+  timeFmt,
+  timezone,
+}: {
+  rooms: BoardRoomOut[];
+  slots: BoardSlotOut[];
+  byCell: Map<string, BoardEntryOut>;
+  now: number;
+  timeFmt: Intl.DateTimeFormat;
+  timezone: string;
+}) {
+  const regionRef = useRef<HTMLDivElement>(null);
+  const pages = useBoardPages(regionRef, rooms, slots, timezone);
+  // `tick` is the rotation counter (advanced by the timer). The visible page is
+  // (seed + tick) % length, so a freshly-opened wall starts on the live moment
+  // and then rotates from there.
+  const [tick, setTick] = useState(0);
+
+  // Seed once to the page holding the current "now" slot. Adjust-state-during-
+  // render (the React-blessed pattern for deriving from props): the conditional
+  // guard runs it only until seeded. Gated on `> 1` so the brief pre-measurement
+  // single-page state never consumes the seed; resize reflows keep the seed.
+  const [seed, setSeed] = useState<number | null>(null);
+  if (seed === null && pages.length > 1) {
+    const live = pages.findIndex((p) => p.slotSlice.some((s) => isSlotNow(s, now)));
+    setSeed(live > 0 ? live : 0);
+  }
+
+  // Auto-advance through the pages, looping. Cadence is identical under
+  // reduced-motion; only the per-page transition style changes (CSS-driven).
+  useEffect(() => {
+    if (pages.length <= 1) return;
+    const id = setInterval(() => setTick((t) => t + 1), PAGE_ROTATE_MS);
+    return () => clearInterval(id);
+  }, [pages.length]);
+
+  const active = pages.length > 0 ? ((seed ?? 0) + tick) % pages.length : 0;
+  const page = pages[active];
 
   return (
-    <div className="board-scroll">
+    <div className="board-page" ref={regionRef}>
+      {page && (
+        <BoardMatrix
+          key={active}
+          page={page}
+          byCell={byCell}
+          now={now}
+          timeFmt={timeFmt}
+        />
+      )}
+      {pages.length > 1 && page && (
+        <BoardPager pages={pages} active={active} page={page} timeFmt={timeFmt} />
+      )}
+    </div>
+  );
+}
+
+// One page of the matrix: its room slice as columns, its slot slice as rows.
+// Keyed by the active page index in the parent so a page change replays the
+// entrance animation.
+function BoardMatrix({
+  page,
+  byCell,
+  now,
+  timeFmt,
+}: {
+  page: BoardPage;
+  byCell: Map<string, BoardEntryOut>;
+  now: number;
+  timeFmt: Intl.DateTimeFormat;
+}) {
+  const { roomSlice, slotSlice } = page;
+  // A FIXED first track (a single clamp length, not a content-sized minmax) so
+  // the head grid and the body rows — two separate grids — resolve their
+  // columns to identical widths and stay aligned.
+  const template = `clamp(150px, 16vw, 210px) repeat(${roomSlice.length}, minmax(210px, 1fr))`;
+
+  return (
+    <div className="board-page-anim">
       <div className="board-grid-head" style={{ gridTemplateColumns: template }}>
         <div className="board-corner">Rooms →</div>
-        {rooms.map((r) => (
+        {roomSlice.map((r) => (
           <div key={r.id} className="board-room-head">
             <span className="board-room-name">{r.name}</span>
             <span className="board-room-cap">{r.capacity} seats</span>
           </div>
         ))}
       </div>
-      <div className="board-grid" style={{ gridAutoRows: "minmax(84px, auto)" }}>
-        {slots.map((slot) => {
+      <div className="board-grid" style={{ gridAutoRows: "minmax(84px, 1fr)" }}>
+        {slotSlice.map((slot) => {
           const nowSlot = isSlotNow(slot, now);
           const meta = slotKindMeta(slot.type);
           return (
@@ -118,7 +215,6 @@ export function BoardGrid({
               key={slot.id}
               className={`board-row${nowSlot ? " is-now" : ""}`}
               style={{ gridTemplateColumns: template }}
-              data-board-now={nowSlot ? "1" : undefined}
             >
               <div className="board-slot-rail">
                 <span className="board-slot-time">{formatSlotRange(slot, timeFmt)}</span>
@@ -128,7 +224,7 @@ export function BoardGrid({
                 </span>
                 {nowSlot && <span className="board-now-tag">Now</span>}
               </div>
-              {rooms.map((r) => (
+              {roomSlice.map((r) => (
                 <Cell
                   key={r.id}
                   entry={byCell.get(entryKey(slot.id, r.id))}
@@ -139,6 +235,45 @@ export function BoardGrid({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// Page indicator: a dot per page + a text label naming the room span and time
+// window on screen ("Rooms 1–8 of 14 · 09:00–12:00").
+function BoardPager({
+  pages,
+  active,
+  page,
+  timeFmt,
+}: {
+  pages: BoardPage[];
+  active: number;
+  page: BoardPage;
+  timeFmt: Intl.DateTimeFormat;
+}) {
+  const roomsLabel =
+    page.roomTotal > page.roomSlice.length
+      ? `Rooms ${page.roomStart}–${page.roomEnd} of ${page.roomTotal}`
+      : null;
+  const timeLabel = `${timeFmt.format(page.rangeStart)}–${timeFmt.format(page.rangeEnd)}`;
+  // Day prefix only on a multi-day conference (dayLabel is null otherwise).
+  const label = [page.dayLabel, roomsLabel, timeLabel]
+    .filter((p): p is string => p !== null)
+    .join(" · ");
+
+  return (
+    <div className="board-pager">
+      <span className="board-pager-dots">
+        {pages.map((_, i) => (
+          <span
+            key={i}
+            className={`board-pager-dot${i === active ? " is-active" : ""}`}
+            aria-hidden="true"
+          />
+        ))}
+      </span>
+      <span className="board-pager-label">{label}</span>
     </div>
   );
 }

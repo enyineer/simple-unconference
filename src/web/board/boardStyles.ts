@@ -29,7 +29,9 @@ export const BOARD_STYLES = `
 
   position: fixed;
   inset: 0;
-  overflow: auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   background:
     radial-gradient(1200px 700px at 82% -8%, rgba(88,166,255,0.10), transparent 60%),
     radial-gradient(1000px 620px at 4% 108%, rgba(63,185,80,0.06), transparent 55%),
@@ -42,8 +44,7 @@ export const BOARD_STYLES = `
 
 /* ---- header ---- */
 .board-header {
-  position: sticky;
-  top: 0;
+  flex-shrink: 0;
   z-index: 5;
   display: flex;
   align-items: flex-start;
@@ -111,14 +112,32 @@ export const BOARD_STYLES = `
 .board-qr img { display: block; width: 92px; height: 92px; border-radius: 6px; }
 .board-qr-label { font-size: 10.5px; color: var(--bd-fg-muted); letter-spacing: 0.02em; max-width: 96px; text-align: center; line-height: 1.3; }
 
-/* ---- grid ---- */
-.board-scroll { padding: 8px 40px 56px; }
-.board-grid { display: grid; gap: 12px; align-items: stretch; }
+/* ---- grid (paginated projector matrix) ---- */
+/* The region fills the space below the header and never scrolls; one page's
+   rooms/slots are sized to fit it exactly (see useBoardPages). */
+.board-page {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 8px 40px 18px;
+  overflow: hidden;
+}
+/* A page's head + body wrapper, keyed per page so a rotation replays the
+   entrance animation. Fills the region so its body grid can stretch rows. */
+.board-page-anim {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column; gap: 12px;
+  animation: boardPageIn 520ms cubic-bezier(0.16,0.84,0.44,1) both;
+}
+@keyframes boardPageIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+/* Body grid takes the remaining height; rows share it (minmax(84px,1fr)). */
+.board-grid { flex: 1; min-height: 0; display: grid; gap: 12px; align-items: stretch; }
 .board-grid-head {
-  position: sticky; top: 118px; z-index: 3;
+  flex-shrink: 0;
   display: grid; gap: 12px; align-items: stretch;
-  padding: 6px 0 10px;
-  background: linear-gradient(180deg, var(--bd-bg) 40%, transparent);
+  padding: 2px 0 6px;
 }
 .board-corner {
   display: flex; align-items: flex-end;
@@ -207,8 +226,35 @@ export const BOARD_STYLES = `
   padding: 2px 6px; border-radius: 999px; color: #0a0d12; background: var(--bd-planned);
 }
 
+/* ---- pager (page rotation indicator) ---- */
+.board-pager {
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; gap: 16px;
+  padding: 2px 0 0;
+}
+.board-pager-dots { display: inline-flex; align-items: center; gap: 8px; }
+.board-pager-dot {
+  width: 8px; height: 8px; border-radius: 999px;
+  background: var(--bd-fg-faint); opacity: 0.45;
+  transition: background 300ms ease, opacity 300ms ease, transform 300ms ease;
+}
+.board-pager-dot.is-active {
+  background: var(--bd-unconf); opacity: 1; transform: scale(1.2);
+}
+.board-pager-label {
+  font-size: 12.5px; font-weight: 600; letter-spacing: 0.04em;
+  color: var(--bd-fg-muted); font-variant-numeric: tabular-nums;
+}
+
+/* Reduced motion: still rotate on the same calm cadence, but cross-fade the
+   pages (opacity only) instead of the vertical slide. */
+@media (prefers-reduced-motion: reduce) {
+  .board-page-anim { animation: boardPageFade 520ms ease both; }
+  @keyframes boardPageFade { from { opacity: 0; } to { opacity: 1; } }
+}
+
 /* ---- stacked (mobile) ---- */
-.board-stack { display: flex; flex-direction: column; gap: 18px; padding: 8px 18px 56px; }
+.board-stack { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; padding: 8px 18px 56px; }
 .board-stack-slot { border-radius: 14px; border: 1px solid var(--bd-border); background: var(--bd-surface); overflow: hidden; }
 .board-stack-slot.is-now { border-color: var(--bd-unconf); box-shadow: 0 0 0 1px var(--bd-unconf); }
 .board-stack-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--bd-border); }
@@ -294,7 +340,6 @@ export const BOARD_STYLES = `
   .board-header { padding: 18px 18px 14px; gap: 14px; }
   .board-header-right { gap: 14px; }
   .board-qr img { width: 72px; height: 72px; }
-  .board-scroll { padding: 4px 0; }
 }
 @media (max-width: 480px) {
   .board-header { flex-direction: column; align-items: stretch; }
