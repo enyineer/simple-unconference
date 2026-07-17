@@ -11,7 +11,7 @@ import { useInstallPrompt } from "../hooks/useInstallPrompt";
 
 export function InstallButton({ conferenceName }: { conferenceName: string }) {
   const { affordance, promptInstall } = useInstallPrompt();
-  const [iosOpen, setIosOpen] = useState(false);
+  const [hintOpen, setHintOpen] = useState(false);
 
   if (affordance === "none") return null;
 
@@ -20,8 +20,10 @@ export function InstallButton({ conferenceName }: { conferenceName: string }) {
   const fgDefault = "var(--fgColor-default, var(--uncon-fg, inherit))";
 
   function onClick() {
+    // Native prompt when we have one; otherwise open the platform hint
+    // (iOS Add-to-Home-Screen, or the desktop "use your browser" steps).
     if (affordance === "prompt") promptInstall();
-    else setIosOpen(true);
+    else setHintOpen(true);
   }
 
   return (
@@ -57,10 +59,43 @@ export function InstallButton({ conferenceName }: { conferenceName: string }) {
         </svg>
       </button>
 
-      <Sheet open={iosOpen} onClose={() => setIosOpen(false)} title="Install this app">
-        <IosInstallSteps conferenceName={conferenceName} />
+      <Sheet open={hintOpen} onClose={() => setHintOpen(false)} title="Install this app">
+        {affordance === "ios-hint" ? (
+          <IosInstallSteps conferenceName={conferenceName} />
+        ) : (
+          <DesktopInstallSteps conferenceName={conferenceName} />
+        )}
       </Sheet>
     </>
+  );
+}
+
+// Desktop fallback steps: shown when the browser can install a web app but
+// didn't hand us a `beforeinstallprompt` (Chrome fires it only heuristically).
+// Points at the browser's own control rather than a native dialog.
+export function DesktopInstallSteps({ conferenceName }: { conferenceName: string }) {
+  return (
+    <Stack gap="condensed">
+      <Text>
+        Install <strong>{conferenceName}</strong> as an app so it opens in its
+        own window straight from your dock or taskbar:
+      </Text>
+      <ol style={{ margin: 0, paddingLeft: 20, fontSize: 14, lineHeight: "22px", color: "var(--fgColor-default, var(--uncon-fg, inherit))" }}>
+        <li>
+          In <strong>Chrome</strong> or <strong>Edge</strong>: click the install
+          icon at the right of the address bar, or open the <strong>&#8942;</strong> menu
+          and choose <strong>Install {conferenceName}</strong>.
+        </li>
+        <li>
+          In <strong>Safari</strong> (Mac): open the <strong>Share</strong> menu
+          and choose <strong>Add to Dock</strong>.
+        </li>
+      </ol>
+      <Text muted>
+        Your browser only offers this once the page is eligible - if you don&apos;t
+        see it yet, interact with the page for a moment and try again.
+      </Text>
+    </Stack>
   );
 }
 

@@ -1,27 +1,43 @@
-// DOM glue that points the document's web app manifest + iOS home-screen icon
-// links at the active conference (so an install lands inside it with its own
-// icon), or restores the generic defaults when no conference is active. iOS
-// uses apple-touch-icon — NOT manifest icons — for the Home Screen, so both
-// links must update. Kept separate from App.tsx so the Settings "App icon"
-// section can refresh the same links immediately after an upload/clear without
-// waiting for the slug-keyed refetch in App. All URL shapes come from the
-// pure, unit-tested builders in ./install.
+// DOM glue that makes the document installable as an app ONLY while inside a
+// conference. Installing means installing a specific conference — the root
+// (landing / dashboard) is deliberately not a PWA (a generic "install the
+// dashboard" prompt is useless and would confuse a visitor on the landing
+// page). So the <link rel="manifest"> + iOS apple-touch-icon are ADDED when a
+// conference is active (pointing at that conference's manifest + icon) and
+// REMOVED when it isn't. iOS uses apple-touch-icon — NOT manifest icons — for
+// the Home Screen, so both are managed together. The service worker (offline)
+// is registered app-wide and is unaffected by this. All URL shapes come from
+// the pure, unit-tested builders in ./install.
+//
+// Kept separate from App.tsx so the Settings "App icon" section can refresh the
+// same links immediately after an upload/clear without waiting for a refetch.
 
 import { appleTouchIconHref, manifestHref } from "./install";
+
+function ensureLink(rel: string): HTMLLinkElement {
+  let link = document.querySelector<HTMLLinkElement>(`link[rel="${rel}"]`);
+  if (!link) {
+    link = document.createElement("link");
+    link.rel = rel;
+    document.head.appendChild(link);
+  }
+  return link;
+}
+
+function removeLink(rel: string): void {
+  document.querySelector<HTMLLinkElement>(`link[rel="${rel}"]`)?.remove();
+}
 
 export function updateInstallLinks(slug: string | null, iconHash: string | null): void {
   if (typeof document === "undefined") return;
 
-  const manifestLink = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
-  if (manifestLink) {
-    manifestLink.href = slug ? manifestHref(slug) : "/manifest.webmanifest";
+  if (!slug) {
+    // Root / no conference: not an installable app.
+    removeLink("manifest");
+    removeLink("apple-touch-icon");
+    return;
   }
 
-  let appleLink = document.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]');
-  if (!appleLink) {
-    appleLink = document.createElement("link");
-    appleLink.rel = "apple-touch-icon";
-    document.head.appendChild(appleLink);
-  }
-  appleLink.href = slug ? appleTouchIconHref(slug, iconHash) : "/icon-192.png";
+  ensureLink("manifest").href = manifestHref(slug);
+  ensureLink("apple-touch-icon").href = appleTouchIconHref(slug, iconHash);
 }

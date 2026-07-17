@@ -3,7 +3,8 @@
 // visitor doesn't miss that the conference is installable. Shows at most once
 // per (conference, device) — dismissal is a localStorage flag, mirroring
 // WelcomeRail's precedent — and only when installing is actually possible
-// (a captured native prompt OR iOS Safari, and not already installed).
+// (a captured native prompt, iOS Safari, or a desktop browser that can install;
+// and not already installed).
 //
 // All the "whether to show" logic comes from the pure module via
 // useInstallPrompt + shouldShowNudge; this component only renders + remembers
@@ -13,7 +14,7 @@ import { useState } from "react";
 import { Button, Card, Heading, Stack, Text } from "../design-system";
 import { useInstallPrompt } from "../hooks/useInstallPrompt";
 import { appleTouchIconHref, shouldShowNudge } from "../pwa/install";
-import { IosInstallSteps } from "./InstallButton";
+import { DesktopInstallSteps, IosInstallSteps } from "./InstallButton";
 
 const STORAGE_PREFIX = "install-nudge:";
 
@@ -35,7 +36,7 @@ export function InstallNudge({
       return false;
     }
   });
-  const [showIosSteps, setShowIosSteps] = useState(false);
+  const [showSteps, setShowSteps] = useState(false);
 
   if (!shouldShowNudge({ affordance, dismissed })) return null;
 
@@ -49,8 +50,9 @@ export function InstallNudge({
   }
 
   function onInstall() {
+    // Native prompt when captured; otherwise reveal the platform steps inline.
     if (affordance === "prompt") promptInstall();
-    else setShowIosSteps(true);
+    else setShowSteps(true);
   }
 
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
@@ -78,7 +80,8 @@ export function InstallNudge({
             <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
               <Heading level={3}>Install {conferenceName} as an app</Heading>
               <Text muted>
-                Open it straight from your home screen and get notifications.
+                Open it in its own window from your dock or home screen, and get
+                notifications.
               </Text>
             </div>
           </Stack>
@@ -93,7 +96,7 @@ export function InstallNudge({
           </Button>
         </Stack>
 
-        {showIosSteps && (
+        {showSteps && (
           <div
             style={{
               marginTop: 4,
@@ -104,7 +107,11 @@ export function InstallNudge({
               color: muted,
             }}
           >
-            <IosInstallSteps conferenceName={conferenceName} />
+            {affordance === "ios-hint" ? (
+              <IosInstallSteps conferenceName={conferenceName} />
+            ) : (
+              <DesktopInstallSteps conferenceName={conferenceName} />
+            )}
           </div>
         )}
       </Stack>

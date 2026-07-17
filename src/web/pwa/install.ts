@@ -6,8 +6,29 @@
 // hooks/useInstallPrompt.ts and components/Install*.tsx are thin wrappers that
 // only wire browser events and render; they carry no branching worth testing.
 
-/** The three states the install affordance can be in. */
-export type InstallAffordance = "prompt" | "ios-hint" | "none";
+/** The states the install affordance can be in.
+ *  - "prompt":   we captured `beforeinstallprompt` -> fire the native dialog.
+ *  - "ios-hint": iOS Safari -> show the Add-to-Home-Screen steps.
+ *  - "manual":   a desktop browser that CAN install but didn't give us a
+ *                prompt (Chrome fires `beforeinstallprompt` only heuristically)
+ *                -> point the user at the browser's own install control.
+ *  - "none":     already installed, or a browser with no web-app install. */
+export type InstallAffordance = "prompt" | "ios-hint" | "manual" | "none";
+
+/**
+ * Desktop browsers that can install/add a web app but do NOT reliably expose
+ * `beforeinstallprompt`, so we guide the user to the browser's own control
+ * instead of showing nothing: desktop Chromium (Chrome/Edge/Brave/Opera) and
+ * desktop Safari ("Add to Dock", Sonoma+). Mobile is excluded — Android fires
+ * the prompt, iOS is handled by `ios-hint` — and Firefox has no web-app install.
+ */
+export function canManualInstall(ua: string): boolean {
+  if (/Android|iPhone|iPad|iPod/.test(ua)) return false;
+  if (/Firefox/.test(ua)) return false;
+  const chromium = /Chrome|Chromium|Edg|OPR/.test(ua);
+  const desktopSafari = /Safari/.test(ua) && /Macintosh/.test(ua) && !/Chrome/.test(ua);
+  return chromium || desktopSafari;
+}
 
 /**
  * True for iPhone/iPad Safari (the only browsers where "Add to Home Screen"
@@ -34,17 +55,22 @@ export function isIosSafari(ua: string): boolean {
  * Which affordance to surface, given the runtime facts:
  *  - already running standalone (installed) -> nothing to offer.
  *  - a `beforeinstallprompt` event was captured -> the native prompt.
- *  - iOS Safari, not installed -> the manual Add-to-Home-Screen hint.
- *  - anything else (e.g. Firefox/desktop with no captured prompt) -> nothing.
+ *  - iOS Safari, not installed -> the Add-to-Home-Screen hint.
+ *  - a desktop browser that can install but gave us no prompt -> a "use your
+ *    browser's install control" hint (Chrome's prompt is heuristic; this keeps
+ *    an install path discoverable instead of showing nothing).
+ *  - anything else (e.g. desktop Firefox) -> nothing.
  */
 export function installAffordance(x: {
   standalone: boolean;
   hasInstallPrompt: boolean;
   isIos: boolean;
+  canManualInstall: boolean;
 }): InstallAffordance {
   if (x.standalone) return "none";
   if (x.hasInstallPrompt) return "prompt";
   if (x.isIos) return "ios-hint";
+  if (x.canManualInstall) return "manual";
   return "none";
 }
 

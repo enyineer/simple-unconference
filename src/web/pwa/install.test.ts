@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   appleTouchIconHref,
+  canManualInstall,
   confIconHref,
   installAffordance,
   isIosSafari,
@@ -25,6 +26,10 @@ const UA = {
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
   desktopSafari:
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+  desktopFirefox:
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:127.0) Gecko/20100101 Firefox/127.0",
+  desktopEdge:
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0",
 } as const;
 
 describe("isIosSafari", () => {
@@ -51,21 +56,42 @@ describe("isIosSafari", () => {
   });
 });
 
+describe("canManualInstall", () => {
+  test("true for desktop Chromium (Chrome, Edge)", () => {
+    expect(canManualInstall(UA.desktopChrome)).toBe(true);
+    expect(canManualInstall(UA.desktopEdge)).toBe(true);
+  });
+  test("true for desktop Safari (Mac)", () => {
+    expect(canManualInstall(UA.desktopSafari)).toBe(true);
+  });
+  test("false for desktop Firefox (no web-app install)", () => {
+    expect(canManualInstall(UA.desktopFirefox)).toBe(false);
+  });
+  test("false for mobile (handled by prompt / ios-hint)", () => {
+    expect(canManualInstall(UA.androidChrome)).toBe(false);
+    expect(canManualInstall(UA.iphoneSafari)).toBe(false);
+    expect(canManualInstall(UA.chromeIos)).toBe(false);
+  });
+});
+
 describe("installAffordance", () => {
   test("standalone always wins → none", () => {
-    expect(installAffordance({ standalone: true, hasInstallPrompt: true, isIos: true })).toBe("none");
-    expect(installAffordance({ standalone: true, hasInstallPrompt: false, isIos: false })).toBe("none");
+    expect(installAffordance({ standalone: true, hasInstallPrompt: true, isIos: true, canManualInstall: true })).toBe("none");
+    expect(installAffordance({ standalone: true, hasInstallPrompt: false, isIos: false, canManualInstall: true })).toBe("none");
   });
   test("captured prompt (not standalone) → prompt", () => {
-    expect(installAffordance({ standalone: false, hasInstallPrompt: true, isIos: false })).toBe("prompt");
-    // Prompt beats the iOS hint when both are somehow true.
-    expect(installAffordance({ standalone: false, hasInstallPrompt: true, isIos: true })).toBe("prompt");
+    expect(installAffordance({ standalone: false, hasInstallPrompt: true, isIos: false, canManualInstall: false })).toBe("prompt");
+    // Prompt beats every fallback when both are somehow true.
+    expect(installAffordance({ standalone: false, hasInstallPrompt: true, isIos: true, canManualInstall: true })).toBe("prompt");
   });
-  test("iOS Safari, not installed, no prompt → ios-hint", () => {
-    expect(installAffordance({ standalone: false, hasInstallPrompt: false, isIos: true })).toBe("ios-hint");
+  test("iOS Safari, no prompt → ios-hint (beats manual)", () => {
+    expect(installAffordance({ standalone: false, hasInstallPrompt: false, isIos: true, canManualInstall: false })).toBe("ios-hint");
   });
-  test("nothing available → none", () => {
-    expect(installAffordance({ standalone: false, hasInstallPrompt: false, isIos: false })).toBe("none");
+  test("desktop that can install but has no prompt → manual", () => {
+    expect(installAffordance({ standalone: false, hasInstallPrompt: false, isIos: false, canManualInstall: true })).toBe("manual");
+  });
+  test("nothing available (e.g. desktop Firefox) → none", () => {
+    expect(installAffordance({ standalone: false, hasInstallPrompt: false, isIos: false, canManualInstall: false })).toBe("none");
   });
 });
 

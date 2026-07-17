@@ -348,14 +348,18 @@ export function App() {
     };
   }, [confSlug]);
 
-  // Keep the document's manifest + apple-touch-icon links pointed at the active
-  // conference (its own installable app + home-screen icon), reverting to the
-  // generic defaults when leaving. Keyed on the slug + the loaded icon hash so
-  // an owner uploading/clearing an icon updates the live links too.
+  // Point the document's manifest + apple-touch-icon links at the active
+  // conference (its own installable app + home-screen icon), removing them when
+  // leaving. The manifest link is set as soon as the slug is known — it needs
+  // only the slug (the server route resolves the name/icon itself), and adding
+  // it EARLY (not waiting for the conferences.get fetch) is what lets Chrome's
+  // installability check see it and fire `beforeinstallprompt`. The icon hash
+  // arrives with that fetch; until it settles for THIS slug we pass null (the
+  // default icon) rather than a stale previous-conference hash.
   useEffect(() => {
-    const activeSlug =
-      confSlug && loadedConfDsSlug === confSlug ? confSlug : null;
-    updateInstallLinks(activeSlug, activeSlug ? confIconHash ?? null : null);
+    const slug = confSlug ?? null;
+    const iconHash = slug && loadedConfDsSlug === confSlug ? confIconHash ?? null : null;
+    updateInstallLinks(slug, iconHash);
   }, [confSlug, loadedConfDsSlug, confIconHash]);
 
   // Hide stale data while a new slug is in flight (or there's no active

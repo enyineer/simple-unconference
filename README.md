@@ -305,7 +305,7 @@ First-time participants get a three-step **welcome rail** that orients them (sta
 
 ### Web Push & offline (PWA)
 
-The app installs as a PWA and keeps showing your schedule when the venue wifi drops (read-only offline; no write queueing). It also supports opt-in OS-level **Web Push**, enabled per browser from the notification bell, so notifications reach participants even when the app is closed. Push augments — never replaces — the in-app bell and toast, is best-effort (a push failure never affects the in-app notification), and stays privacy-safe (names and titles only, never emails). It's fully inert until the instance configures VAPID keys (`VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` — see [Configuration](#configuration-environment-variables)).
+Each **conference** installs as its own app (not the landing page): a header "Install" button offers the native prompt on Android/desktop and an Add-to-Home-Screen hint on iOS, the installed icon deep-links straight into that conference, and owners can upload a custom home-screen icon (Settings → App icon). A service worker keeps showing your schedule when the venue wifi drops (read-only offline; no write queueing). It also supports opt-in OS-level **Web Push**, enabled per browser from the notification bell, so notifications reach participants even when the app is closed. Push augments — never replaces — the in-app bell and toast, is best-effort (a push failure never affects the in-app notification), and stays privacy-safe (names and titles only, never emails). It's fully inert until the instance configures VAPID keys (`VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` — see [Configuration](#configuration-environment-variables)).
 
 ### Settings (per-conference, owner-only)
 

@@ -18,9 +18,12 @@
     <meta name="application-name" content="Unconf" />
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#0a0d12" />
-    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- No manifest link here on purpose: the root (landing / dashboard) is NOT
+         an installable app. Installing means installing a specific conference,
+         so the manifest + apple-touch-icon links are added at runtime only while
+         inside a conference (see src/web/pwa/links.ts). The service worker
+         (offline) is still registered app-wide. -->
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
-    <link rel="apple-touch-icon" href="/icon-192.png" />
 
     <!-- Open Graph -->
     <meta property="og:type" content="website" />

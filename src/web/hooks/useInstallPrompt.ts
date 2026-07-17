@@ -5,7 +5,12 @@
 // branches on product rules; it only wires events and reports facts.
 
 import { useCallback, useEffect, useState } from "react";
-import { installAffordance, isIosSafari, type InstallAffordance } from "../pwa/install";
+import {
+  canManualInstall,
+  installAffordance,
+  isIosSafari,
+  type InstallAffordance,
+} from "../pwa/install";
 
 // The `beforeinstallprompt` event isn't in the DOM lib typings, so we model
 // exactly the two members we use (no `any`, no cast). `prompt()` shows the
@@ -81,10 +86,12 @@ export function useInstallPrompt(): UseInstallPrompt {
     void deferred.userChoice.finally(() => setDeferred(null));
   }, [deferred]);
 
+  const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
   const affordance = installAffordance({
     standalone,
     hasInstallPrompt: deferred !== null,
     isIos,
+    canManualInstall: canManualInstall(ua),
   });
 
   return { affordance, promptInstall, isIos };
