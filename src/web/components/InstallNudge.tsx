@@ -13,10 +13,9 @@
 import { useState } from "react";
 import { Button, Card, Stack, Text } from "../design-system";
 import { useInstallPrompt } from "../hooks/useInstallPrompt";
-import { appleTouchIconHref, shouldShowNudge } from "../pwa/install";
+import { useLocalFlag } from "../hooks/useLocalFlag";
+import { appleTouchIconHref, installNudgeStorageKey, shouldShowNudge } from "../pwa/install";
 import { AndroidInstallSteps, DesktopInstallSteps, IosInstallSteps } from "./InstallButton";
-
-const STORAGE_PREFIX = "install-nudge:";
 
 export function InstallNudge({
   slug,
@@ -28,26 +27,10 @@ export function InstallNudge({
   iconHash: string | null;
 }) {
   const { affordance, promptInstall } = useInstallPrompt();
-  const storageKey = STORAGE_PREFIX + slug;
-  const [dismissed, setDismissed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(storageKey) === "1";
-    } catch {
-      return false;
-    }
-  });
+  const [dismissed, dismiss] = useLocalFlag(installNudgeStorageKey(slug));
   const [showSteps, setShowSteps] = useState(false);
 
   if (!shouldShowNudge({ affordance, dismissed })) return null;
-
-  function dismiss() {
-    try {
-      localStorage.setItem(storageKey, "1");
-    } catch {
-      // Private mode / storage disabled — degrade to in-memory dismissal.
-    }
-    setDismissed(true);
-  }
 
   function onInstall() {
     // Native prompt when captured; otherwise reveal the platform steps inline.

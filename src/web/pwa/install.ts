@@ -157,6 +157,19 @@ export function shouldShowPushNudge(x: {
   );
 }
 
+// --- nudge dismissal keys -------------------------------------------------
+// Per-(conference, device) localStorage keys for the one-time nudges. Kept here
+// (a non-component module) so InstallNudge and PushNudge share the exact same
+// key — PushNudge reads the install key reactively to defer to that nudge.
+
+export function installNudgeStorageKey(slug: string): string {
+  return "install-nudge:" + slug;
+}
+
+export function pushNudgeStorageKey(slug: string): string {
+  return "push-nudge:" + slug;
+}
+
 // --- URL builders ---------------------------------------------------------
 // These MUST match the server routes exactly (routes/manifest.ts +
 // routes/conference-icons.ts). Duplicating them here (rather than importing

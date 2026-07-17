@@ -9,23 +9,16 @@
 // "Whether to show" is the pure shouldShowPushNudge; the subscribe wiring is the
 // shared usePushOptIn hook. This component just renders + remembers dismissal.
 
-import { useState } from "react";
 import { Button, Card, Stack, Text } from "../design-system";
 import { usePushOptIn } from "../hooks/usePushOptIn";
 import { useInstallPrompt } from "../hooks/useInstallPrompt";
-import { shouldShowNudge, shouldShowPushNudge } from "../pwa/install";
-
-const STORAGE_PREFIX = "push-nudge:";
-// InstallNudge's own dismissal key — read to tell whether it's currently showing.
-const INSTALL_NUDGE_PREFIX = "install-nudge:";
-
-function readDismissed(key: string): boolean {
-  try {
-    return localStorage.getItem(key) === "1";
-  } catch {
-    return false;
-  }
-}
+import { useLocalFlag } from "../hooks/useLocalFlag";
+import {
+  installNudgeStorageKey,
+  pushNudgeStorageKey,
+  shouldShowNudge,
+  shouldShowPushNudge,
+} from "../pwa/install";
 
 export function PushNudge({
   slug,
@@ -36,13 +29,12 @@ export function PushNudge({
 }) {
   const { available, subscribed, denied, busy, enable } = usePushOptIn(slug);
   const { affordance } = useInstallPrompt();
-  const storageKey = STORAGE_PREFIX + slug;
-  const [dismissed, setDismissed] = useState<boolean>(() => readDismissed(storageKey));
+  const [dismissed, dismiss] = useLocalFlag(pushNudgeStorageKey(slug));
+  // Reactively track the install nudge's dismissal so we appear the instant it's
+  // dismissed (both read the same flag via useLocalFlag).
+  const [installDismissed] = useLocalFlag(installNudgeStorageKey(slug));
 
-  const installNudgeShowing = shouldShowNudge({
-    affordance,
-    dismissed: readDismissed(INSTALL_NUDGE_PREFIX + slug),
-  });
+  const installNudgeShowing = shouldShowNudge({ affordance, dismissed: installDismissed });
 
   if (
     !shouldShowPushNudge({
@@ -54,15 +46,6 @@ export function PushNudge({
     })
   ) {
     return null;
-  }
-
-  function dismiss() {
-    try {
-      localStorage.setItem(storageKey, "1");
-    } catch {
-      // Private mode / storage disabled — degrade to in-memory dismissal.
-    }
-    setDismissed(true);
   }
 
   const borderMuted = "var(--borderColor-muted, var(--uncon-border-muted, #e5e7eb))";
