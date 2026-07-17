@@ -52,5 +52,5 @@ export function hashVerifyCode(code: string): string {
 }
 
 export function verifyUrl(token: string): string {
-  return `${appBaseUrl()}/#/auth/verify?token=${token}`;
+  return `${appBaseUrl()}/auth/verify?token=${token}`;
 }

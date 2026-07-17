@@ -33,9 +33,9 @@ export function hashResetToken(token: string): string {
 }
 
 export function ownerResetUrl(token: string): string {
-  return `${appBaseUrl()}/#/auth/reset?token=${token}`;
+  return `${appBaseUrl()}/auth/reset?token=${token}`;
 }
 
 export function identityResetUrl(slug: string, token: string): string {
-  return `${appBaseUrl()}/#/c/${encodeURIComponent(slug)}/reset?token=${token}`;
+  return `${appBaseUrl()}/c/${encodeURIComponent(slug)}/reset?token=${token}`;
 }

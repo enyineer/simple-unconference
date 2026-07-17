@@ -26,11 +26,8 @@ type Mode =
   | { kind: "error"; reason: string };
 
 function readToken(): string | null {
-  const hash = window.location.hash;
-  const qIdx = hash.indexOf("?");
-  if (qIdx === -1) return null;
-  const params = new URLSearchParams(hash.slice(qIdx + 1));
-  return params.get("t");
+  // Path-based routing: `?t=` is a real search param (/c/<slug>/join?t=…).
+  return new URLSearchParams(window.location.search).get("t");
 }
 
 export function JoinPage({

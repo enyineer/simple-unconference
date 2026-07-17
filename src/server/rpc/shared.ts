@@ -219,11 +219,9 @@ export function joinUrl(slug: string, token: string): string {
   return `/c/${slug}/join?t=${token}`;
 }
 
-// Relative path to the public read-only Live Board. Hashless, exactly like
-// `joinUrl` above: the web client turns it absolute with `absoluteUrl`, which
-// prepends `${origin}/#`. Returning the `/#` here too would double it
-// (`${origin}/#/#/board/...`) and break the hash-route match. The token is the
-// secret — anyone with this URL can view the board.
+// Relative path to the public read-only Live Board, exactly like `joinUrl`
+// above: the web client turns it absolute with `absoluteUrl`, which prepends
+// `${origin}`. The token is the secret — anyone with this URL can view the board.
 export function boardUrl(slug: string, token: string): string {
   return `/board/${slug}?t=${token}`;
 }

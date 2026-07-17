@@ -385,6 +385,22 @@ export function App() {
     document.title = name ?? BASE_DOCUMENT_TITLE;
   }, [confSlug, loadedConfDsSlug, confName]);
 
+  // Canonicalize the conference home to a trailing slash (/conferences/<slug>/).
+  // The manifest scope is slash-terminated (so one conference can't capture
+  // another whose slug it prefixes), and Chrome only offers to install when the
+  // current page is INSIDE that scope — the bare `/conferences/<slug>` sits just
+  // outside it. matchRoute treats both forms identically, so this only rewrites
+  // the address bar; it doesn't change routing. replaceState (no popstate) keeps
+  // wouter's state untouched.
+  useEffect(() => {
+    if (/^\/conferences\/[^/]+$/.test(window.location.pathname)) {
+      history.replaceState(
+        null, "",
+        window.location.pathname + "/" + window.location.search + window.location.hash,
+      );
+    }
+  }, [path]);
+
   // Hide stale data while a new slug is in flight (or there's no active
   // conference). The settled-slug tracking above guarantees these flip back
   // to defaults without a synchronous setState in the effect.

@@ -48,15 +48,12 @@ export function ChatTab({ slug, confMe, isMod, onBrowseDirectory }: ChatTabProps
   // URL-driven state. wouter exposes path params via useRouteMatch;
   // - "/conferences/:slug/chat/:rest" matches sub-paths like "/chat/42" or
   //   "/chat/new". When `rest` is numeric → activeId; when "new" → pending.
-  // The pending target id lives in the ?to=<id> query (matchRoute strips
-  // queries before matching, so we read window.location.hash directly).
+  // The pending target id lives in the ?to=<id> query — a real search param
+  // under path routing (/conferences/foo/chat/new?to=42).
   const [, restMatch] = useRouteMatch<{ slug: string; rest: string }>(
     "/conferences/:slug/chat/:rest",
   );
-  // wouter's useRoute captures the full segment including any `?query` /
-  // `#fragment` tail (so `/chat/new?to=42` → rest = `"new?to=42"`), unlike
-  // our matchRoute helper which strips them. Normalize here so segment
-  // comparisons work for both shapes.
+  // Defensively strip any `?query` / `#fragment` tail off the matched segment.
   const restSegment = restMatch?.rest?.split(/[?#]/)[0];
   const activeId = (() => {
     if (!restSegment || restSegment === "new") return null;
@@ -65,10 +62,9 @@ export function ChatTab({ slug, confMe, isMod, onBrowseDirectory }: ChatTabProps
   })();
   const pendingTargetId = (() => {
     if (restSegment !== "new") return null;
-    const m = /\?to=(\d+)(?:&|$)/.exec(window.location.hash);
-    if (!m) return null;
-    const n = Number(m[1]);
-    return Number.isInteger(n) && n > 0 ? n : null;
+    const raw = new URLSearchParams(window.location.search).get("to");
+    const n = Number(raw);
+    return raw !== null && Number.isInteger(n) && n > 0 ? n : null;
   })();
 
   useEffect(() => {

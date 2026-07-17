@@ -1,6 +1,6 @@
 // Public base URL of this instance, used to build links in outgoing email
-// (password reset, email verification). The SPA uses hash routing (see
-// src/web/router.tsx), hence the `/#/...` segment in the callers.
+// (password reset, email verification). The SPA uses path-based routing (see
+// src/web/router.tsx), so callers append a plain `/auth/...` path.
 //
 // REQUIRED — there is deliberately no default. A wrong base URL silently
 // produces broken/loopback links in every reset + verification email, which

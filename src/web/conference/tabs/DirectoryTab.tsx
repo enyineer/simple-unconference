@@ -10,7 +10,7 @@ import { useEffect, useInsertionEffect, useState } from "react";
 import { Badge, Button, Heading, Spinner, Stack } from "../../design-system";
 import { useToast } from "../../design-system/hooks";
 import { api, errorCode } from "../../api";
-import { useRoute } from "../../router";
+import { useRoute, useNavLink } from "../../router";
 import { EmptyState } from "../ui/EmptyState";
 import { Pager } from "../ui/Pager";
 import { ProfileLink } from "../ProfileLink";
@@ -376,6 +376,7 @@ function DirectoryRow({
   muted: string;
   isMe: boolean;
 }) {
+  const navLink = useNavLink();
   const label = profile.name && profile.name.trim() ? profile.name : "Unnamed";
   const initial = label.trim().charAt(0).toUpperCase() || "?";
   // The Message button must NOT live inside the ProfileLink <a>. A parent
@@ -439,7 +440,7 @@ function DirectoryRow({
       <div className="uncon-dir-row__actions">
         {!isMe && (
           <a
-            href={`#/conferences/${encodeURIComponent(slug)}/chat/new?to=${profile.identity_id}`}
+            {...navLink(`/conferences/${encodeURIComponent(slug)}/chat/new?to=${profile.identity_id}`)}
             style={{
               fontSize: 13,
               padding: "4px 10px",

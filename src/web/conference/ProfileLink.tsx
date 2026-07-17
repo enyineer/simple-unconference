@@ -1,7 +1,8 @@
 // Central wrapper for every place in the conference UI that renders a
-// person's name. Turns the name into a hash-route link to that identity's
-// profile page; styles are intentionally inherited so the wrapping is
-// visually transparent until hover (then a subtle underline).
+// person's name. Turns the name into a link to that identity's profile page
+// (client-side navigation via useNavLink, so no full reload); styles are
+// intentionally inherited so the wrapping is visually transparent until hover
+// (then a subtle underline).
 //
 // Renders as plain text (no link) when either:
 //   - `identityId` is null (e.g. an unclaimed-invite placeholder), or
@@ -10,6 +11,7 @@
 // This avoids dead-end clicks to "Profile not found or not published."
 
 import { useState } from "react";
+import { useNavLink } from "../router";
 
 interface ProfileLinkProps {
   slug: string;
@@ -27,10 +29,11 @@ interface ProfileLinkProps {
 
 export function ProfileLink({ slug, identityId, linkable, asContents, children }: ProfileLinkProps) {
   const [hover, setHover] = useState(false);
+  const navLink = useNavLink();
   if (identityId == null || !linkable) return <>{children}</>;
   return (
     <a
-      href={`#/conferences/${encodeURIComponent(slug)}/p/${identityId}`}
+      {...navLink(`/conferences/${encodeURIComponent(slug)}/p/${identityId}`)}
       style={{
         color: "inherit",
         textDecoration: hover ? "underline" : "none",

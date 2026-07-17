@@ -127,7 +127,7 @@ describe("sendPushForNotification (best-effort + stale cleanup)", () => {
 
     // Both devices were attempted; payload is the privacy-safe deep link.
     expect(sent).toHaveLength(2);
-    expect(sent[0]!.payload.url).toBe(`/#/conferences/${conf.slug}/agenda`);
+    expect(sent[0]!.payload.url).toBe(`/conferences/${conf.slug}/agenda`);
     expect(sent[0]!.payload.title).toBe("Scheduled");
 
     // Only the "gone" row was pruned.
@@ -180,9 +180,9 @@ describe("webPushConfigured / vapidPublicKey (env gating)", () => {
 
 describe("deepLinkForNotification", () => {
   test("maps tab / path / null ctaHref forms", () => {
-    expect(deepLinkForNotification("acme", "tab:agenda")).toBe("/#/conferences/acme/agenda");
-    expect(deepLinkForNotification("acme", "/conferences/acme/chat/7")).toBe("/#/conferences/acme/chat/7");
-    expect(deepLinkForNotification("acme", null)).toBe("/#/conferences/acme");
-    expect(deepLinkForNotification("acme", undefined)).toBe("/#/conferences/acme");
+    expect(deepLinkForNotification("acme", "tab:agenda")).toBe("/conferences/acme/agenda");
+    expect(deepLinkForNotification("acme", "/conferences/acme/chat/7")).toBe("/conferences/acme/chat/7");
+    expect(deepLinkForNotification("acme", null)).toBe("/conferences/acme/");
+    expect(deepLinkForNotification("acme", undefined)).toBe("/conferences/acme/");
   });
 });
