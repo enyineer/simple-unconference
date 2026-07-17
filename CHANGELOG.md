@@ -1,5 +1,18 @@
 # simple-unconference
 
+## 0.13.4
+
+### Patch Changes
+
+- [#34](https://github.com/enyineer/simple-unconference/pull/34) [`2cc7fc4`](https://github.com/enyineer/simple-unconference/commit/2cc7fc450c5e3b26cfd9affd0cda1c34eead926a) Thanks [@enyineer](https://github.com/enyineer)! - Each conference can now be installed as its own separate app. The app moved from hash-based URLs (`/#/conferences/<slug>`) to real paths (`/conferences/<slug>/`), and each conference's web app manifest now has a distinct path-scoped `scope`/`start_url`. Previously every conference shared `scope: "/"`, so Chrome treated them as one app — installing a second conference just showed "Open <the first one>". Now Chrome installs each conference as its own icon.
+
+  Old `/#/…` links (bookmarks, already-sent verification / password-reset emails, existing push and board links) are transparently redirected to the new path form at load, so nothing breaks.
+
+- [#34](https://github.com/enyineer/simple-unconference/pull/34) [`2cc7fc4`](https://github.com/enyineer/simple-unconference/commit/2cc7fc450c5e3b26cfd9affd0cda1c34eead926a) Thanks [@enyineer](https://github.com/enyineer)! - Made push notifications proactive and correctly per-conference.
+
+  - **Proactive opt-in**: a dismissible "Turn on notifications" card now appears in a conference (once per conference/device) so the opt-in isn't buried in the notification bell. It defers to the install nudge so the two never stack, and only shows when push can actually be enabled.
+  - **Per-conference accuracy (bug fix)**: enabling push in one conference used to make every other conference _look_ enabled (the client read the browser's origin-level subscription), while the server only registered the one you clicked. Now each conference reflects its own server-side registration via a new `push.status` check. Enabling registers only the current conference (reusing the shared browser subscription without re-prompting), and turning it off removes only that conference's registration instead of killing the shared browser channel — so muting one conference no longer breaks the others.
+
 ## 0.13.3
 
 ### Patch Changes
