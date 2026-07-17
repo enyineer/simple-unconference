@@ -43,6 +43,8 @@ import {
   ProfileUpdateAnySchema,
   ProfileUpdateMineSchema,
   PromoteExpertSchema,
+  PushSubscribeSchema,
+  PushUnsubscribeSchema,
   RequestPasswordResetSchema,
   ResetPasswordSchema,
   VerifyEmailSchema,
@@ -509,6 +511,17 @@ export const contract = {
       .input(v.object({ slug: Slug, id: Id }))
       .output(type<Ok>()),
     markAllRead: oc.input(InConf).output(type<Ok>()),
+  },
+  // Web Push (OS-level notifications) opt-in. Per conference identity: the
+  // browser's subscription (endpoint + keys) is upserted on subscribe and
+  // dropped on unsubscribe. Both require at least a participant role.
+  push: {
+    subscribe: oc
+      .input(v.object({ slug: Slug, ...PushSubscribeSchema.entries }))
+      .output(type<Ok>()),
+    unsubscribe: oc
+      .input(v.object({ slug: Slug, ...PushUnsubscribeSchema.entries }))
+      .output(type<Ok>()),
   },
   profiles: {
     // Fetch a single profile. Returns NOT_FOUND for non-mod viewers when the

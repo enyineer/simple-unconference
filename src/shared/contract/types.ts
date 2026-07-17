@@ -822,6 +822,10 @@ export interface PublicConfigOut {
   // Sessions tab can show "X of N submitted" before the user tries to add
   // their (N+1)th one.
   max_sessions_per_user_per_conference: number | null;
+  // VAPID public key for Web Push, or null when push isn't configured on this
+  // instance. Non-null means the client may render the "Enable push
+  // notifications" opt-in and pass this key to `pushManager.subscribe`.
+  vapid_public_key: string | null;
 }
 
 // ----- chat (see plans/chat.md) ------------------------------------------

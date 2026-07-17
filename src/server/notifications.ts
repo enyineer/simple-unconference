@@ -21,6 +21,7 @@
 
 import type { PrismaClient } from "@prisma/client";
 import { getBus } from "./realtime/bus";
+import { sendPushForNotification } from "./lib/webpush";
 
 export type NotificationKind =
   | "submission_published"
@@ -71,6 +72,15 @@ export async function createNotification(
     kind: "notification.upserted",
     recipientId: input.identityId,
     notificationId: id,
+  });
+  // Best-effort OS-level push AUGMENTING the in-app bell. Fire-and-forget: a
+  // push failure must never affect the notification write or the request, and
+  // it's fully inert (no DB work) when Web Push isn't configured. Reuses the
+  // already-built title/body/ctaHref — no duplicated copy.
+  void sendPushForNotification(prisma, input.identityId, {
+    title: input.title,
+    body: input.body,
+    ctaHref: input.ctaHref,
   });
   return { id };
 }

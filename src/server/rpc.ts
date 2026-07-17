@@ -21,6 +21,7 @@ import { expertsRouter } from "./rpc/experts";
 import { announcementsRouter } from "./rpc/announcements";
 import { takeawaysRouter } from "./rpc/takeaways";
 import { notificationsRouter } from "./rpc/notifications";
+import { pushRouter } from "./rpc/push";
 import { profilesRouter } from "./rpc/profiles";
 import { chatRouter } from "./rpc/chat";
 import { moderationRouter } from "./rpc/moderation";
@@ -38,6 +39,7 @@ export function buildRouter() {
     announcements: announcementsRouter,
     takeaways: takeawaysRouter,
     notifications: notificationsRouter,
+    push: pushRouter,
     profiles: profilesRouter,
     chat: chatRouter,
     moderation: moderationRouter,

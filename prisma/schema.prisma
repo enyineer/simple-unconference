@@ -204,6 +204,7 @@ model ConferenceIdentity {
   chatBlocksMade       ChatBlock[]        @relation("ChatBlockBlocker")
   chatBlocksReceived   ChatBlock[]        @relation("ChatBlockBlocked")
   takeaways            SessionTakeaway[]
+  pushSubscriptions    PushSubscription[]
 
   @@unique([conferenceId, email])
   @@index([conferenceId])
@@ -891,6 +892,30 @@ model Notification {
   @@index([identityId, readAt])
   @@index([identityId, createdAt])
   @@map("notifications")
+}
+
+// A browser Web Push subscription owned by one conference identity. Minted when
+// the participant opts into OS-level push in the notification bell; the browser
+// hands us the `endpoint` (the push service URL) plus the `p256dh`/`auth` keys
+// used to encrypt the payload. A single identity can hold several rows (one per
+// device/browser), so the unique key is (identity, endpoint) — re-subscribing
+// the same browser upserts rather than duplicating. Rows are best-effort: a
+// 404/410 from the push service on send means the subscription is dead and the
+// row is deleted.
+model PushSubscription {
+  id         Int      @id @default(autoincrement())
+  identityId Int      @map("identity_id")
+  endpoint   String
+  p256dh     String
+  auth       String
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  identity ConferenceIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  @@unique([identityId, endpoint])
+  @@index([identityId])
+  @@map("push_subscriptions")
 }
 
 // ===========================================================================

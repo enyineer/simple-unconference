@@ -12,6 +12,7 @@ import { api } from "../api";
 import { useToast } from "../design-system/hooks";
 import { realtimeBus } from "../realtime/realtimeBus";
 import { useRoute } from "../router";
+import { PushOptIn } from "./PushOptIn";
 
 type NotificationKind =
   | "submission_published"
@@ -333,6 +334,9 @@ export function NotificationBell({
               ))
             )}
           </div>
+
+          {/* Web Push opt-in — self-hides unless push is configured + supported. */}
+          <PushOptIn slug={slug} />
         </div>
       )}
     </div>

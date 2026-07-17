@@ -84,6 +84,9 @@ Override `DATABASE_URL` if you want to point at libSQL/Turso instead of the bund
 | `SMTP_URL` | _unset_ | Full SMTP connection URL (e.g. `smtp://user:pass@host:587`), used when `EMAIL_TRANSPORT=smtp`. Alternatively set `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`SMTP_SECURE`. Delivered via lazy-loaded `nodemailer`. |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_SECURE` | _unset_ / `587` / _unset_ / _unset_ / `false` | Discrete SMTP settings (alternative to `SMTP_URL`). |
 | `EMAIL_FROM` | `Unconference <onboarding@resend.dev>` | From-address for outgoing email. Set to an address on a domain you've verified (Resend) or that your SMTP server can send as. |
+| `VAPID_PUBLIC_KEY` | _unset_ | Web Push VAPID public key. Sent to the SPA (via `config.get`) so browsers can subscribe. Set together with `VAPID_PRIVATE_KEY` to enable OS-level push notifications; leave unset for a no-op (the opt-in never renders). Generate a keypair with `bun run scripts/gen-vapid.ts`. |
+| `VAPID_PRIVATE_KEY` | _unset_ | Web Push VAPID private key. **Secret** - kept server-side, never exposed to clients. Required alongside `VAPID_PUBLIC_KEY`. |
+| `VAPID_SUBJECT` | _APP_URL / `mailto:admin@example.com`_ | VAPID `sub` claim: a `mailto:` address or `https:` URL identifying the sender to push services. Defaults to `APP_URL` when it's an https origin, otherwise a mailto placeholder. |
 
 **Public-instance hardening** — all of these are opt-in via env and default to values that work for a free public instance running events up to ~2000 attendees. Set any value to `0` to disable that specific cap. See [Public Instance Hardening](#public-instance-hardening) for the full design.
 

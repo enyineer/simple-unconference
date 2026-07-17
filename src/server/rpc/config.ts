@@ -2,6 +2,7 @@ import { base } from "./shared";
 import { LIMITS } from "../lib/limits";
 import { turnstileSiteKey } from "../lib/turnstile";
 import { emailConfigured } from "../lib/email";
+import { vapidPublicKey } from "../lib/webpush";
 
 // Truthy = signup blocked. Treats "1"/"true"/"yes" (any case) as on; anything
 // else (including unset) leaves global signup enabled — safe default for
@@ -26,6 +27,7 @@ export const configRouter = {
         LIMITS.maxSessionsPerUserPerConference === 0
           ? null
           : LIMITS.maxSessionsPerUserPerConference,
+      vapid_public_key: vapidPublicKey(),
     };
   }),
 };

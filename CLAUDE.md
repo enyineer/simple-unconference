@@ -238,6 +238,24 @@ something the next session would need to know.
   but targets the currently-SEATED users (UserAssignment rows), not starrers.
   Call it AFTER the surrounding transaction commits (the standard rule above).
 
+- **Web Push AUGMENTS the bell — it never replaces it.** `createNotification`
+  fire-and-forgets `sendPushForNotification` (in
+  [src/server/lib/webpush.ts](src/server/lib/webpush.ts)) after the row write +
+  bus publish. It's BEST-EFFORT: wrapped so a push failure can never affect the
+  notification write, and fully INERT (zero DB work) when VAPID isn't
+  configured (`webPushConfigured()` gates on `VAPID_PUBLIC_KEY` +
+  `VAPID_PRIVATE_KEY`). It reuses the notification's own `title`/`body`/`ctaHref`
+  — no duplicated copy — and the payload is privacy-safe (names/titles only,
+  NEVER emails; mirror this in any new push surface). `ctaHref` → hash deep-link
+  via `deepLinkForNotification`. Subscriptions live on `PushSubscription` (one
+  per device, unique `(identity, endpoint)`); a 404/410 from the push service
+  deletes the stale row. RPC opt-in: `push.subscribe`/`unsubscribe`
+  ([src/server/rpc/push.ts](src/server/rpc/push.ts), participant role). Client
+  opt-in is `PushOptIn` in the notification bell (self-hides unless
+  `config.vapid_public_key` + `PushManager` + a SW registration exist). The SW
+  (`sw.js`) handles `push`/`notificationclick` — bump `CACHE_VERSION` if you
+  touch it. Generate keys with `bun run scripts/gen-vapid.ts`.
+
 ## Room constraints (dedication + availability)
 
 - **Room constraint logic lives in
