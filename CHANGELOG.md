@@ -1,5 +1,63 @@
 # simple-unconference
 
+## 0.13.0
+
+### Minor Changes
+
+- [#26](https://github.com/enyineer/simple-unconference/pull/26) [`115e1f6`](https://github.com/enyineer/simple-unconference/commit/115e1f682c3da6437fd1e83e1e2ac5f19a78f631) Thanks [@enyineer](https://github.com/enyineer)! - Sessions can now have custom and multiple speakers, separate from who authored
+  the submission. Moderators add a speaker list per session - registered
+  participants and/or free-form typed names for guests who aren't in the system.
+  When no speakers are set, the session's speaker defaults to its submitter, so
+  nothing changes for existing sessions. The scheduler now keeps each real speaker
+  (not just the author) out of two overlapping rooms at once, which finally lets a
+  moderator who created several sessions on different people's behalf schedule them
+  in parallel. Hand-scheduling a session whose speaker is already presenting in an
+  overlapping slot shows a non-blocking heads-up instead of silently double-booking.
+
+- [#26](https://github.com/enyineer/simple-unconference/pull/26) [`115e1f6`](https://github.com/enyineer/simple-unconference/commit/115e1f682c3da6437fd1e83e1e2ac5f19a78f631) Thanks [@enyineer](https://github.com/enyineer)! - The Event Experience Suite. A public Live Board for the projector and hallway screen: a
+  token-protected, read-only schedule grid that fills in live, with a join QR and a Pitch Mode
+  spotlight - the facilitator highlights the session being pitched and the wall shows its star
+  count climb in real time. A Right Now card on the Me tab anchors everyone's day (current
+  session, room, up next, one-tap switching), moderators get a megaphone that notifies every
+  participant instantly, and an Event report sheet turns the conference into printable numbers.
+  Sessions collect takeaways that roll into a personal post-event recap. First-time participants
+  get a three-step welcome rail, owners can duplicate a past conference (rooms, slots, settings -
+  re-anchored to a new date), and the whole app now works as an installable PWA that keeps showing
+  your schedule when the venue wifi drops. Each conference installs as its own app - its own name,
+  its own owner-uploaded home-screen icon, and a launch that drops you straight into that
+  conference.
+
+- [#26](https://github.com/enyineer/simple-unconference/pull/26) [`115e1f6`](https://github.com/enyineer/simple-unconference/commit/115e1f682c3da6437fd1e83e1e2ac5f19a78f631) Thanks [@enyineer](https://github.com/enyineer)! - Added Web Push notifications: opt-in OS-level push that reaches participants even when the app is closed, augmenting (never replacing) the in-app bell + toast. Enable it per browser from the notification bell. Best-effort by design - a push failure never affects the in-app notification - and fully inert when the instance hasn't configured VAPID keys. Payloads stay privacy-safe (names and titles only, never emails). Configure with `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and optional `VAPID_SUBJECT`; generate a keypair with `bun run scripts/gen-vapid.ts`.
+
+### Patch Changes
+
+- [#26](https://github.com/enyineer/simple-unconference/pull/26) [`115e1f6`](https://github.com/enyineer/simple-unconference/commit/115e1f682c3da6437fd1e83e1e2ac5f19a78f631) Thanks [@enyineer](https://github.com/enyineer)! - The Live Board now fits any projector screen automatically instead of scrolling
+  off-frame. Rooms and time slots are paginated into pages that each fit the
+  screen and auto-rotate on a calm cadence, starting on the session happening
+  right now. Multi-day conferences never mix two days on one page, and a page
+  indicator shows which rooms, day, and time window are on screen. Legibility is
+  preserved - a hall full of rooms cycles through readable pages rather than
+  shrinking into an unreadable smear.
+
+- [#26](https://github.com/enyineer/simple-unconference/pull/26) [`115e1f6`](https://github.com/enyineer/simple-unconference/commit/115e1f682c3da6437fd1e83e1e2ac5f19a78f631) Thanks [@enyineer](https://github.com/enyineer)! - Fix a login loop when re-entering a conference. Visiting a conference deep link
+  while signed out cached an empty session for that slug; after signing in and
+  landing back on the same slug, the app read that stale empty result as
+  "not authenticated" and bounced straight back to the login page - cancelling the
+  fresh session fetch in the process, so only a full page reload could break out.
+  The cached result is now dropped the moment the active conference changes, so the
+  fresh fetch always decides.
+
+- [#26](https://github.com/enyineer/simple-unconference/pull/26) [`115e1f6`](https://github.com/enyineer/simple-unconference/commit/115e1f682c3da6437fd1e83e1e2ac5f19a78f631) Thanks [@enyineer](https://github.com/enyineer)! - Fixed the default PWA icons being served as Git LFS pointer text instead of real PNG bytes. The default `icon-192.png` / `icon-512.png` are LFS-tracked, but the CI test and release image builds checked out without LFS, so a conference with no custom icon would have served a broken image (and the icon-fallback test failed). Both the `test` and `docker` CI checkouts now pull LFS objects.
+
+- [#26](https://github.com/enyineer/simple-unconference/pull/26) [`115e1f6`](https://github.com/enyineer/simple-unconference/commit/115e1f682c3da6437fd1e83e1e2ac5f19a78f631) Thanks [@enyineer](https://github.com/enyineer)! - Polished the conference UI on narrow (mobile) screens:
+
+  - The agenda header actions ("How it works", "Event report", "Pitch mode", "Add slot") now wrap below the title instead of clipping off the right edge.
+  - Long attention pills ("conflicts with ...", "room may be crowded ...") wrap onto multiple lines rather than overflowing their card.
+  - The breadcrumb's root crumb is a compact home icon (label kept for screen readers and as a tooltip) so it no longer wraps to two lines.
+  - The "install this conference as an app" nudge is tighter: a smaller title, a single right-aligned action bar (Dismiss + Install), and install-walkthrough copy sized to match its steps.
+
+  Also made the install copy clearer that an installed app can send notifications even when it isn't open - and, on iPhone/iPad, that adding it to the Home Screen is what enables notifications at all (an open Safari tab can't receive them).
+
 ## 0.12.1
 
 ### Patch Changes
