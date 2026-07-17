@@ -550,7 +550,11 @@ export function App() {
             </RealtimeProvider>
           )}
         </ErrorBoundary>
-        <Footer />
+        {/* The public Live Board is a full-screen surface with its own chrome
+            (and its own understated credit footnote). The app footer would
+            otherwise sit at the top of the empty document flow behind the
+            fixed board and bleed into its header. */}
+        {!boardMatch && <Footer />}
       </ToastProvider>
     </DesignSystemProvider>
   );

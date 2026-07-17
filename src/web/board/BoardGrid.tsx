@@ -23,6 +23,27 @@ import { useBoardPages, type BoardPage } from "./useBoardPages";
 // Calm auto-advance cadence for the projector page rotation.
 const PAGE_ROTATE_MS = 15_000;
 
+// The "where am I looking" summary for the currently visible page, surfaced up
+// to the board header (the prominent wayfinding spot) rather than buried in the
+// bottom pager. `rooms`/`day` are null when they'd add nothing (all rooms fit /
+// single-day conference).
+export interface BoardNav {
+  day: string | null;
+  rooms: string | null;
+  time: string;
+}
+
+function navForPage(page: BoardPage, timeFmt: Intl.DateTimeFormat): BoardNav {
+  return {
+    day: page.dayLabel,
+    rooms:
+      page.roomTotal > page.roomSlice.length
+        ? `Rooms ${page.roomStart}–${page.roomEnd} of ${page.roomTotal}`
+        : null,
+    time: `${timeFmt.format(page.rangeStart)}–${timeFmt.format(page.rangeEnd)}`,
+  };
+}
+
 function useNarrow(query = "(max-width: 720px)"): boolean {
   const [narrow, setNarrow] = useState(
     () => typeof window !== "undefined" && window.matchMedia(query).matches,
@@ -76,16 +97,28 @@ export function BoardGrid({
   payload,
   now,
   timeFmt,
+  onNav,
 }: {
   payload: BoardPayloadOut;
   now: number;
   timeFmt: Intl.DateTimeFormat;
+  // Reports the currently-visible page's day/rooms/time up to the header so it
+  // can show a prominent "where am I looking" indicator. Null on the phone
+  // stacked layout / empty board (nothing to page through).
+  onNav: (nav: BoardNav | null) => void;
 }) {
   const narrow = useNarrow();
   const { rooms, slots, entries } = payload;
 
   const byCell = new Map<string, BoardEntryOut>();
   for (const e of entries) byCell.set(entryKey(e.slot_id, e.room_id), e);
+
+  // The stacked/empty paths don't paginate, so the header indicator has nothing
+  // to show — clear it. Guarded on the values so it isn't fired every render.
+  const noNav = narrow || slots.length === 0 || rooms.length === 0;
+  useEffect(() => {
+    if (noNav) onNav(null);
+  }, [noNav, onNav]);
 
   if (slots.length === 0 || rooms.length === 0) {
     return (
@@ -107,6 +140,7 @@ export function BoardGrid({
       now={now}
       timeFmt={timeFmt}
       timezone={payload.timezone}
+      onNav={onNav}
     />
   );
 }
@@ -121,6 +155,7 @@ function PagedBoard({
   now,
   timeFmt,
   timezone,
+  onNav,
 }: {
   rooms: BoardRoomOut[];
   slots: BoardSlotOut[];
@@ -128,6 +163,7 @@ function PagedBoard({
   now: number;
   timeFmt: Intl.DateTimeFormat;
   timezone: string;
+  onNav: (nav: BoardNav | null) => void;
 }) {
   const regionRef = useRef<HTMLDivElement>(null);
   const pages = useBoardPages(regionRef, rooms, slots, timezone);
@@ -157,6 +193,13 @@ function PagedBoard({
   const active = pages.length > 0 ? ((seed ?? 0) + tick) % pages.length : 0;
   const page = pages[active];
 
+  // Surface the visible page's day/rooms/time to the header. Effect (not
+  // render) because it setStates a parent; deps are the derived page + fmt, so
+  // it only fires on an actual page change or resize reflow — no loop.
+  useEffect(() => {
+    onNav(page ? navForPage(page, timeFmt) : null);
+  }, [page, timeFmt, onNav]);
+
   return (
     <div className="board-page" ref={regionRef}>
       {page && (
@@ -168,9 +211,9 @@ function PagedBoard({
           timeFmt={timeFmt}
         />
       )}
-      {pages.length > 1 && page && (
-        <BoardPager pages={pages} active={active} page={page} timeFmt={timeFmt} />
-      )}
+      {/* Bottom strip is now just the rotation dots — the day/rooms/time label
+          lives prominently in the header (see BoardHeaderNav). */}
+      {pages.length > 1 && <BoardPager count={pages.length} active={active} />}
     </div>
   );
 }
@@ -239,33 +282,14 @@ function BoardMatrix({
   );
 }
 
-// Page indicator: a dot per page + a text label naming the room span and time
-// window on screen ("Rooms 1–8 of 14 · 09:00–12:00").
-function BoardPager({
-  pages,
-  active,
-  page,
-  timeFmt,
-}: {
-  pages: BoardPage[];
-  active: number;
-  page: BoardPage;
-  timeFmt: Intl.DateTimeFormat;
-}) {
-  const roomsLabel =
-    page.roomTotal > page.roomSlice.length
-      ? `Rooms ${page.roomStart}–${page.roomEnd} of ${page.roomTotal}`
-      : null;
-  const timeLabel = `${timeFmt.format(page.rangeStart)}–${timeFmt.format(page.rangeEnd)}`;
-  // Day prefix only on a multi-day conference (dayLabel is null otherwise).
-  const label = [page.dayLabel, roomsLabel, timeLabel]
-    .filter((p): p is string => p !== null)
-    .join(" · ");
-
+// Rotation progress: one dot per page, active dot highlighted. The textual
+// "which day / rooms / time" label lives prominently in the header now
+// (BoardHeaderNav), so the bottom strip is just the dots.
+function BoardPager({ count, active }: { count: number; active: number }) {
   return (
     <div className="board-pager">
       <span className="board-pager-dots">
-        {pages.map((_, i) => (
+        {Array.from({ length: count }, (_, i) => (
           <span
             key={i}
             className={`board-pager-dot${i === active ? " is-active" : ""}`}
@@ -273,7 +297,6 @@ function BoardPager({
           />
         ))}
       </span>
-      <span className="board-pager-label">{label}</span>
     </div>
   );
 }

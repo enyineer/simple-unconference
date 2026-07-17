@@ -60,6 +60,39 @@ export const BOARD_STYLES = `
   font-size: 12px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase;
   color: var(--bd-fg-muted);
 }
+
+/* Prominent header wayfinding: the day + "Rooms X of Y" + time window on screen.
+   Centered between the title and the clock — the first thing the room reads. */
+.board-nav {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  text-align: center; flex-shrink: 0; padding-top: 2px;
+}
+.board-nav-day {
+  font-size: 27px; font-weight: 800; letter-spacing: -0.01em;
+  color: var(--bd-fg); line-height: 1; white-space: nowrap;
+}
+.board-nav-detail {
+  display: inline-flex; align-items: center; gap: 12px;
+  font-size: 16px; font-weight: 700; letter-spacing: 0.01em; white-space: nowrap;
+}
+.board-nav-rooms {
+  color: var(--bd-unconf);
+  padding: 3px 12px; border-radius: 999px;
+  background: var(--bd-unconf-soft);
+  border: 1px solid rgba(88,166,255,0.28);
+}
+.board-nav-time {
+  color: var(--bd-fg-muted); font-variant-numeric: tabular-nums;
+}
+/* Understated maker credit, pinned to the bottom corner — a footnote, not a
+   header element. */
+.board-credit {
+  position: absolute; right: 22px; bottom: 12px; z-index: 4;
+  font-size: 11px; letter-spacing: 0.02em;
+  color: var(--bd-fg-faint); text-decoration: none; opacity: 0.7;
+  transition: opacity 200ms ease, color 200ms ease;
+}
+.board-credit:hover { opacity: 1; color: var(--bd-fg-muted); }
 .board-title {
   margin: 0;
   font-size: clamp(30px, 4vw, 60px);

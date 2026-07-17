@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetState
 import type { BoardPayloadOut } from "../../shared/contract/types";
 import { boardStreamUrl, fetchBoardPayload, type BoardFetchResult } from "../board/boardApi";
 import { BOARD_STYLES } from "../board/boardStyles";
-import { BoardGrid } from "../board/BoardGrid";
+import { BoardGrid, type BoardNav } from "../board/BoardGrid";
 import { BoardSpotlight } from "../board/BoardSpotlight";
 import { QrBlock } from "../board/QrBlock";
 import { makeClockFmt, makeTimeFmt, timezoneLabel } from "../board/boardFormat";
@@ -138,6 +138,9 @@ function BoardView({
   const timeFmt = useMemo(() => makeTimeFmt(payload.timezone), [payload.timezone]);
   const joinUrl = `${window.location.origin}/#/conferences/${slug}`;
   const connLabel = conn === "live" ? "Live" : conn === "reconnecting" ? "Reconnecting" : "Connecting";
+  // The visible page's day / rooms / time, reported up from the grid so it can
+  // headline the header — the wayfinding a projector audience actually needs.
+  const [nav, setNav] = useState<BoardNav | null>(null);
 
   return (
     <div className="board-root">
@@ -153,6 +156,7 @@ function BoardView({
           </span>
           <h1 className="board-title">{payload.name}</h1>
         </div>
+        {nav && <BoardHeaderNav nav={nav} />}
         <div className="board-header-right">
           <div className="board-clock-wrap">
             <WallClock timezone={payload.timezone} />
@@ -162,9 +166,30 @@ function BoardView({
         </div>
       </header>
 
-      <BoardGrid payload={payload} now={now} timeFmt={timeFmt} />
+      <BoardGrid payload={payload} now={now} timeFmt={timeFmt} onNav={setNav} />
 
       <BoardSpotlight spotlight={payload.spotlight} joinUrl={joinUrl} />
+
+      {/* Small credit footnote — deliberately understated; the schedule is the
+          star of a projector wall, not the maker's byline. */}
+      <a className="board-credit" href="https://enking.dev" target="_blank" rel="noreferrer">
+        Crafted by enking.dev
+      </a>
+    </div>
+  );
+}
+
+// Prominent "where am I looking" indicator, centered in the header: the current
+// day (multi-day only), the room span ("Rooms 1–6 of 8", only when paginated),
+// and the time window on screen. This is the headline wayfinding for the room.
+function BoardHeaderNav({ nav }: { nav: BoardNav }) {
+  return (
+    <div className="board-nav">
+      {nav.day && <span className="board-nav-day">{nav.day}</span>}
+      <span className="board-nav-detail">
+        {nav.rooms && <span className="board-nav-rooms">{nav.rooms}</span>}
+        <span className="board-nav-time">{nav.time}</span>
+      </span>
     </div>
   );
 }
