@@ -18,6 +18,24 @@ export function submitterLabel(s: {
   return null;
 }
 
+/**
+ * The effective presenter display names for a session, in order, with any
+ * blank entries dropped. This is "who presents" (defaults to the submitter
+ * when no explicit speakers are set) — distinct from `submitterLabel`, which
+ * is authorship. Use for plain-text presenter contexts (calendar labels,
+ * select hints); use the `SpeakerList` component when you want profile links.
+ */
+export function speakerNames(s: { speakers: { name: string }[] }): string[] {
+  return s.speakers.map((sp) => sp.name).filter((n) => n.trim().length > 0);
+}
+
+/** The effective presenters joined for a plain-text line, or null when there
+ *  is no named presenter to show. */
+export function speakerLabel(s: { speakers: { name: string }[] }): string | null {
+  const names = speakerNames(s);
+  return names.length > 0 ? names.join(", ") : null;
+}
+
 /** Format an epoch instant as "HH:MM" in the conference timezone. */
 export function fmtTimeShort(ms: number, timeZone: string): string {
   return formatInTz(ms, timeZone, { hour: "2-digit", minute: "2-digit" });

@@ -4,6 +4,7 @@ import { useToast } from "../../../design-system/hooks";
 import { api, errorCode } from "../../../api";
 import { Disclosure } from "../../ui/Disclosure";
 import { slotRoomBlockReason } from "../../roomConstraints";
+import { speakerWarningMessage } from "./speakerWarning";
 import type { Room, Slot, Submission } from "../../types";
 
 // Moderator-only control to author the unconference occurrence set: place a
@@ -74,6 +75,7 @@ export function PlacementAuthor({
         return;
       }
       toast.success(`Placed in ${r.room_name}`);
+      if (r.speaker_warning) toast.warning(speakerWarningMessage(r.speaker_warning));
       setSubId("");
       setRoomId("");
       await onChange();

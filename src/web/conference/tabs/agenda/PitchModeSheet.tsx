@@ -12,6 +12,7 @@ import { Button, Sheet, Stack, Text } from "../../../design-system";
 import { useToast } from "../../../design-system/hooks";
 import { api, errorCode } from "../../../api";
 import type { Submission } from "../../types";
+import { speakerLabel } from "../../helpers";
 
 const MUTED = "var(--fgColor-muted, var(--uncon-fg-muted, #6b7280))";
 const BORDER = "var(--borderColor-default, var(--uncon-border, rgba(127,127,127,0.25)))";
@@ -120,7 +121,7 @@ export function PitchModeSheet({
                       {s.title}
                     </span>
                     <span style={{ fontSize: 12.5, color: MUTED }}>
-                      {s.submitter_name ?? "Unknown"} · ★ {s.star_count}
+                      {speakerLabel(s) ?? "Unknown"} · ★ {s.star_count}
                     </span>
                   </div>
                   <Button

@@ -22,8 +22,33 @@ import type {
   BoardSpotlightOut,
 } from "../../shared/contract/types";
 import { getBus, boardTopicKey, type BusEvent } from "../realtime/bus";
+import { effectiveSpeakerNames } from "../lib/speakers";
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
+
+// Prisma select for everything the board needs to render a session's public
+// presenter line: authorship (submitter) + the effective speaker rows. Shared
+// across the track / placement / spotlight queries so they stay in sync.
+const PRESENTER_SELECT = {
+  submitterId: true,
+  submitter: { select: { name: true } },
+  speakers: {
+    orderBy: { position: "asc" },
+    select: { identityId: true, name: true, identity: { select: { name: true } } },
+  },
+} as const;
+
+// The board's public presenter line: the session's EFFECTIVE speaker display
+// names, joined. Names only (never emails) — safe for the public board. Falls
+// back to null when no named presenter resolves.
+function presenterLine(sub: {
+  submitterId: number;
+  submitter: { name: string | null } | null;
+  speakers: { identityId: number | null; name: string | null; identity: { name: string | null } | null }[];
+}): string | null {
+  const names = effectiveSpeakerNames(sub).filter((n) => n.trim().length > 0);
+  return names.length > 0 ? names.join(", ") : null;
+}
 
 // Resolve + authorize a board request: the conference must exist, have a board
 // token set (board enabled), and the `t` query param must match it. Returns the
@@ -147,7 +172,7 @@ async function buildBoardPayload(
         submission: {
           select: {
             title: true,
-            submitter: { select: { name: true } },
+            ...PRESENTER_SELECT,
             _count: { select: { stars: true } },
           },
         },
@@ -161,7 +186,7 @@ async function buildBoardPayload(
         submission: {
           select: {
             title: true,
-            submitter: { select: { name: true } },
+            ...PRESENTER_SELECT,
             _count: { select: { stars: true } },
           },
         },
@@ -181,7 +206,7 @@ async function buildBoardPayload(
           where: { id: conf.spotlightSubmissionId, conferenceId: confId, status: "published" },
           select: {
             id: true, title: true,
-            submitter: { select: { name: true } },
+            ...PRESENTER_SELECT,
             _count: { select: { stars: true } },
           },
         }),
@@ -197,7 +222,7 @@ async function buildBoardPayload(
       submission_id: t.submissionId,
       title: t.submission.title,
       star_count: t.submission._count.stars,
-      submitter_name: t.submission.submitter.name,
+      submitter_name: presenterLine(t.submission),
       attendee_count: 0,
       planned: true,
       mandatory: t.mandatory,
@@ -208,7 +233,7 @@ async function buildBoardPayload(
       submission_id: p.submissionId,
       title: p.submission.title,
       star_count: p.submission._count.stars,
-      submitter_name: p.submission.submitter.name,
+      submitter_name: presenterLine(p.submission),
       attendee_count: seatCount.get(`${p.slotId}:${p.submissionId}`) ?? 0,
       planned: false,
       mandatory: false,
@@ -220,7 +245,7 @@ async function buildBoardPayload(
         submission_id: spotlight.id,
         title: spotlight.title,
         star_count: spotlight._count.stars,
-        submitter_name: spotlight.submitter.name,
+        submitter_name: presenterLine(spotlight),
       }
     : null;
 

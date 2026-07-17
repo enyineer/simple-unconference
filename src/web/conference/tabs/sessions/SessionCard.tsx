@@ -3,9 +3,9 @@ import type { Submission } from "../../types";
 import {
   fmtTimeMaybeDay,
   spansMultipleDays,
-  submitterLabel,
+  speakerLabel,
 } from "../../helpers";
-import { ProfileLink } from "../../ProfileLink";
+import { SpeakerList } from "../../SpeakerList";
 import { Pill } from "../../ui/Pill";
 import { TakeawaysPanel } from "../../ui/TakeawaysPanel";
 
@@ -93,16 +93,12 @@ export function SessionCard({
           <Badge variant="default">allows overlap</Badge>
         )}
         <Pill>★ {s.star_count}</Pill>
-        {submitterLabel(s) && (
+        {speakerLabel(s) && (
           <span style={{ color: muted, fontSize: 12 }}>
             by{" "}
-            <ProfileLink
-              slug={slug}
-              identityId={s.submitter_id ?? null}
-              linkable={isMod || s.submitter_profile_published}
-            >
-              <span style={{ fontWeight: 500 }}>{submitterLabel(s)}</span>
-            </ProfileLink>
+            <span style={{ fontWeight: 500 }}>
+              <SpeakerList slug={slug} speakers={s.speakers} isMod={isMod} />
+            </span>
           </span>
         )}
       </div>

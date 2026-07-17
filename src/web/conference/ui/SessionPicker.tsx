@@ -8,6 +8,7 @@ import { Button, Sheet, Stack, Text } from "../../design-system";
 import { useToast } from "../../design-system/hooks";
 import { api, ApiError } from "../../api";
 import type { Room, Submission } from "../types";
+import { speakerLabel } from "../helpers";
 import { Tip } from "./Tip";
 import { useRequirementsConfirm } from "./RequirementsConfirm";
 
@@ -112,7 +113,7 @@ export function SessionPicker({
               <PickCard
                 key={p.submission_id}
                 title={sub?.title ?? `#${p.submission_id}`}
-                speaker={sub?.submitter_name ?? null}
+                speaker={sub ? speakerLabel(sub) : null}
                 roomName={room?.name ?? "?"}
                 remaining={remaining}
                 capacity={capacity}

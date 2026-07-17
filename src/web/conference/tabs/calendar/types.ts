@@ -37,6 +37,9 @@ export interface CalSubmission {
   id: number;
   title: string;
   submitter_name: string | null;
+  /** Effective presenters (defaults to the submitter). Used to render the
+   *  "speaker" line for unconference placements. */
+  speakers: { name: string }[];
   star_count: number;
   starred_by_me: boolean;
 }

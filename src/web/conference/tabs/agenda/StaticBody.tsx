@@ -14,6 +14,7 @@ import { lowercaseTrim } from "../../../design-system/core/normalize";
 import { SearchableSelect } from "../../ui/SearchableSelect";
 import { useRequirementsConfirm } from "../../ui/RequirementsConfirm";
 import { slotRoomBlockReason } from "../../roomConstraints";
+import { speakerWarningMessage } from "./speakerWarning";
 
 export function StaticBody({
   slug,
@@ -392,6 +393,7 @@ export function AutoRoomPicker({
         return;
       }
       toast.success(`Scheduled in ${r.room_name}.`);
+      if (r.speaker_warning) toast.warning(speakerWarningMessage(r.speaker_warning));
       await onDone();
     } catch (e) {
       toast.error(errorCode(e));
@@ -530,6 +532,7 @@ export function TrackEditor({
       setEditing(false);
       await onChange();
       toast.success(track ? `Updated the session in ${room.name}.` : `Scheduled a session in ${room.name}.`);
+      if (r.speaker_warning) toast.warning(speakerWarningMessage(r.speaker_warning));
     } catch (e) {
       toast.error(errorCode(e));
     } finally {

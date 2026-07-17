@@ -3,8 +3,8 @@ import { Badge, Button, Stack } from "../../../design-system";
 import { useToast } from "../../../design-system/hooks";
 import { api, errorCode } from "../../../api";
 import type { Room, Slot, Submission } from "../../types";
-import { fmtTimeMaybeDay, spansMultipleDays } from "../../helpers";
-import { ProfileLink } from "../../ProfileLink";
+import { fmtTimeMaybeDay, spansMultipleDays, speakerLabel } from "../../helpers";
+import { SpeakerList } from "../../SpeakerList";
 import { SessionPicker } from "../../ui/SessionPicker";
 import { PlacementAuthor } from "./PlacementAuthor";
 
@@ -416,7 +416,7 @@ export function UnconferenceBody({
                 >
                   {sub?.title ?? `#${p.submission_id}`}
                 </div>
-                {sub?.submitter_name && (
+                {sub && speakerLabel(sub) && (
                   <div
                     style={{
                       gridColumn: "1 / -1",
@@ -425,13 +425,7 @@ export function UnconferenceBody({
                       fontSize: 13,
                     }}
                   >
-                    <ProfileLink
-                      slug={slug}
-                      identityId={sub.submitter_id ?? null}
-                      linkable={isMod || sub.submitter_profile_published}
-                    >
-                      {sub.submitter_name}
-                    </ProfileLink>
+                    <SpeakerList slug={slug} speakers={sub.speakers} isMod={isMod} />
                   </div>
                 )}
                 {recTimes.length > 0 && (
