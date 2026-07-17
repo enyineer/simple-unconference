@@ -9,6 +9,10 @@
 /** The states the install affordance can be in.
  *  - "prompt":       we captured `beforeinstallprompt` -> fire the native dialog.
  *  - "ios-hint":     iOS Safari -> show the Add-to-Home-Screen steps.
+ *  - "android-hint": Android without a captured prompt (Chrome fires
+ *                    `beforeinstallprompt` only heuristically; Firefox/other
+ *                    Android browsers never do) -> show the "install from your
+ *                    browser menu" steps instead of nothing.
  *  - "manual":       a desktop browser that CAN install but didn't give us a
  *                    prompt (Chrome fires `beforeinstallprompt` only
  *                    heuristically) -> point at the browser's install control.
@@ -19,6 +23,7 @@
 export type InstallAffordance =
   | "prompt"
   | "ios-hint"
+  | "android-hint"
   | "manual"
   | "firefox-hint"
   | "none";
@@ -59,6 +64,18 @@ export function isFirefoxDesktop(ua: string): boolean {
 }
 
 /**
+ * Android (any browser). Used as the fallback affordance when no
+ * `beforeinstallprompt` was captured: Chrome fires it only heuristically and
+ * may miss it, and Firefox / other Android browsers never fire it at all - but
+ * every Android browser can still add the app from its own menu. Without this,
+ * Android would fall through to "none" and show no install affordance whatsoever
+ * (the bug this fixes). iOS is matched separately by `isIosSafari`.
+ */
+export function isAndroid(ua: string): boolean {
+  return /Android/.test(ua);
+}
+
+/**
  * True for iPhone/iPad Safari (the only browsers where "Add to Home Screen"
  * is the install path). False for Chrome-on-iOS (CriOS), Firefox-on-iOS
  * (FxiOS), Android, and desktop — those either fire `beforeinstallprompt`
@@ -93,12 +110,14 @@ export function installAffordance(x: {
   standalone: boolean;
   hasInstallPrompt: boolean;
   isIos: boolean;
+  isAndroid: boolean;
   canManualInstall: boolean;
   isFirefoxDesktop: boolean;
 }): InstallAffordance {
   if (x.standalone) return "none";
   if (x.hasInstallPrompt) return "prompt";
   if (x.isIos) return "ios-hint";
+  if (x.isAndroid) return "android-hint";
   if (x.canManualInstall) return "manual";
   if (x.isFirefoxDesktop) return "firefox-hint";
   return "none";

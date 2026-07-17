@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   canManualInstall,
   installAffordance,
+  isAndroid,
   isFirefoxDesktop,
   isIosSafari,
   type InstallAffordance,
@@ -20,6 +21,15 @@ interface BeforeInstallPromptEvent extends Event {
   readonly platforms?: readonly string[];
   prompt(): Promise<void>;
   readonly userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+}
+
+// The inline script in index.html captures `beforeinstallprompt` before React
+// mounts (Chrome fires it once, early) and stashes it here. Read it without
+// widening to `any`.
+function earlyCapturedPrompt(): BeforeInstallPromptEvent | null {
+  if (typeof window === "undefined") return null;
+  const w: Window & { __deferredInstallPrompt?: BeforeInstallPromptEvent | null } = window;
+  return w.__deferredInstallPrompt ?? null;
 }
 
 // Safari exposes `navigator.standalone` (legacy iOS Home Screen flag) outside
@@ -46,7 +56,12 @@ export interface UseInstallPrompt {
 }
 
 export function useInstallPrompt(): UseInstallPrompt {
-  const [deferred, setDeferred] = useState<BeforeInstallPromptEvent | null>(null);
+  // Seed from the event the early index.html script may have already captured
+  // before this hook mounted — otherwise Chrome's one-shot event is lost and the
+  // native install path never appears.
+  const [deferred, setDeferred] = useState<BeforeInstallPromptEvent | null>(
+    earlyCapturedPrompt,
+  );
   const [standalone, setStandalone] = useState<boolean>(detectStandalone);
 
   const isIos =
@@ -59,11 +74,15 @@ export function useInstallPrompt(): UseInstallPrompt {
       e.preventDefault();
       setDeferred(e as BeforeInstallPromptEvent);
     };
+    // The early script re-dispatches this after stashing the event, so a hook
+    // that mounted just after the native event still picks it up.
+    const onEarlyCaptured = () => setDeferred(earlyCapturedPrompt());
     const onInstalled = () => {
       setDeferred(null);
       setStandalone(true);
     };
     window.addEventListener("beforeinstallprompt", onBeforeInstall);
+    window.addEventListener("bip-captured", onEarlyCaptured);
     window.addEventListener("appinstalled", onInstalled);
 
     // React to the display-mode flipping to standalone (e.g. the user launches
@@ -74,6 +93,7 @@ export function useInstallPrompt(): UseInstallPrompt {
 
     return () => {
       window.removeEventListener("beforeinstallprompt", onBeforeInstall);
+      window.removeEventListener("bip-captured", onEarlyCaptured);
       window.removeEventListener("appinstalled", onInstalled);
       mql?.removeEventListener?.("change", onDisplayModeChange);
     };
@@ -92,6 +112,7 @@ export function useInstallPrompt(): UseInstallPrompt {
     standalone,
     hasInstallPrompt: deferred !== null,
     isIos,
+    isAndroid: isAndroid(ua),
     canManualInstall: canManualInstall(ua),
     isFirefoxDesktop: isFirefoxDesktop(ua),
   });
