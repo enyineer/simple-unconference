@@ -1,5 +1,13 @@
 # simple-unconference
 
+## 0.13.5
+
+### Patch Changes
+
+- [`8d3f53b`](https://github.com/enyineer/simple-unconference/commit/8d3f53b606d9b7238f9a707bb7e0b1909f2f89d3) Thanks [@enyineer](https://github.com/enyineer)! - Run SQLite in WAL journal mode: boot now enables it (idempotent + persistent), so one
+  stalled writer can no longer block every reader across workers (P1008/SQLITE_BUSY outage
+  class). Also fix test-only process.env pollution from push.test.ts restores.
+
 ## 0.13.4
 
 ### Patch Changes
