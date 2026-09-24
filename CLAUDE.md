@@ -154,6 +154,23 @@ something the next session would need to know.
   `data-color-mode` / `data-light-theme` / `data-dark-theme` attributes onto
   `<html>` via `useEffect` so CSS vars cascade from the root and resolve
   inside the portal. If you swap plugins again, do the same.
+- **WAL is load-bearing; keep the boot pragma.** `startServer()` runs
+  `enableWalMode` (in `db.ts`) before listening, and it's idempotent +
+  persistent in the DB file. libsql's default journal mode (`delete`) lets
+  ONE writer block ALL readers across every worker — a 2026-09-24 prod
+  incident (stalled fsync held the exclusive lock; every request 500'd with
+  P1008/SQLITE_BUSY until a pod restart). The multi-worker launcher's design
+  notes in `cluster.ts` assume WAL. Don't remove the pragma. Known residual:
+  writer-vs-writer still fails instantly (this libsql client build exposes no
+  busy_timeout) — acceptable under WAL because commits are short.
+- **bun test = ONE process for all files; env mutations leak.** Files run
+  sequentially, but `process.env` is shared and pollution persists into later
+  files. Restoring with `process.env.X = prev` when `prev` is undefined sets
+  the literal string `"undefined"` (push.test.ts once poisoned VAPID keys →
+  later suites saw push "configured" and config assertions failed with
+  `vapid_public_key: "undefined"`, victims varying with file order). ALWAYS
+  guard restores: `if (prev === undefined) delete process.env.X; else
+  process.env.X = prev;`
 
 ## Realtime (SSE + EventBus)
 
