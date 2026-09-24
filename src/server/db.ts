@@ -25,3 +25,19 @@ export function newPrisma(databaseUrl?: string): PrismaClient {
   const adapter = new PrismaLibSql({ url: databaseUrl ?? urlFromEnv() });
   return new PrismaClient({ adapter });
 }
+
+// Puts the DB into WAL journal mode. idempotent — the mode is stored in the
+// DB file header, so it persists for every future connection in every
+// process (the multi-worker launcher relies on this; see cluster.ts).
+//
+// Without WAL (libsql's default is `delete`), ANY writer blocks ALL readers
+// cluster-wide while its transaction is in the pending/exclusive phase — one
+// stalled commit (e.g. a slow fsync) 500s every request until the process
+// restarts. Under WAL readers never block on a writer.
+// Returns the resulting journal mode ("wal").
+export async function enableWalMode(prisma: PrismaClient): Promise<string> {
+  const rows = await prisma.$queryRawUnsafe<Array<{ journal_mode: string }>>(
+    "PRAGMA journal_mode=WAL",
+  );
+  return rows[0]?.journal_mode ?? "";
+}

@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { logger } from "hono/logger";
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { getPrisma } from "./db";
+import { getPrisma, enableWalMode } from "./db";
 import { calendarRoutes } from "./routes/calendar";
 import { avatarRoutes } from "./routes/avatars";
 import { conferenceIconRoutes } from "./routes/conference-icons";
@@ -119,12 +119,26 @@ function mimeFor(path: string): string {
 // WORKERS=1) we leave it off so Bun.serve fails fast with EADDRINUSE if
 // the port is already bound — otherwise an orphaned old backend can keep
 // answering requests alongside the new one and you'd never notice.
-export function startServer(): void {
+export async function startServer(): Promise<void> {
   // Fail fast on misconfiguration: APP_URL must be set so email links resolve.
   // No default — a loopback default would silently ship broken reset/verify
   // links after rollout.
   assertAppUrlConfigured();
   const prisma = getPrisma();
+  // WAL must be on BEFORE the first request: the cluster launcher fans out
+  // across processes and everything downstream (cluster.ts design notes)
+  // assumes WAL lock semantics. Idempotent + persistent, so workers that
+  // boot later just confirm it. Failure to convert is logged, not fatal —
+  // the mode persists once any boot wins the brief exclusive lock.
+  let journalMode = "";
+  try {
+    journalMode = await enableWalMode(prisma);
+  } catch (err) {
+    console.warn(`[db] journal_mode=WAL pragma failed: ${err}`);
+  }
+  if (journalMode && journalMode !== "wal") {
+    console.warn(`[db] journal_mode is "${journalMode}", expected "wal" — continuing`);
+  }
   const app = buildApp(prisma);
   const port = Number(process.env.PORT ?? 3000);
   const distDir = join(import.meta.dir, "../../dist");
@@ -181,5 +195,5 @@ export function startServer(): void {
 }
 
 if (import.meta.main) {
-  startServer();
+  void startServer();
 }

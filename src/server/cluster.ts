@@ -410,7 +410,7 @@ async function main(): Promise<void> {
   if (decision.count === 1) {
     // Skip fork: import + call directly so there's no extra process.
     const { startServer } = await import("./index");
-    startServer();
+    await startServer();
     return;
   }
   await runCluster(decision.count);
