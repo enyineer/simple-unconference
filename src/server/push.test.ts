@@ -113,8 +113,13 @@ describe("sendPushForNotification (best-effort + stale cleanup)", () => {
     process.env.VAPID_PRIVATE_KEY = "test-private-key";
   });
   afterAll(() => {
-    process.env.VAPID_PUBLIC_KEY = prev.pub;
-    process.env.VAPID_PRIVATE_KEY = prev.priv;
+    // bun test runs all files in ONE process, so a bare `= prev` restore with
+    // prev === undefined would leak the literal string "undefined" into every
+    // later file (webPushConfigured() would flip to true). Delete instead.
+    if (prev.pub === undefined) delete process.env.VAPID_PUBLIC_KEY;
+    else process.env.VAPID_PUBLIC_KEY = prev.pub;
+    if (prev.priv === undefined) delete process.env.VAPID_PRIVATE_KEY;
+    else process.env.VAPID_PRIVATE_KEY = prev.priv;
   });
 
   test("sends to every device and deletes only rows the push service reports gone", async () => {
@@ -175,8 +180,11 @@ describe("webPushConfigured / vapidPublicKey (env gating)", () => {
     priv: process.env.VAPID_PRIVATE_KEY,
   };
   afterEach(() => {
-    process.env.VAPID_PUBLIC_KEY = prev.pub;
-    process.env.VAPID_PRIVATE_KEY = prev.priv;
+    // Same guard as the describe-level afterAll: never write "undefined".
+    if (prev.pub === undefined) delete process.env.VAPID_PUBLIC_KEY;
+    else process.env.VAPID_PUBLIC_KEY = prev.pub;
+    if (prev.priv === undefined) delete process.env.VAPID_PRIVATE_KEY;
+    else process.env.VAPID_PRIVATE_KEY = prev.priv;
   });
 
   test("inert when either key is missing", () => {
