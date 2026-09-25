@@ -70,6 +70,39 @@ describe("profiles.* smoke", () => {
     expect(after.entries[0]!.href).toBe("https://github.com/alice");
   });
 
+  test("updateMine + updateAny can set and clear the display name", async () => {
+    const owner = new Client(ctx.app);
+    await owner.rpc.auth.signup({ email: "po15@example.com", password: "secret123", name: "Owner" });
+    const conf = await owner.rpc.conferences.create({ name: "Rename Smoke" });
+
+    const { client: alice, identity_id: aliceId } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "alice15@example.com", "secret123", "Alice");
+
+    // Self rename.
+    const saved = await alice.rpc.profiles.updateMine({ slug: conf.slug, name: "Alice Cooper" });
+    expect(saved.name).toBe("Alice Cooper");
+
+    // Explicit empty string clears to null (same rule as updateConfMe).
+    const cleared = await alice.rpc.profiles.updateMine({ slug: conf.slug, name: "" });
+    expect(cleared.name).toBeNull();
+
+    // Omitted key leaves the stored name alone.
+    const untouched = await alice.rpc.profiles.updateMine({ slug: conf.slug, bio: "hi" });
+    expect(untouched.name).toBeNull();
+    expect(untouched.bio).toBe("hi");
+
+    // Mod-level rename of someone else via updateAny.
+    const modRenamed = await owner.rpc.profiles.updateAny({
+      slug: conf.slug, identity_id: aliceId, name: "Alice C.",
+    });
+    expect(modRenamed.name).toBe("Alice C.");
+
+    // Over the 80-char cap → validation error.
+    await expect(
+      alice.rpc.profiles.updateMine({ slug: conf.slug, name: "x".repeat(81) }),
+    ).rejects.toBeInstanceOf(ORPCError);
+  });
+
   test("profiles.list includes published identities; non-mods don't see unpublished", async () => {
     const owner = new Client(ctx.app);
     await owner.rpc.auth.signup({ email: "po2@example.com", password: "secret123" });

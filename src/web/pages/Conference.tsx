@@ -121,6 +121,13 @@ export function ConferencePage({
     onLoggedOut();
   }
 
+  // Account-menu inline rename: persists the identity's display name, then
+  // asks App to refetch `confMe` so the header + Me tab reflect it.
+  async function handleRename(name: string | null) {
+    await api.conferences.updateConfMe({ slug, name: name ?? "" });
+    onConfMeRefresh();
+  }
+
   if (error) {
     return (
       <PageLayout>
@@ -155,6 +162,7 @@ export function ConferencePage({
         onColorModeChange={onColorModeChange}
         onSignOut={handleSignOut}
         slug={slug}
+        onRename={handleRename}
       />
 
       <InstallNudge slug={slug} conferenceName={conf.name} iconHash={conf.icon_hash} />
@@ -255,7 +263,7 @@ export function ConferencePage({
 
 function ConferenceHeader({
   conf, tabs, activeTab, onTabChange,
-  onBack, me, colorMode, onColorModeChange, onSignOut, slug,
+  onBack, me, colorMode, onColorModeChange, onSignOut, slug, onRename,
 }: {
   conf: ConferenceDetail;
   tabs: Tab[];
@@ -267,6 +275,9 @@ function ConferenceHeader({
   onColorModeChange: (next: ColorMode) => void;
   onSignOut: () => void | Promise<void>;
   slug: string;
+  /** Inline rename from the account menu — persists the conference
+   *  identity's display name, then the caller refreshes `confMe`. */
+  onRename: (name: string | null) => Promise<void>;
 }) {
   // CTA-driven tab switch from the notification bell. Each notification carries
   // a `tab:<key>` href; we accept only keys that are actually rendered for this
@@ -320,6 +331,7 @@ function ConferenceHeader({
               colorMode={colorMode}
               onColorModeChange={onColorModeChange}
               onSignOut={onSignOut}
+              onRename={onRename}
             />
           </div>
         </div>
@@ -378,6 +390,7 @@ function ConferenceHeader({
                   colorMode={colorMode}
                   onColorModeChange={onColorModeChange}
                   onSignOut={onSignOut}
+                  onRename={onRename}
                 />
               </div>
             </div>

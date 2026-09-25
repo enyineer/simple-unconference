@@ -97,6 +97,9 @@ function initialValues(profile: ProfileOut): Partial<ProfileUpdateInput> {
   }));
   return {
     profile_published: profile.profile_published,
+    // Empty string (not undefined) so saving an unnamed profile still sends
+    // the key and the server's "" → null rule applies.
+    name: profile.name ?? "",
     bio: profile.bio,
     pronouns: profile.pronouns,
     title: profile.title,
@@ -284,6 +287,13 @@ export function ProfileEditor({
           {/* Basic info */}
           <Stack gap="condensed">
             <Heading level={3}>Basic info</Heading>
+            <TextInput
+              label="Display name"
+              placeholder="How others see you in this conference"
+              value={form.values.name ?? ""}
+              onChange={(e) => form.setValue("name", e.target.value)}
+              error={form.fieldError("name")}
+            />
             <TextInput
               label="Pronouns"
               placeholder="e.g. they/them"

@@ -578,6 +578,7 @@ export function App() {
       <ConferencesPage
         me={owner}
         onLogout={loadOwner}
+        onMeChange={(u) => setOwner(u)}
         onOpen={(s) => navigate(`/conferences/${s}`)}
         colorMode={activeColorMode}
         onColorModeChange={setColorMode}

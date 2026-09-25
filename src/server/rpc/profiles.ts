@@ -99,6 +99,7 @@ async function applyProfileUpdate(
   identityId: number,
   input: {
     profile_published?: boolean;
+    name?: string | null;
     bio?: string | null;
     pronouns?: string | null;
     title?: string | null;
@@ -118,6 +119,11 @@ async function applyProfileUpdate(
   if (Object.hasOwn(input, "profile_published") && input.profile_published !== undefined) {
     data.profilePublished = input.profile_published;
   }
+  // Display name: explicit "" (or whitespace) clears to null, mirroring the
+  // `conferences.updateConfMe` rule; an omitted key leaves it alone. The
+  // schema already trims, but re-trimming here keeps the helper honest if it
+  // is ever called with pre-schema data.
+  if (Object.hasOwn(input, "name")) data.name = input.name?.trim() || null;
   if (Object.hasOwn(input, "bio")) data.bio = input.bio ?? null;
   if (Object.hasOwn(input, "pronouns")) data.pronouns = input.pronouns ?? null;
   if (Object.hasOwn(input, "title")) data.title = input.title ?? null;

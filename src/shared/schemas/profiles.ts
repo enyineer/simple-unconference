@@ -26,6 +26,10 @@ export const ProfileEntryInputSchema = v.object({
 // creates the rows for this identity.
 export const ProfileUpdateSchema = v.object({
   profile_published: v.optional(v.boolean()),
+  // Display name on the identity. Trimmed; capped like the free-form speaker
+  // name. The server maps an explicit empty string to null (unnamed), same
+  // rule as `conferences.updateConfMe`; an omitted key leaves it untouched.
+  name: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(80, "Keep it under 80 characters."))),
   bio: v.optional(v.union([v.pipe(v.string(), v.maxLength(4000)), v.null()])),
   pronouns: v.optional(v.union([v.pipe(v.string(), v.maxLength(64)), v.null()])),
   title: v.optional(v.union([v.pipe(v.string(), v.maxLength(128)), v.null()])),

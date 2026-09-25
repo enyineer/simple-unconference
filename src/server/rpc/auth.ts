@@ -265,6 +265,20 @@ export const authRouter = {
     return toUserOut(context.user);
   }),
 
+  // Self-service display-name update for the caller's global account. Same
+  // "" → null rule as signup; an omitted key leaves the stored name alone.
+  // Conference-visible names live on ConferenceIdentity (edited via
+  // profiles.* / conferences.updateConfMe) and are intentionally independent.
+  updateMe: authed.auth.updateMe.handler(async ({ input, context }) => {
+    const updated = await context.prisma.user.update({
+      where: { id: context.user.id },
+      data: {
+        name: input.name === undefined ? undefined : (input.name.trim() || null),
+      },
+    });
+    return toUserOut(updated);
+  }),
+
   // Self-service deletion of the calling owner's User row. Sessions cascade
   // (FK onDelete: Cascade), so all the user's other devices are signed out.
   //

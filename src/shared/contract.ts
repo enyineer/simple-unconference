@@ -47,6 +47,7 @@ import {
   PushUnsubscribeSchema,
   RequestPasswordResetSchema,
   ResetPasswordSchema,
+  UpdateMeSchema,
   VerifyEmailSchema,
   VerifyEmailTokenSchema,
   SignupSchema,
@@ -128,6 +129,8 @@ export const contract = {
     login: oc.input(LoginSchema).output(type<UserOut>()),
     logout: oc.output(type<Ok>()),
     me: oc.output(type<UserOut>()),
+    // Self-service display-name update (authed). Returns the fresh UserOut.
+    updateMe: oc.input(UpdateMeSchema).output(type<UserOut>()),
     // Forgot-password (global owner account). `requestPasswordReset` always
     // returns Ok regardless of whether the email exists (no enumeration); the
     // email, if any, carries a single-use, short-lived token. `resetPassword`

@@ -14,6 +14,16 @@ export type SignupInput = v.InferOutput<typeof SignupSchema>;
 export const ColorModeSchema = v.picklist(["auto", "light", "dark"] as const);
 export type ColorMode = v.InferOutput<typeof ColorModeSchema>;
 
+// Self-service display-name update for the global account (authed). An
+// explicit empty string clears the name (server maps "" → null, same rule as
+// signup); an omitted key leaves it untouched. Conference-visible display
+// names live on ConferenceIdentity and are edited via profiles.* /
+// conferences.updateConfMe instead.
+export const UpdateMeSchema = v.object({
+  name: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(80, "Keep it under 80 characters."))),
+});
+export type UpdateMeInput = v.InferOutput<typeof UpdateMeSchema>;
+
 export const LoginSchema = v.object({
   email: Email,
   password: v.pipe(v.string(), v.minLength(1, "Password is required.")),

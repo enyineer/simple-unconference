@@ -18,19 +18,23 @@ interface Conf {
 }
 
 interface Me {
-  id: number; email: string; name: string | null;
+  id: number; email: string; name: string | null; email_verified: boolean;
 }
 
 interface ConferencesPageProps {
   me: Me;
   onLogout: () => void;
+  /** Called with the fresh global user after an in-place account edit
+   *  (e.g. display-name rename via the account menu), so App state and the
+   *  header stay in sync without a refetch round-trip. */
+  onMeChange: (me: Me) => void;
   onOpen: (slug: string) => void;
   colorMode: ColorMode;
   onColorModeChange: (next: ColorMode) => void;
 }
 
 export function ConferencesPage({
-  me, onLogout, onOpen, colorMode, onColorModeChange,
+  me, onLogout, onMeChange, onOpen, colorMode, onColorModeChange,
 }: ConferencesPageProps) {
   const [confs, setConfs] = useState<Conf[] | null>(null);
   const [creating, setCreating] = useState(false);
@@ -88,6 +92,12 @@ export function ConferencesPage({
               colorMode={colorMode}
               onColorModeChange={onColorModeChange}
               onSignOut={logout}
+              onRename={async (name) => {
+                // "" (not undefined) so an explicit clear still reaches the
+                // server's "" → null rule.
+                const updated = await api.auth.updateMe({ name: name ?? "" });
+                onMeChange(updated);
+              }}
             />
           </Stack>
         </div>

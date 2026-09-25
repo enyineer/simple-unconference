@@ -11,12 +11,21 @@ interface AccountMenuProps {
   colorMode: ColorMode;
   onColorModeChange: (next: ColorMode) => void;
   onSignOut: () => void | Promise<void>;
+  /** When provided, the identity block grows an inline display-name editor.
+   *  The callback performs the API call (and the parent's state refresh);
+   *  an explicit empty string means "clear the name". Errors keep the
+   *  editor open with the message shown under the field. */
+  onRename?: (name: string | null) => Promise<void>;
 }
 
 export function AccountMenu({
-  name, email, colorMode, onColorModeChange, onSignOut,
+  name, email, colorMode, onColorModeChange, onSignOut, onRename,
 }: AccountMenuProps) {
   const [open, setOpen] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(name ?? "");
+  const [renaming, setRenaming] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   // Close on outside click + Escape — standard popover plumbing.
@@ -36,6 +45,26 @@ export function AccountMenu({
 
   const initial = (name ?? email).trim().charAt(0).toUpperCase() || "?";
   const displayName = name?.trim() || email;
+
+  function startNameEdit(): void {
+    setNameDraft(name ?? "");
+    setRenameError(null);
+    setEditingName(true);
+  }
+
+  async function saveName(): Promise<void> {
+    if (!onRename) return;
+    setRenaming(true);
+    setRenameError(null);
+    try {
+      await onRename(nameDraft.trim() || null);
+      setEditingName(false);
+    } catch (e) {
+      setRenameError(e instanceof Error ? e.message : "rename_failed");
+    } finally {
+      setRenaming(false);
+    }
+  }
 
   return (
     <div ref={rootRef} style={{ position: "relative", display: "inline-block" }}>
@@ -83,19 +112,120 @@ export function AccountMenu({
         >
           {/* identity block */}
           <div style={{ padding: "8px 12px 10px" }}>
-            <div style={{
-              fontSize: 13, fontWeight: 600, lineHeight: "18px",
-              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-            }}>
-              {displayName}
-            </div>
-            {name && (
-              <div style={{
-                fontSize: 12, lineHeight: "16px",
-                color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
-                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-              }}>
-                {email}
+            {editingName && onRename ? (
+              <form
+                onSubmit={(e) => { e.preventDefault(); void saveName(); }}
+                style={{ display: "flex", flexDirection: "column", gap: 6 }}
+              >
+                <input
+                  type="text"
+                  value={nameDraft}
+                  maxLength={80}
+                  autoFocus
+                  disabled={renaming}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  aria-label="Display name"
+                  placeholder="Display name"
+                  style={{
+                    width: "100%",
+                    padding: "6px 10px",
+                    borderRadius: 6,
+                    border: renameError
+                      ? "1px solid var(--borderColor-danger-emphasis, #cf222e)"
+                      : "1px solid var(--borderColor-default, var(--uncon-border, #d0d7de))",
+                    background: "var(--bgColor-default, var(--uncon-bg, #fff))",
+                    color: "var(--fgColor-default, var(--uncon-fg, inherit))",
+                    fontFamily: "inherit",
+                    fontSize: 13,
+                    outline: "none",
+                  }}
+                />
+                {renameError && (
+                  <div style={{
+                    fontSize: 12,
+                    color: "var(--fgColor-danger, #cf222e)",
+                  }}>
+                    {renameError}
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    type="submit"
+                    disabled={renaming || nameDraft.trim() === (name ?? "")}
+                    style={{
+                      appearance: "none",
+                      padding: "5px 12px",
+                      borderRadius: 6,
+                      border: "1px solid var(--borderColor-default, var(--uncon-border, #d0d7de))",
+                      background: "var(--bgColor-default, var(--uncon-bg, #fff))",
+                      color: "var(--fgColor-default, var(--uncon-fg, inherit))",
+                      fontFamily: "inherit", fontSize: 12, fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {renaming ? "Saving…" : "Save"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingName(false)}
+                    disabled={renaming}
+                    style={{
+                      appearance: "none",
+                      padding: "5px 12px",
+                      borderRadius: 6,
+                      border: "none",
+                      background: "transparent",
+                      color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
+                      fontFamily: "inherit", fontSize: 12, fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{
+                    fontSize: 13, fontWeight: 600, lineHeight: "18px",
+                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  }}>
+                    {displayName}
+                  </div>
+                  {name && (
+                    <div style={{
+                      fontSize: 12, lineHeight: "16px",
+                      color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
+                      whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                    }}>
+                      {email}
+                    </div>
+                  )}
+                </div>
+                {onRename && (
+                  <button
+                    type="button"
+                    onClick={startNameEdit}
+                    aria-label="Edit display name"
+                    title="Edit display name"
+                    style={{
+                      appearance: "none",
+                      flexShrink: 0,
+                      width: 24, height: 24,
+                      display: "inline-flex", alignItems: "center", justifyContent: "center",
+                      padding: 0,
+                      borderRadius: 6,
+                      border: "none",
+                      background: "transparent",
+                      color: "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))",
+                      cursor: "pointer",
+                      fontSize: 13,
+                    }}
+                  >
+                    ✎
+                  </button>
+                )}
               </div>
             )}
           </div>
