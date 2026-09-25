@@ -1,5 +1,15 @@
 # simple-unconference
 
+## 0.17.1
+
+### Patch Changes
+
+- [`1507adb`](https://github.com/enyineer/simple-unconference/commit/1507adb7a3406b316e6b567b54b12fcaa3864b00) Thanks [@enyineer](https://github.com/enyineer)! - The Live Board now starts in polling mode immediately (snapshot refetch every 5s) instead of waiting on SSE. The SSE stream opens in parallel as a probe and only takes over once its first heartbeat proves the response body actually streams — on networks where a proxy accepts the connection but black-holes it, the wall now updates from the first seconds instead of sitting on "Connecting" for 45s. The header indicator shows amber "Polling" until the stream is promoted to live.
+
+- [`07efdee`](https://github.com/enyineer/simple-unconference/commit/07efdee538811c4ba9cc31bc27e8e5e218d3a7b1) Thanks [@enyineer](https://github.com/enyineer)! - Double the size of the QR code on the board's pitch-mode spotlight overlay (and scale its caption with it) so it can actually be scanned from across a projected room.
+
+- [`391ec47`](https://github.com/enyineer/simple-unconference/commit/391ec47fe061b58811722cd6fe72b91e87342151) Thanks [@enyineer](https://github.com/enyineer)! - Shareable session deep links. Every published session card gets a "Copy link" action producing a `?highlight=<id>` URL; the conference page always renders the highlighted session pinned at the top with an accent card and filters it out of the paginated list below, so the link surfaces its session exactly once regardless of which page or filters the viewer currently has — no duplicate render, and a "Clear highlight" action removes the pin. The board's pitch-mode spotlight QR now encodes the same link for the currently spotlighted session and regenerates when the spotlight changes. Invisible sessions (drafts of others) stay unfetchable through the new pinpoint filter.
+
 ## 0.17.0
 
 ### Minor Changes
