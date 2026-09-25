@@ -1,5 +1,11 @@
 # simple-unconference
 
+## 0.17.2
+
+### Patch Changes
+
+- [`0ca8f48`](https://github.com/enyineer/simple-unconference/commit/0ca8f48c0e701b4df256d6c267db7ddc9299bc5d) Thanks [@enyineer](https://github.com/enyineer)! - Scale the Live Board up ~25% relative to the viewport (the design-unit baseline moves from a 2560x1440 screen to 2048x1152), so fonts, spacing and cells read better from a distance. The page-fit physics now track the same design unit, keeping the room/slot caps honest on smaller walls so nothing overfills or clips.
+
 ## 0.17.1
 
 ### Patch Changes
