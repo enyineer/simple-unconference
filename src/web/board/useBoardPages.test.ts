@@ -1,7 +1,7 @@
 // Unit tests for the projector board's pure page builder (buildBoardPages).
-// Covers the legibility caps, the physical-fit floors, day-major ordering with
-// no day straddling, and the degenerate inputs. The hook (useBoardPages) is a
-// thin ResizeObserver wrapper around this function.
+// Covers the legibility caps, the physical-fit floors, day-major + time-major
+// ordering with no day straddling, and the degenerate inputs. The hook
+// (useBoardPages) is a thin ResizeObserver wrapper around this function.
 
 import { describe, test, expect } from "bun:test";
 import { buildBoardPages, MAX_ROOMS_PER_PAGE, MAX_SLOTS_PER_PAGE } from "./useBoardPages";
@@ -35,19 +35,28 @@ describe("buildBoardPages", () => {
 
     expect(MAX_ROOMS_PER_PAGE).toBe(6);
     expect(MAX_SLOTS_PER_PAGE).toBe(6);
-    // 2 room pages (6 + 3) x 2 slot pages (6 + 2) = 4, room-major then slot.
+    // 2 slot pages (6 + 2) x 2 room pages (6 + 3) = 4, time-major then room.
     expect(pages).toHaveLength(4);
     expect(pages[0]!.roomSlice).toHaveLength(6);
     expect(pages[0]!.slotSlice).toHaveLength(6);
-    expect(pages[1]!.roomSlice).toHaveLength(6);
-    expect(pages[1]!.slotSlice).toHaveLength(2);
-    expect(pages[2]!.roomSlice).toHaveLength(3);
+    expect(pages[1]!.roomSlice).toHaveLength(3);
+    expect(pages[1]!.slotSlice).toHaveLength(6);
+    expect(pages[2]!.roomSlice).toHaveLength(6);
     expect(pages[3]!.roomSlice).toHaveLength(3);
-    // Room ranges stay globally indexed.
-    expect(pages[0]!.roomStart).toBe(1);
-    expect(pages[0]!.roomEnd).toBe(6);
-    expect(pages[2]!.roomStart).toBe(7);
-    expect(pages[2]!.roomEnd).toBe(9);
+  });
+
+  test("pages are time-major: start times never go backwards across pages", () => {
+    const rs = rooms(7);
+    const ss = slots(Array.from({ length: 8 }, (_, i) => ({ id: i + 1, day: 0, hour: 9 + i })));
+    const pages = buildBoardPages(rs, ss, TZ, { w: 4000, h: 2200 });
+    expect(pages.length).toBeGreaterThan(2);
+    for (let i = 1; i < pages.length; i++) {
+      expect(pages[i]!.rangeStart).toBeGreaterThanOrEqual(pages[i - 1]!.rangeStart);
+    }
+    // First pass covers the early slots across ALL room groups before any
+    // later slot group appears.
+    expect(pages[0]!.slotSlice[0]!.id).toBe(pages[1]!.slotSlice[0]!.id);
+    expect(pages[pages.length - 1]!.slotSlice[0]!.id).toBeGreaterThan(pages[0]!.slotSlice[0]!.id);
   });
 
   test("physical fit binds on a tiny wall: 1x1 pages", () => {
@@ -120,9 +129,6 @@ describe("buildBoardPages", () => {
     expect(pages).toHaveLength(1);
     expect(pages[0]!.roomSlice.map((r) => r.id)).toEqual([1, 3]);
     expect(pages[0]!.slotSlice.map((s) => s.id)).toEqual([1, 2]);
-    // Nav span tracks the visible columns' original indices (1..3).
-    expect(pages[0]!.roomStart).toBe(1);
-    expect(pages[0]!.roomEnd).toBe(3);
   });
 
   test("skipEmpty prunes transitively until stable", () => {
@@ -189,34 +195,32 @@ describe("buildBoardPages", () => {
     expect(pages).toHaveLength(1);
     expect(pages[0]!.roomSlice.map((r) => r.id)).toEqual([1, 7, 8]);
     expect(pages[0]!.slotSlice.map((s) => s.id)).toEqual([1, 2]);
-    expect(pages[0]!.roomStart).toBe(1);
-    expect(pages[0]!.roomEnd).toBe(8);
   });
 
-  test("a slot whose sessions all sit in another room chunk is dropped by the polish pass", () => {
-    // 7 SURVIVING rooms chunk 6+1: rooms 1-6 all host slot 2, room 7 hosts
-    // slot 1. Day pruning keeps everything (every room is used), so the page
-    // split applies — and each page must not carry the other chunk's slot.
+  test("a window's rooms are picked by first use, never by room id", () => {
+    // Slot 1's ONLY session sits in room 7 (highest id); slot 2 fills rooms
+    // 1-6. Page 1 must lead with room 7 (it hosts the earliest slot) and
+    // every page of the window carries both slot rows — no page starts at a
+    // later time, and no unused room column ever appears.
     const rs = rooms(7);
     const ss = slots([
       { id: 1, day: 0, hour: 11 },
       { id: 2, day: 0, hour: 13 },
     ]);
     const occupied = new Set([
-      "2:1", "2:2", "2:3", "2:4", "2:5", "2:6",
       "1:7",
+      "2:1", "2:2", "2:3", "2:4", "2:5", "2:6",
     ]);
     const opts = {
       skipEmpty: true,
       hasEntry: (slotId: number, roomId: number) => occupied.has(`${slotId}:${roomId}`),
     };
-    const pages = buildBoardPages(rs, ss, TZ, { w: 1920, h: 1080 }, opts);
+    const pages = buildBoardPages(rs, ss, TZ, { w: 4000, h: 2200 }, opts);
     expect(pages).toHaveLength(2);
-    const chunk1 = pages.find((p) => p.roomSlice.length === 6)!;
-    const chunk2 = pages.find((p) => p.roomSlice.length === 1)!;
-    expect(chunk1.roomSlice.map((r) => r.id)).toEqual([1, 2, 3, 4, 5, 6]);
-    expect(chunk1.slotSlice.map((s) => s.id)).toEqual([2]);
-    expect(chunk2.roomSlice.map((r) => r.id)).toEqual([7]);
-    expect(chunk2.slotSlice.map((s) => s.id)).toEqual([1]);
+    expect(pages[0]!.slotSlice.map((s) => s.id)).toEqual([1, 2]);
+    expect(pages[1]!.slotSlice.map((s) => s.id)).toEqual([1, 2]);
+    // Room 7 hosts the earliest slot → FIRST column of page 1.
+    expect(pages[0]!.roomSlice.map((r) => r.id)).toEqual([7, 1, 2, 3, 4, 5]);
+    expect(pages[1]!.roomSlice.map((r) => r.id)).toEqual([6]);
   });
 });

@@ -178,14 +178,13 @@ function BoardView({
 }
 
 // Prominent "where am I looking" indicator, centered in the header: the current
-// day (multi-day only), the room span ("Rooms 1–6 of 8", only when paginated),
-// and the time window on screen. This is the headline wayfinding for the room.
+// day (multi-day only) and the time window on screen. This is the headline
+// wayfinding for the room.
 function BoardHeaderNav({ nav }: { nav: BoardNav }) {
   return (
     <div className="board-nav">
       {nav.day && <span className="board-nav-day">{nav.day}</span>}
       <span className="board-nav-detail">
-        {nav.rooms && <span className="board-nav-rooms">{nav.rooms}</span>}
         <span className="board-nav-time">{nav.time}</span>
       </span>
     </div>

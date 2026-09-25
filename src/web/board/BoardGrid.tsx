@@ -25,21 +25,15 @@ const PAGE_ROTATE_MS = 15_000;
 
 // The "where am I looking" summary for the currently visible page, surfaced up
 // to the board header (the prominent wayfinding spot) rather than buried in the
-// bottom pager. `rooms`/`day` are null when they'd add nothing (all rooms fit /
-// single-day conference).
+// bottom pager. `day` is null on a single-day conference (no tag needed).
 export interface BoardNav {
   day: string | null;
-  rooms: string | null;
   time: string;
 }
 
 function navForPage(page: BoardPage, timeFmt: Intl.DateTimeFormat): BoardNav {
   return {
     day: page.dayLabel,
-    rooms:
-      page.roomTotal > page.roomSlice.length
-        ? `Rooms ${page.roomStart}–${page.roomEnd} of ${page.roomTotal}`
-        : null,
     time: `${timeFmt.format(page.rangeStart)}–${timeFmt.format(page.rangeEnd)}`,
   };
 }
@@ -148,8 +142,8 @@ export function BoardGrid({
 
 // Desktop projector matrix. Owns the measured region ref, the page slices, and
 // the rotation index. Renders exactly one page at a time so nothing is ever cut
-// off or below the fold. When `skipEmpty` is on, pages prune room columns /
-// slot rows with nothing placed in them (see buildBoardPages).
+// off or below the fold. When `skipEmpty` is on, each time window's pages show
+// only the rooms hosting one of the window's sessions (see buildBoardPages).
 function PagedBoard({
   rooms,
   slots,

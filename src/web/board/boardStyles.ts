@@ -61,7 +61,7 @@ export const BOARD_STYLES = `
   color: var(--bd-fg-muted);
 }
 
-/* Prominent header wayfinding: the day + "Rooms X of Y" + time window on screen.
+/* Prominent header wayfinding: the day + time window on screen.
    Centered between the title and the clock — the first thing the room reads. */
 .board-nav {
   display: flex; flex-direction: column; align-items: center; gap: 8px;
@@ -74,12 +74,6 @@ export const BOARD_STYLES = `
 .board-nav-detail {
   display: inline-flex; align-items: center; gap: 12px;
   font-size: 16px; font-weight: 700; letter-spacing: 0.01em; white-space: nowrap;
-}
-.board-nav-rooms {
-  color: var(--bd-unconf);
-  padding: 3px 12px; border-radius: 999px;
-  background: var(--bd-unconf-soft);
-  border: 1px solid rgba(88,166,255,0.28);
 }
 .board-nav-time {
   color: var(--bd-fg-muted); font-variant-numeric: tabular-nums;
