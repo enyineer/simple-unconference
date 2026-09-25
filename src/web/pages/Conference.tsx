@@ -302,6 +302,10 @@ function ConferenceHeader({
 
   const tabBarOptions = tabs.map((t) => ({ value: t, label: tabLabel(t) }));
 
+  // The signed-in identity's profile page — where display name, email and
+  // the rest of the profile are edited. Linked from the account menu.
+  const profileHref = `/conferences/${encodeURIComponent(slug)}/p/${me.id}`;
+
   return (
     <>
       {/* Expanded header — normal flow. Negative side margins + matching
@@ -332,6 +336,7 @@ function ConferenceHeader({
               onColorModeChange={onColorModeChange}
               onSignOut={onSignOut}
               onRename={onRename}
+              profileHref={profileHref}
             />
           </div>
         </div>
@@ -391,6 +396,7 @@ function ConferenceHeader({
                   onColorModeChange={onColorModeChange}
                   onSignOut={onSignOut}
                   onRename={onRename}
+                  profileHref={profileHref}
                 />
               </div>
             </div>

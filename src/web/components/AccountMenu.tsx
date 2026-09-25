@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ColorMode } from "../design-system/core/contract";
+import { useNavLink } from "../router";
 
 interface AccountMenuProps {
   name: string | null;
@@ -16,10 +17,15 @@ interface AccountMenuProps {
    *  an explicit empty string means "clear the name". Errors keep the
    *  editor open with the message shown under the field. */
   onRename?: (name: string | null) => Promise<void>;
+  /** When set, the menu grows a "My profile" item linking to the signed-in
+   *  identity's profile page — the place where display name, email, avatar
+   *  and the rest of the profile are edited. The conferences-listing page
+   *  omits it: there is no conference identity to link to there. */
+  profileHref?: string;
 }
 
 export function AccountMenu({
-  name, email, colorMode, onColorModeChange, onSignOut, onRename,
+  name, email, colorMode, onColorModeChange, onSignOut, onRename, profileHref,
 }: AccountMenuProps) {
   const [open, setOpen] = useState(false);
   const [editingName, setEditingName] = useState(false);
@@ -232,6 +238,17 @@ export function AccountMenu({
 
           <Divider />
 
+          {profileHref && (
+            <>
+              <div style={{ padding: 4 }}>
+                <MenuItem href={profileHref} onClick={() => setOpen(false)}>
+                  My profile
+                </MenuItem>
+              </div>
+              <Divider />
+            </>
+          )}
+
           {/* theme picker — segmented control style, full-width inside the menu */}
           <div style={{ padding: "8px 12px" }}>
             <div style={{
@@ -315,33 +332,63 @@ function ThemePill({
 }
 
 function MenuItem({
-  children, onClick, destructive,
-}: { children: React.ReactNode; onClick: () => void; destructive?: boolean }) {
+  children, onClick, destructive, href,
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  destructive?: boolean;
+  /** When set, the item renders as a real anchor so middle-click /
+   *  open-in-new-tab work; useNavLink still routes plain left-clicks
+   *  through the client-side router. */
+  href?: string;
+}) {
+  const navLink = useNavLink();
+  const link = href ? navLink(href) : null;
+  const style: React.CSSProperties = {
+    appearance: "none",
+    display: "block", width: "100%",
+    textAlign: "left",
+    padding: "8px 12px",
+    borderRadius: 6, border: "none",
+    background: "transparent",
+    color: destructive
+      ? "var(--fgColor-danger, #cf222e)"
+      : "var(--fgColor-default, var(--uncon-fg, inherit))",
+    fontFamily: "inherit", fontSize: 13, fontWeight: 500,
+    cursor: "pointer",
+    textDecoration: "none",
+    transition: "background 120ms",
+  };
+  const hoverHandlers = {
+    onMouseEnter: (e: React.MouseEvent<HTMLElement>) => {
+      e.currentTarget.style.background = destructive
+        ? "var(--bgColor-danger-muted, rgba(207, 34, 46, 0.12))"
+        : "var(--bgColor-muted, var(--uncon-bg-subtle, rgba(0,0,0,0.05)))";
+    },
+    onMouseLeave: (e: React.MouseEvent<HTMLElement>) => {
+      e.currentTarget.style.background = "transparent";
+    },
+  };
+  if (link) {
+    return (
+      <a
+        role="menuitem"
+        href={link.href}
+        onClick={(e) => { link.onClick(e); onClick?.(); }}
+        style={style}
+        {...hoverHandlers}
+      >
+        {children}
+      </a>
+    );
+  }
   return (
     <button
       type="button"
       role="menuitem"
       onClick={onClick}
-      style={{
-        appearance: "none",
-        display: "block", width: "100%",
-        textAlign: "left",
-        padding: "8px 12px",
-        borderRadius: 6, border: "none",
-        background: "transparent",
-        color: destructive
-          ? "var(--fgColor-danger, #cf222e)"
-          : "var(--fgColor-default, var(--uncon-fg, inherit))",
-        fontFamily: "inherit", fontSize: 13, fontWeight: 500,
-        cursor: "pointer",
-        transition: "background 120ms",
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.background = destructive
-          ? "var(--bgColor-danger-muted, rgba(207, 34, 46, 0.12))"
-          : "var(--bgColor-muted, var(--uncon-bg-subtle, rgba(0,0,0,0.05)))";
-      }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+      style={style}
+      {...hoverHandlers}
     >
       {children}
     </button>
