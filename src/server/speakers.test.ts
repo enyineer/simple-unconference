@@ -66,6 +66,37 @@ describe("effective speakers helper", () => {
     expect(normalizeSpeakerName("  Jane\t  Doe ")).toBe("jane doe");
     expect(normalizeSpeakerName("ALAN")).toBe("alan");
   });
+
+  test("registered speaker with no display name resolves to the placeholder", () => {
+    const sub = {
+      submitterId: 7,
+      submitter: { name: "Ada", profilePublished: false },
+      speakers: [
+        { identityId: 11, name: null, identity: { name: null, profilePublished: false } },
+        { identityId: 12, name: null, identity: { name: "  ", profilePublished: true } },
+        { identityId: 13, name: null, identity: { name: "Alan", profilePublished: true } },
+      ],
+    };
+    // Regression guard: a name-less identity used to resolve to "" and get
+    // dropped by every blank-name filter, making the speaker invisible.
+    expect(effectiveSpeakerNames(sub)).toEqual([
+      "Unnamed speaker", "Unnamed speaker", "Alan",
+    ]);
+    // Collision keys are unaffected by the display fallback.
+    expect([...effectiveSpeakerKeys(sub)]).toEqual([
+      "identity:11", "identity:12", "identity:13",
+    ]);
+  });
+
+  test("submitter with no display name resolves to the placeholder", () => {
+    const sub = {
+      submitterId: 7,
+      submitter: { name: null, profilePublished: false },
+      speakers: [],
+    };
+    expect(effectiveSpeakerNames(sub)).toEqual(["Unnamed speaker"]);
+    expect(effectiveSpeakerIdentityIds(sub)).toEqual([7]);
+  });
 });
 
 // ---------------------------------------------------------------------------

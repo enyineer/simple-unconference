@@ -30,7 +30,8 @@ export interface SubmissionSpeakerShape {
 // One resolved presenter. `key` is the scheduler collision key
 // (`identity:<id>` for a registered speaker, `name:<normalized>` for a
 // free-form one). `identityId` is null for free-form speakers (they aren't
-// attendees). `name` is the display name (`""` when unknown / not loaded).
+// attendees). `name` is the display name (`UNNAMED_SPEAKER` for a registered
+// speaker whose identity has no display name).
 export interface EffectiveSpeaker {
   key: string;
   identityId: number | null;
@@ -44,6 +45,16 @@ export function normalizeSpeakerName(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+// Display fallback for a registered speaker whose identity has no display
+// name yet (identity rows start `name: null` until the profile is set).
+// Without this the blank name is indistinguishable from "no speaker" and
+// every consumer's blank-filter silently drops the person from the UI.
+export const UNNAMED_SPEAKER = "Unnamed speaker";
+
+function speakerDisplayName(name: string | null | undefined): string {
+  return name && name.trim() ? name : UNNAMED_SPEAKER;
+}
+
 // The aligned list of effective speakers (key + identity id + display name),
 // in `position` order for explicit rows. All the other exports derive from
 // this so keys, identity ids, and names always agree.
@@ -55,7 +66,7 @@ export function effectiveSpeakers(sub: SubmissionSpeakerShape): EffectiveSpeaker
         out.push({
           key: `identity:${s.identityId}`,
           identityId: s.identityId,
-          name: s.identity?.name ?? "",
+          name: speakerDisplayName(s.identity?.name),
           profilePublished: s.identity?.profilePublished ?? false,
         });
       } else if (s.name !== null) {
@@ -73,7 +84,7 @@ export function effectiveSpeakers(sub: SubmissionSpeakerShape): EffectiveSpeaker
   return [{
     key: `identity:${sub.submitterId}`,
     identityId: sub.submitterId,
-    name: sub.submitter?.name ?? "",
+    name: speakerDisplayName(sub.submitter?.name),
     profilePublished: sub.submitter?.profilePublished ?? false,
   }];
 }
