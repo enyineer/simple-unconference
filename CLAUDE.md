@@ -220,6 +220,26 @@ something the next session would need to know.
   profile-sensitive field. A spotlighted session is hidden once unpublished.
   Late board joiners get current state from the payload route, so the board
   SSE does NO replay — it only forwards events that arrive after connect.
+- **Shown-days filter (`Conference.boardDays`)**: comma-separated YYYY-MM-DD
+  keys (conference timezone), null = all days. Applied SERVER-side in
+  `buildBoardPayload` (slots by start-in-[midnight,next-midnight), entries
+  filtered to surviving slots); the spotlight is deliberately NOT day-bound
+  (explicit mod action). The mod picker lives in the Pitch Mode sheet's
+  Live Board section, fed by that conference's slot days. `setBoardLink` and
+  `rotateBoardLink` publish `agenda.changed` after commit so open walls
+  refetch and apply config changes live (disable → walls hit 404 → "not
+  active" screen; rotate → same, immediately).
+- **Board density: caps + skip-empty are CLIENT-side pagination rules** in
+  [src/web/board/useBoardPages.ts](src/web/board/useBoardPages.ts) (pure
+  `buildBoardPages`, unit-tested). Pages cap at 6 room columns / 6 slot rows
+  regardless of wall size — overflow becomes more pages, never smaller cells.
+  `Conference.boardSkipEmpty` (default ON, toggled in the Pitch Mode sheet's
+  Live Board section, rides `BoardPayloadOut.skip_empty`) prunes empty room
+  columns / slot rows DAY-SCOPED and BEFORE chunking (fixed-point), so sparse
+  days merge into fewer denser pages; a per-page polish pass then drops rows
+  whose sessions landed in another page's room chunk. If EVERY day prunes
+  away (nothing placed at all) the unpruned pages render so the wall never
+  blanks.
 
 ## Notifications (single entrypoint)
 

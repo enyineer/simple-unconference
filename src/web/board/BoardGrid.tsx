@@ -10,7 +10,7 @@
 // cell changes the entry animation replays; an unchanged cell updates in place
 // (calm — no flicker on every refetch).
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   BoardEntryOut,
   BoardPayloadOut,
@@ -140,6 +140,7 @@ export function BoardGrid({
       now={now}
       timeFmt={timeFmt}
       timezone={payload.timezone}
+      skipEmpty={payload.skip_empty}
       onNav={onNav}
     />
   );
@@ -147,7 +148,8 @@ export function BoardGrid({
 
 // Desktop projector matrix. Owns the measured region ref, the page slices, and
 // the rotation index. Renders exactly one page at a time so nothing is ever cut
-// off or below the fold.
+// off or below the fold. When `skipEmpty` is on, pages prune room columns /
+// slot rows with nothing placed in them (see buildBoardPages).
 function PagedBoard({
   rooms,
   slots,
@@ -155,6 +157,7 @@ function PagedBoard({
   now,
   timeFmt,
   timezone,
+  skipEmpty,
   onNav,
 }: {
   rooms: BoardRoomOut[];
@@ -163,10 +166,18 @@ function PagedBoard({
   now: number;
   timeFmt: Intl.DateTimeFormat;
   timezone: string;
+  skipEmpty: boolean;
   onNav: (nav: BoardNav | null) => void;
 }) {
   const regionRef = useRef<HTMLDivElement>(null);
-  const pages = useBoardPages(regionRef, rooms, slots, timezone);
+  const pageOpts = useMemo(
+    () => ({
+      skipEmpty,
+      hasEntry: (slotId: number, roomId: number) => byCell.has(`${slotId}:${roomId}`),
+    }),
+    [byCell, skipEmpty],
+  );
+  const pages = useBoardPages(regionRef, rooms, slots, timezone, pageOpts);
   // `tick` is the rotation counter (advanced by the timer). The visible page is
   // (seed + tick) % length, so a freshly-opened wall starts on the live moment
   // and then rotates from there.

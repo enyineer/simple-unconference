@@ -15,7 +15,7 @@
 // added here.
 
 import { Hono } from "hono";
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import type {
   BoardPayloadOut,
   BoardEntryOut,
@@ -23,6 +23,7 @@ import type {
 } from "../../shared/contract/types";
 import { getBus, boardTopicKey, type BusEvent } from "../realtime/bus";
 import { effectiveSpeakerNames } from "../lib/speakers";
+import { wallClockToInstant } from "../../shared/tz";
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
 
@@ -59,19 +60,46 @@ async function authorizeBoard(
   prisma: PrismaClient,
   slug: string,
   token: string | null,
-): Promise<{ id: number; name: string; timezone: string; spotlightSubmissionId: number | null } | null> {
+): Promise<{
+  id: number; name: string; timezone: string;
+  days: string[] | null; skipEmpty: boolean;
+  spotlightSubmissionId: number | null;
+} | null> {
   if (!token) return null;
   const conf = await prisma.conference.findUnique({
     where: { slug },
-    select: { id: true, name: true, timezone: true, boardToken: true, spotlightSubmissionId: true },
+    select: {
+      id: true, name: true, timezone: true, boardToken: true,
+      boardDays: true, boardSkipEmpty: true, spotlightSubmissionId: true,
+    },
   });
   if (!conf || !conf.boardToken || conf.boardToken !== token) return null;
   return {
     id: conf.id,
     name: conf.name,
     timezone: conf.timezone,
+    days: conf.boardDays !== null ? conf.boardDays.split(",") : null,
+    skipEmpty: conf.boardSkipEmpty,
     spotlightSubmissionId: conf.spotlightSubmissionId,
   };
+}
+
+// Turn stored day keys (YYYY-MM-DD) into slot-start range filters interpreted
+// in the conference timezone. A slot belongs to a day when its START falls in
+// [midnight, next midnight) — the same keying the board page's day grouping
+// uses, so a filtered payload can never straddle a day boundary.
+function nextDayKey(key: string): string {
+  const [y = 0, m = 1, d = 1] = key.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+}
+
+function dayStartFilters(days: string[], timeZone: string): Prisma.AgendaSlotWhereInput[] {
+  return days.map((key) => ({
+    startsAt: {
+      gte: new Date(wallClockToInstant(`${key}T00:00`, timeZone)),
+      lt: new Date(wallClockToInstant(`${nextDayKey(key)}T00:00`, timeZone)),
+    },
+  }));
 }
 
 export function boardRoutes(prisma: PrismaClient) {
@@ -147,14 +175,27 @@ export function boardRoutes(prisma: PrismaClient) {
 }
 
 // Build the public board snapshot with a handful of grouped queries (no N+1).
+// When the conference restricts the shown days (`conf.days`), slots are
+// filtered to those days (start in [midnight, next midnight), conference tz)
+// and entries whose slot fell out are dropped. The spotlight is deliberately
+// NOT day-bound — a mod set it explicitly, and it's the "now" surface.
 async function buildBoardPayload(
   prisma: PrismaClient,
-  conf: { id: number; name: string; timezone: string; spotlightSubmissionId: number | null },
+  conf: {
+    id: number; name: string; timezone: string;
+    days: string[] | null; skipEmpty: boolean;
+    spotlightSubmissionId: number | null;
+  },
 ): Promise<BoardPayloadOut> {
   const confId = conf.id;
+  const dayFilter = conf.days !== null && conf.days.length > 0
+    ? dayStartFilters(conf.days, conf.timezone)
+    : null;
   const [slots, rooms, tracks, placements, unconfCounts, spotlight] = await Promise.all([
     prisma.agendaSlot.findMany({
-      where: { conferenceId: confId },
+      where: dayFilter
+        ? { conferenceId: confId, OR: dayFilter }
+        : { conferenceId: confId },
       orderBy: { startsAt: "asc" },
       select: { id: true, type: true, title: true, startsAt: true, endsAt: true },
     }),
@@ -215,29 +256,36 @@ async function buildBoardPayload(
   const seatCount = new Map(
     unconfCounts.map((u) => [`${u.slotId}:${u.submissionId}`, u._count.userId]),
   );
+  // The slot query above is already day-filtered; keep only entries that live
+  // on a surviving slot so the payload never references a hidden slot.
+  const visibleSlotIds = new Set(slots.map((s) => s.id));
   const entries: BoardEntryOut[] = [
-    ...tracks.map((t) => ({
-      slot_id: t.slotId,
-      room_id: t.roomId,
-      submission_id: t.submissionId,
-      title: t.submission.title,
-      star_count: t.submission._count.stars,
-      submitter_name: presenterLine(t.submission),
-      attendee_count: 0,
-      planned: true,
-      mandatory: t.mandatory,
-    })),
-    ...placements.map((p) => ({
-      slot_id: p.slotId,
-      room_id: p.roomId,
-      submission_id: p.submissionId,
-      title: p.submission.title,
-      star_count: p.submission._count.stars,
-      submitter_name: presenterLine(p.submission),
-      attendee_count: seatCount.get(`${p.slotId}:${p.submissionId}`) ?? 0,
-      planned: false,
-      mandatory: false,
-    })),
+    ...tracks
+      .filter((t) => visibleSlotIds.has(t.slotId))
+      .map((t) => ({
+        slot_id: t.slotId,
+        room_id: t.roomId,
+        submission_id: t.submissionId,
+        title: t.submission.title,
+        star_count: t.submission._count.stars,
+        submitter_name: presenterLine(t.submission),
+        attendee_count: 0,
+        planned: true,
+        mandatory: t.mandatory,
+      })),
+    ...placements
+      .filter((p) => visibleSlotIds.has(p.slotId))
+      .map((p) => ({
+        slot_id: p.slotId,
+        room_id: p.roomId,
+        submission_id: p.submissionId,
+        title: p.submission.title,
+        star_count: p.submission._count.stars,
+        submitter_name: presenterLine(p.submission),
+        attendee_count: seatCount.get(`${p.slotId}:${p.submissionId}`) ?? 0,
+        planned: false,
+        mandatory: false,
+      })),
   ];
 
   const spotlightOut: BoardSpotlightOut | null = spotlight
@@ -253,6 +301,7 @@ async function buildBoardPayload(
     name: conf.name,
     timezone: conf.timezone,
     spotlight: spotlightOut,
+    skip_empty: conf.skipEmpty,
     slots: slots.map((s) => ({
       id: s.id,
       type: s.type,

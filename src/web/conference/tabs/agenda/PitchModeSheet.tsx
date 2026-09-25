@@ -1,6 +1,8 @@
 // Pitch Mode control (mod-only). Lists published sessions newest-first with
 // their star counts and a Spotlight button each. The spotlighted session shows
 // large on the public Live Board, where people star it from their phones.
+// Also hosts the Live Board link management (enable / copy / rotate) so the
+// whole day-of board workflow lives in one place.
 //
 // The current spotlight comes from the server (`AgendaOut.spotlight_submission_id`
 // via the parent's agenda data), so every moderator and device sees the real
@@ -13,6 +15,7 @@ import { useToast } from "../../../design-system/hooks";
 import { api, errorCode } from "../../../api";
 import type { Submission } from "../../types";
 import { speakerLabel } from "../../helpers";
+import { BoardLinkSection } from "./BoardLinkSection";
 
 const MUTED = "var(--fgColor-muted, var(--uncon-fg-muted, #6b7280))";
 const BORDER = "var(--borderColor-default, var(--uncon-border, rgba(127,127,127,0.25)))";
@@ -24,6 +27,8 @@ export function PitchModeSheet({
   open,
   onClose,
   subs,
+  slotStarts,
+  timeZone,
   activeId,
   onChanged,
 }: {
@@ -31,6 +36,10 @@ export function PitchModeSheet({
   open: boolean;
   onClose: () => void;
   subs: Submission[];
+  /** Start instants of the agenda slots — candidate days for the board's
+   *  shown-days picker in the Live Board section below. */
+  slotStarts: number[];
+  timeZone: string;
   /** The currently spotlighted submission (server truth via agenda.get). */
   activeId: number | null;
   /** Refetch the parent's agenda data after a spotlight change. */
@@ -132,11 +141,13 @@ export function PitchModeSheet({
                   >
                     {busyId === s.id ? "…" : active ? "On board" : "Spotlight"}
                   </Button>
-                </div>
-              );
-            })}
+              </div>
+            );
+          })}
           </Stack>
         )}
+
+        <BoardLinkSection slug={slug} slotStarts={slotStarts} timeZone={timeZone} />
       </Stack>
     </Sheet>
   );

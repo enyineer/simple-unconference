@@ -16,6 +16,7 @@ import {
   principalFromRequest,
 } from "../auth";
 import { notifyQuotaThreshold } from "../notifications";
+import { publishAgendaChanged } from "../realtime/bus";
 import {
   LIMITS,
   assertQuota,
@@ -52,12 +53,21 @@ async function resolveAutoLinkUserId(
   return user.id;
 }
 
-// Shape the owner-facing board link state. `enabled` is simply "token is set".
-function toBoardLinkOut(slug: string, token: string | null) {
+// Shape the moderator-facing board link state. `enabled` is simply "token is
+// set"; `days` is the stored day filter (null = all days); `skip_empty` is
+// the projector's prune-empty-cells toggle.
+function toBoardLinkOut(
+  slug: string,
+  token: string | null,
+  boardDays: string | null,
+  boardSkipEmpty: boolean,
+) {
   return {
     enabled: token !== null,
     token,
     url: token ? boardUrl(slug, token) : null,
+    days: boardDays !== null ? boardDays.split(",") : null,
+    skip_empty: boardSkipEmpty,
   };
 }
 
@@ -802,41 +812,71 @@ export const conferenceRouter = {
     };
   }),
 
-  // ----- public Live Board link (owner-only) -------------------------------
+  // ----- public Live Board link (moderator+) -------------------------------
   // The token is the board's only secret — anyone with the URL can view the
   // read-only board. Board state lives on `Conference.boardToken`; enabled is
-  // simply "token is set".
-  getBoardLink: requireConf("owner").conferences.getBoardLink.handler(async ({ context }) => {
+  // simply "token is set". `days` (optional input) is the shown-days filter:
+  // omitted = unchanged, null = all days, list = exactly those days. Every
+  // write fans out `agenda.changed` so open walls refetch and pick the new
+  // config up live (disabling sends walls to their "not active" screen).
+  getBoardLink: requireConf("moderator").conferences.getBoardLink.handler(async ({ context }) => {
     const conf = await context.prisma.conference.findUniqueOrThrow({
-      where: { id: context.conferenceId }, select: { slug: true, boardToken: true },
+      where: { id: context.conferenceId },
+      select: { slug: true, boardToken: true, boardDays: true, boardSkipEmpty: true },
     });
-    return toBoardLinkOut(conf.slug, conf.boardToken);
+    return toBoardLinkOut(conf.slug, conf.boardToken, conf.boardDays, conf.boardSkipEmpty);
   }),
 
-  setBoardLink: requireConf("owner").conferences.setBoardLink.handler(async ({ input, context }) => {
+  setBoardLink: requireConf("moderator").conferences.setBoardLink.handler(async ({ input, context }) => {
     const conf = await context.prisma.conference.findUniqueOrThrow({
-      where: { id: context.conferenceId }, select: { slug: true, boardToken: true },
+      where: { id: context.conferenceId },
+      select: { id: true, slug: true, boardToken: true, boardDays: true, boardSkipEmpty: true },
     });
     // Enabling keeps an existing token (stable URL) or mints one; disabling
     // clears the token so the old URL stops resolving.
     const token = input.enabled ? (conf.boardToken ?? newOpaqueToken()) : null;
-    if (token !== conf.boardToken) {
-      await context.prisma.conference.update({
-        where: { id: context.conferenceId }, data: { boardToken: token },
-      });
+    const data: {
+      boardToken?: string | null;
+      boardDays?: string | null;
+      boardSkipEmpty?: boolean;
+    } = {};
+    if (token !== conf.boardToken) data.boardToken = token;
+    if (input.days !== undefined) {
+      data.boardDays = input.days === null ? null : input.days.join(",");
     }
-    return toBoardLinkOut(conf.slug, token);
+    if (input.skip_empty !== undefined) data.boardSkipEmpty = input.skip_empty;
+    if (Object.keys(data).length > 0) {
+      await context.prisma.conference.update({
+        where: { id: context.conferenceId }, data,
+      });
+      // AFTER commit: walls hold an SSE connection and refetch the snapshot
+      // (debounced) on agenda.changed — the new config lands live.
+      publishAgendaChanged(context.conferenceId);
+    }
+    return toBoardLinkOut(
+      conf.slug,
+      token,
+      input.days !== undefined
+        ? (input.days === null ? null : input.days.join(","))
+        : conf.boardDays,
+      input.skip_empty !== undefined ? input.skip_empty : conf.boardSkipEmpty,
+    );
   }),
 
-  rotateBoardLink: requireConf("owner").conferences.rotateBoardLink.handler(async ({ context }) => {
+  rotateBoardLink: requireConf("moderator").conferences.rotateBoardLink.handler(async ({ context }) => {
     const conf = await context.prisma.conference.findUniqueOrThrow({
-      where: { id: context.conferenceId }, select: { slug: true },
+      where: { id: context.conferenceId },
+      select: { id: true, slug: true, boardDays: true, boardSkipEmpty: true },
     });
     const token = newOpaqueToken();
     await context.prisma.conference.update({
       where: { id: context.conferenceId }, data: { boardToken: token },
     });
-    return toBoardLinkOut(conf.slug, token);
+    // Old walls still hold an SSE connection (the token was checked at
+    // connect); this makes their next refetch — and thus their "not active"
+    // screen — happen immediately instead of sitting stale.
+    publishAgendaChanged(context.conferenceId);
+    return toBoardLinkOut(conf.slug, token, conf.boardDays, conf.boardSkipEmpty);
   }),
 
   previewInvite: base.conferences.previewInvite.handler(async ({ input, context }) => {

@@ -240,7 +240,7 @@ export const contract = {
       .output(type<JoinLinkOut>()),
     rotateJoinLink: oc.input(InConf).output(type<JoinLinkOut>()),
 
-    // ----- public Live Board link (owner-only) ----------------------------
+    // ----- public Live Board link (moderator+) ----------------------------
     // Mirrors the join-link trio. `getBoardLink` reports current state;
     // `setBoardLink({enabled})` mints/keeps or clears the token;
     // `rotateBoardLink` issues a fresh token (invalidating the old URL).

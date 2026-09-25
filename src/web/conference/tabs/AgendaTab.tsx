@@ -388,6 +388,8 @@ export function AgendaTab({
           open={pitchOpen}
           onClose={() => setPitchOpen(false)}
           subs={subs}
+          slotStarts={data.slots.map((s) => s.starts_at)}
+          timeZone={timeZone}
           activeId={data.spotlight_submission_id}
           onChanged={refresh}
         />

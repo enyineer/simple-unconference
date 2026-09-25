@@ -95,10 +95,29 @@ export const JoinLinkSetSchema = v.object({
 });
 export type JoinLinkSetInput = v.InferOutput<typeof JoinLinkSetSchema>;
 
-// Owner-managed public Live Board link. Enabling mints a token if absent;
-// disabling drops it (the URL stops working).
+// Moderator-managed public Live Board link. Enabling mints a token if absent;
+// disabling drops it (the URL stops working). `days` (when provided) restricts
+// which calendar days the board shows: YYYY-MM-DD keys in the conference
+// timezone, or null for all days. Empty arrays are rejected — a blank public
+// wall is never intentional; reset to null instead.
+export const BoardDayKey = v.pipe(
+  v.string(),
+  v.regex(/^\d{4}-\d{2}-\d{2}$/),
+  // Reject impossible calendar dates ("2026-13-45") via a UTC round-trip —
+  // a stored key that matches no real day would silently show nothing.
+  v.check((s) => {
+    const [y = 0, m = 1, d = 1] = s.split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, d)).toISOString().slice(0, 10) === s;
+  }, "Invalid calendar day, expected YYYY-MM-DD"),
+);
 export const BoardLinkSetSchema = v.object({
   enabled: v.boolean(),
+  days: v.optional(
+    v.union([v.pipe(v.array(BoardDayKey), v.minLength(1)), v.null()]),
+  ),
+  // Patch-style like `days`: omitted = unchanged. When true, the projector
+  // paginator prunes empty room columns / slot rows per page.
+  skip_empty: v.optional(v.boolean()),
 });
 export type BoardLinkSetInput = v.InferOutput<typeof BoardLinkSetSchema>;
 

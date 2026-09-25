@@ -275,9 +275,9 @@ Per-identity in-app inbox with unread badges. Events covered: submission receive
 
 ### Live Board & Pitch Mode
 
-A public, token-gated projector board for the hallway screen: a read-only schedule grid that fills in live (no reload) and carries a join QR so anyone can pull the agenda onto their phone. The board is email-free by design — display names, titles, room names, and star / attendee counts only. It auto-fits any screen: rooms and time windows are paginated into pages that each fit the display and auto-rotate on a calm cadence, headlining the current day and a "Rooms X of Y" indicator, and a multi-day conference never mixes two days on one page. **Pitch Mode** lets a moderator spotlight the session currently being pitched — the wall highlights it and shows its star count climb in real time.
+A public, token-gated projector board for the hallway screen: a read-only schedule grid that fills in live (no reload) and carries a join QR so anyone can pull the agenda onto their phone. The board is email-free by design — display names, titles, room names, and star / attendee counts only. It auto-fits any screen: pages hold at most 6 room columns and 6 time rows (overflow becomes more pages, never smaller text), empty rooms and time slots are pruned per page, rooms and time windows are paginated into pages that each fit the display and auto-rotate on a calm cadence, headlining the current day and a "Rooms X of Y" indicator, and a multi-day conference never mixes two days on one page. **Pitch Mode** lets a moderator spotlight the session currently being pitched — the wall highlights it and shows its star count climb in real time.
 
-Owners enable the board from Settings; the link can be rotated to revoke old copies.
+Moderators manage the board from the Pitch Mode sheet: the link can be rotated to revoke old copies, and the shown days can be narrowed to a selection (e.g. only the final program days) — open walls pick every change up live, no reload.
 
 | Live Board | Pitch Mode spotlight |
 | --- | --- |
@@ -315,7 +315,7 @@ A service worker keeps showing your schedule when the venue wifi drops (read-onl
 
 ### Settings (per-conference, owner-only)
 
-Timezone, design system, mixer-avoid-repeats default, submission placement cap default, participant-submissions toggle, the public Live Board link (enable / rotate), and one-click conference duplication. Settings auto-save with inline checkmark feedback — no save buttons.
+Timezone, design system, mixer-avoid-repeats default, submission placement cap default, participant-submissions toggle, and one-click conference duplication. Settings auto-save with inline checkmark feedback — no save buttons.
 
 ![Settings](screenshots/conference-settings.webp)
 
@@ -367,7 +367,7 @@ Server and client share valibot schemas in [`src/shared/schemas.ts`](src/shared/
 | Pick talks for static-slot tracks, refit planned-slot rooms | | ✓ | ✓ |
 | Set per-room availability windows (dedicated rooms via expert pools) | | ✓ | ✓ |
 | Run unconference / mixer assignment, resolve pre-assignment conflicts | | ✓ | ✓ |
-| Spotlight a session on the Live Board (Pitch Mode) | | ✓ | ✓ |
+| Spotlight a session on the Live Board (Pitch Mode), manage the board link + shown days | | ✓ | ✓ |
 | Send broadcast announcements | | ✓ | ✓ |
 | View / print the event report | | ✓ | ✓ |
 | Manage expert pools, promote experts, manage timeframes | | ✓ | ✓ |
@@ -375,7 +375,7 @@ Server and client share valibot schemas in [`src/shared/schemas.ts`](src/shared/
 | Add session takeaways, view own post-event recap | ✓ | ✓ | ✓ |
 | Promote / demote moderator, remove a moderator | | | ✓ |
 | Change conference settings (design system, timezone, …) | | | ✓ |
-| Enable / rotate the public Live Board link, duplicate a conference | | | ✓ |
+| Duplicate a conference | | | ✓ |
 | View own profile + published profiles in the directory | ✓ | ✓ | ✓ |
 | Edit own profile (bio, links, contacts, tags, avatar) | ✓ | ✓ | ✓ |
 | View unpublished profiles, see members' canonical emails | | ✓ | ✓ |

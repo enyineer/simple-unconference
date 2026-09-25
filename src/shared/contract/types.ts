@@ -146,12 +146,17 @@ export interface JoinLinkOut {
   max_uses: number | null;
   used_count: number;
 }
-// Owner-facing state of the public Live Board link. `url` is the relative hash
-// path to the board (with the token embedded); null while disabled.
+// Moderator-facing state of the public Live Board link. `url` is the relative hash
+// path to the board (with the token embedded); null while disabled. `days`
+// restricts the calendar days the board shows (YYYY-MM-DD in the conference
+// timezone); null = all days. `skip_empty` prunes empty room columns / slot
+// rows from projector pages.
 export interface BoardLinkOut {
   enabled: boolean;
   token: string | null;
   url: string | null;
+  days: string[] | null;
+  skip_empty: boolean;
 }
 export interface ConfMeOut {
   id: number;
@@ -1079,4 +1084,7 @@ export interface BoardPayloadOut {
   slots: BoardSlotOut[];
   rooms: BoardRoomOut[];
   entries: BoardEntryOut[];
+  /** Conference.boardSkipEmpty — when true the projector paginator prunes
+   *  empty room columns / slot rows per page. */
+  skip_empty: boolean;
 }

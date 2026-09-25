@@ -117,11 +117,133 @@ describe("Live Board payload + link", () => {
     expect((await anon.get(`/api/board/${conf.slug}?t=${rotated.token}`)).status).toBe(200);
   });
 
-  test("a non-owner cannot manage the board link (owner-only gate)", async () => {
+  test("shown-days filter restricts the payload; the spotlight is not day-bound", async () => {
+    const { owner, conf } = await makeOwnerConf("boarddays");
+    const anon = new Client(ctx.app);
+    const link = await owner.rpc.conferences.setBoardLink({ slug: conf.slug, enabled: true });
+    await owner.rpc.rooms.create({ slug: conf.slug, name: "Hall", capacity: 10 });
+
+    const day1 = await owner.rpc.submissions.create({ slug: conf.slug, title: "Day One Talk" });
+    const day2 = await owner.rpc.submissions.create({ slug: conf.slug, title: "Day Two Talk" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: day1.id });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: day2.id });
+
+    // Default timezone is UTC, so +24h spacing is exactly one calendar day.
+    const day1Start = soon();
+    const s1 = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", title: "D1",
+      starts_at: day1Start, ends_at: day1Start + 3600_000,
+    });
+    const s2 = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", title: "D2",
+      starts_at: day1Start + 24 * 3600_000, ends_at: day1Start + 25 * 3600_000,
+    });
+    await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: s1.id, submission_id: day1.id });
+    await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: s2.id, submission_id: day2.id });
+
+    // Spotlight the DAY-2 session — the spotlight is an explicit mod action,
+    // so it must survive a day filter that hides its slot.
+    await owner.rpc.agenda.spotlight({ slug: conf.slug, submission_id: day2.id });
+
+    const key1 = new Date(day1Start).toISOString().slice(0, 10);
+    const restricted = await owner.rpc.conferences.setBoardLink({
+      slug: conf.slug, enabled: true, days: [key1],
+    });
+    expect(restricted.days).toEqual([key1]);
+
+    const res = await anon.get(`/api/board/${conf.slug}?t=${link.token}`);
+    const payload = (await res.json()) as BoardPayloadOut;
+    expect(payload.slots.map((s) => s.id)).toEqual([s1.id]);
+    expect(payload.entries).toHaveLength(1);
+    expect(payload.entries[0]!.title).toBe("Day One Talk");
+    expect(payload.spotlight?.title).toBe("Day Two Talk");
+
+    // Reset to all days: everything is back, days report null.
+    const reset = await owner.rpc.conferences.setBoardLink({ slug: conf.slug, enabled: true, days: null });
+    expect(reset.days).toBeNull();
+    const full = (await (await anon.get(`/api/board/${conf.slug}?t=${link.token}`)).json()) as BoardPayloadOut;
+    expect(full.slots).toHaveLength(2);
+    expect(full.entries).toHaveLength(2);
+  });
+
+  test("the days filter rejects an empty list and malformed day keys", async () => {
+    const { owner, conf } = await makeOwnerConf("boarddayval");
+    await expect(
+      owner.rpc.conferences.setBoardLink({ slug: conf.slug, enabled: true, days: [] }),
+    ).rejects.toBeInstanceOf(ORPCError);
+    await expect(
+      owner.rpc.conferences.setBoardLink({ slug: conf.slug, enabled: true, days: ["tomorrow"] }),
+    ).rejects.toBeInstanceOf(ORPCError);
+    await expect(
+      owner.rpc.conferences.setBoardLink({ slug: conf.slug, enabled: true, days: ["2026-13-45"] }),
+    ).rejects.toBeInstanceOf(ORPCError);
+  });
+
+  test("skip_empty defaults on, is patchable, rides the payload, and fans out", async () => {
+    __resetBusForTests();
+    const bus = getBus();
+    const { owner, conf } = await makeOwnerConf("boardskip");
+    const anon = new Client(ctx.app);
+    const link = await owner.rpc.conferences.setBoardLink({ slug: conf.slug, enabled: true });
+    expect(link.skip_empty).toBe(true);
+
+    await owner.rpc.rooms.create({ slug: conf.slug, name: "Hall", capacity: 10 });
+    let res = await anon.get(`/api/board/${conf.slug}?t=${link.token}`);
+    let payload = (await res.json()) as BoardPayloadOut;
+    expect(payload.skip_empty).toBe(true);
+
+    const events: BusEvent[] = [];
+    const off = bus.subscribe(boardTopicKey(conf.id), (e) => events.push(e));
+    const updated = await owner.rpc.conferences.setBoardLink({
+      slug: conf.slug, enabled: true, skip_empty: false,
+    });
+    expect(updated.skip_empty).toBe(false);
+    res = await anon.get(`/api/board/${conf.slug}?t=${link.token}`);
+    payload = (await res.json()) as BoardPayloadOut;
+    expect(payload.skip_empty).toBe(false);
+    // Walls learn about the toggle live.
+    expect(events.some((e) => e.kind === "agenda.changed")).toBe(true);
+    off();
+  });
+
+  test("board-link changes fan out agenda.changed so open walls refetch live", async () => {
+    __resetBusForTests();
+    const bus = getBus();
+    const { owner, conf } = await makeOwnerConf("boardchanged");
+    const events: BusEvent[] = [];
+    const off = bus.subscribe(boardTopicKey(conf.id), (e) => events.push(e));
+
+    // Enabling, changing days, and rotating each publish — the board SSE
+    // forwards these and walls refetch their snapshot (debounced).
+    await owner.rpc.conferences.setBoardLink({ slug: conf.slug, enabled: true });
+    expect(events.some((e) => e.kind === "agenda.changed")).toBe(true);
+    events.length = 0;
+    await owner.rpc.conferences.setBoardLink({ slug: conf.slug, enabled: true, days: ["2026-10-01"] });
+    expect(events.some((e) => e.kind === "agenda.changed")).toBe(true);
+    events.length = 0;
+    await owner.rpc.conferences.rotateBoardLink({ slug: conf.slug });
+    expect(events.some((e) => e.kind === "agenda.changed")).toBe(true);
+    off();
+  });
+
+  test("participants cannot manage the board link; moderators can (mod gate)", async () => {
     const { owner, conf } = await makeOwnerConf("boardauth");
-    const { client: part } = await inviteAndClaim(ctx.app, owner, conf.slug, "board-part@example.com");
-    await expect(part.rpc.conferences.getBoardLink({ slug: conf.slug })).rejects.toBeInstanceOf(ORPCError);
-    await expect(part.rpc.conferences.setBoardLink({ slug: conf.slug, enabled: true })).rejects.toBeInstanceOf(ORPCError);
+    const { client: mod, identity_id: modId } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "board-part@example.com");
+    await expect(mod.rpc.conferences.getBoardLink({ slug: conf.slug })).rejects.toBeInstanceOf(ORPCError);
+    await expect(mod.rpc.conferences.setBoardLink({ slug: conf.slug, enabled: true })).rejects.toBeInstanceOf(ORPCError);
+    await expect(mod.rpc.conferences.rotateBoardLink({ slug: conf.slug })).rejects.toBeInstanceOf(ORPCError);
+
+    // Promoted to moderator: can enable, re-read, and rotate the link.
+    await owner.rpc.conferences.addModerator({ slug: conf.slug, user_id: modId });
+    const enabled = await mod.rpc.conferences.setBoardLink({ slug: conf.slug, enabled: true });
+    expect(enabled.enabled).toBe(true);
+    expect(enabled.token).not.toBeNull();
+    const read = await mod.rpc.conferences.getBoardLink({ slug: conf.slug });
+    expect(read.token).toBe(enabled.token);
+    const rotated = await mod.rpc.conferences.rotateBoardLink({ slug: conf.slug });
+    expect(rotated.enabled).toBe(true);
+    expect(rotated.token).not.toBe(enabled.token);
   });
 });
 

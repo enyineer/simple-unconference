@@ -20,6 +20,11 @@ const settingsCss = `
   border: 1px solid var(--borderColor-muted, var(--uncon-border-muted, #e5e7eb));
   background: var(--bgColor-default, var(--uncon-bg, transparent));
 }
+.uncon-settings-section.is-stacked {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px;
+}
 @media (max-width: 640px) {
   .uncon-settings-section {
     grid-template-columns: minmax(0, 1fr);
@@ -41,7 +46,7 @@ function useSettingsStyles() {
 }
 
 export function SettingsSection({
-  title, description, children, saved,
+  title, description, children, saved, stacked,
 }: {
   title: string;
   description: string;
@@ -50,11 +55,15 @@ export function SettingsSection({
    *  confirm a successful auto-save. Parent owns the lifetime (clear it
    *  after ~1.5s) so adjacent sections don't all light up at once. */
   saved?: boolean;
+  /** Force the single-column stacked layout at every viewport width. Use
+   *  inside narrow surfaces (sheets, flyouts) where the two-column settings
+   *  grid would squeeze the controls. */
+  stacked?: boolean;
 }) {
   useSettingsStyles();
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
   return (
-    <div className="uncon-settings-section">
+    <div className={`uncon-settings-section${stacked ? " is-stacked" : ""}`}>
       <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
         <div style={{
           fontSize: 16, fontWeight: 600,

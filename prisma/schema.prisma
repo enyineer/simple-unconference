@@ -97,6 +97,18 @@ model Conference {
   // /#/board/<slug>?t=<token>. Null = board disabled. Rotating it mints a new
   // token and invalidates the old link. Never exposed except to the owner.
   boardToken    String?  @unique @map("board_token")
+  // Which calendar days the Live Board shows: a comma-separated list of
+  // YYYY-MM-DD day keys interpreted in the conference timezone. Null = all
+  // days (the default; existing conferences are unaffected). Applied in the
+  // board payload (slots + entries) so every wall shows exactly these days.
+  boardDays     String?  @map("board_days")
+  // When true (the default), the projector board's paginator prunes empty
+  // room columns and empty time-slot rows from each page (fixed-point: a
+  // slot emptied by a room prune can prune rooms in turn). Applied
+  // client-side in buildBoardPages; the flag rides the public payload. If
+  // pruning would empty EVERY page (no placements at all), the unpruned
+  // pages render instead so the wall never goes blank.
+  boardSkipEmpty Boolean  @default(true) @map("board_skip_empty")
   // Owner-uploaded custom app icon (per-conference PWA). `iconPath` is the
   // on-disk location under data/conference-icons/<confId>/; `iconHash` is a
   // short content hash for cache-busting the served icon + manifest URLs.
