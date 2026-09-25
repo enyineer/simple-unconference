@@ -77,3 +77,24 @@ export function fmtTimeMaybeDay(
     ? `${fmtDayShort(ms, timeZone)} ${fmtTimeShort(ms, timeZone)}`
     : fmtTimeShort(ms, timeZone);
 }
+
+/**
+ * Build an avatar `<img>` src. With a content hash (an uploaded avatar) the
+ * hashed route is immutable-cacheable and needs no help. Without one, the
+ * endpoint serves the initials SVG — a function of the identity's
+ * (name, id) — and stamps it `max-age=300`, so the caller seeds the cache
+ * key with the current display label: a rename produces a new URL and the
+ * fresh initials render immediately instead of a cached previous rendering
+ * (which would otherwise show the stale initials — or "?" for unnamed —
+ * for up to five minutes).
+ */
+export function avatarUrl(
+  slug: string,
+  identityId: number,
+  hash: string | null,
+  label?: string | null,
+): string {
+  const base = `/api/avatars/${encodeURIComponent(slug)}/${identityId}`;
+  if (hash) return `${base}/${hash}`;
+  return `${base}?v=${encodeURIComponent(label ?? "")}`;
+}

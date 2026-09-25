@@ -10,6 +10,7 @@ import { useEffect, useInsertionEffect, useState } from "react";
 import { Badge, Button, Heading, Spinner, Stack } from "../../design-system";
 import { useToast } from "../../design-system/hooks";
 import { api, errorCode } from "../../api";
+import { avatarUrl } from "../helpers";
 import { useRoute, useNavLink } from "../../router";
 import { EmptyState } from "../ui/EmptyState";
 import { Pager } from "../ui/Pager";
@@ -18,11 +19,6 @@ import { ProfileEditor } from "../ProfileEditor";
 import { usePaginatedList } from "../usePaginatedList";
 import type { ProfileOut, ProfileSummaryOut } from "../../../shared/contract";
 import type { ConfMe } from "../../App";
-
-function avatarUrl(slug: string, identityId: number, hash: string | null): string {
-  if (hash) return `/api/avatars/${encodeURIComponent(slug)}/${identityId}/${hash}`;
-  return `/api/avatars/${encodeURIComponent(slug)}/${identityId}`;
-}
 
 // Layout CSS for the directory. The two key responsive concerns:
 //   1. Profile rows use a shared chrome (YourProfileCard and DirectoryRow
@@ -377,7 +373,8 @@ function DirectoryRow({
   isMe: boolean;
 }) {
   const navLink = useNavLink();
-  const label = profile.name && profile.name.trim() ? profile.name : "Unnamed";
+  const unnamed = !(profile.name && profile.name.trim());
+  const label = unnamed ? "Unnamed" : profile.name!;
   const initial = label.trim().charAt(0).toUpperCase() || "?";
   // The Message button must NOT live inside the ProfileLink <a>. A parent
   // <a>'s text-decoration underline paints across inline descendants no
@@ -389,7 +386,7 @@ function DirectoryRow({
     <div className="uncon-dir-row">
       <ProfileLink slug={slug} identityId={profile.identity_id} linkable={true} asContents>
         <img
-          src={avatarUrl(slug, profile.identity_id, profile.avatar_hash)}
+          src={avatarUrl(slug, profile.identity_id, profile.avatar_hash, profile.name)}
           alt=""
           width={48}
           height={48}
@@ -407,6 +404,12 @@ function DirectoryRow({
             }}
           >
             <span className="uncon-dir-row__name">{label}</span>
+            {/* Mods/owners get the canonical email next to "Unnamed" so they
+                can still tell people apart. The server sends `email` only to
+                mod+ viewers (null for non-mods), so this line can't leak. */}
+            {unnamed && profile.email && (
+              <span style={{ color: muted, fontSize: 12 }}>{profile.email}</span>
+            )}
             {profile.pronouns && (
               <span style={{ color: muted, fontSize: 12 }}>
                 ({profile.pronouns})
@@ -501,7 +504,7 @@ function YourProfileCard({
     <>
       <div className="uncon-dir-row">
         <img
-          src={`/api/avatars/${encodeURIComponent(slug)}/${confMe.id}`}
+          src={avatarUrl(slug, confMe.id, null, confMe.name)}
           alt=""
           width={48}
           height={48}

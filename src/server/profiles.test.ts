@@ -129,6 +129,111 @@ describe("profiles.* smoke", () => {
     expect(ownerView.length).toBeGreaterThanOrEqual(2);
   });
 
+  test("list sorts unnamed identities last; email is mod-only", async () => {
+    const owner = new Client(ctx.app);
+    await owner.rpc.auth.signup({ email: "po16@example.com", password: "secret123", name: "Zed Owner" });
+    const conf = await owner.rpc.conferences.create({ name: "Unnamed Sort Smoke" });
+
+    const { client: alice } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "alice16@example.com", "secret123", "Alice");
+    const { client: bob } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "bob16@example.com", "secret123", "Bob");
+    // Unnamed identity: no name at claim time → null column.
+    const { client: ghost, identity_id: ghostId } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "ghost16@example.com", "secret123");
+
+    // Publish so a non-mod viewer sees all non-owner identities.
+    await alice.rpc.profiles.updateMine({ slug: conf.slug, profile_published: true });
+    await bob.rpc.profiles.updateMine({ slug: conf.slug, profile_published: true });
+    await ghost.rpc.profiles.updateMine({ slug: conf.slug, profile_published: true });
+
+    // Mod view: named identities alphabetical, unnamed (null) dead last.
+    const modRows = (await owner.rpc.profiles.list({ slug: conf.slug })).items;
+    expect(modRows.map((p) => p.name)).toEqual(["Alice", "Bob", "Zed Owner", null]);
+
+    // Mods get the canonical email on each row (needed to disambiguate
+    // "Unnamed" people).
+    const ghostRow = modRows.find((p) => p.identity_id === ghostId)!;
+    expect(ghostRow.email).toBe("ghost16@example.com");
+
+    // Non-mods: no email anywhere in the payload, same ordering.
+    const bobRows = (await bob.rpc.profiles.list({ slug: conf.slug })).items;
+    expect(JSON.stringify(bobRows)).not.toContain("alice16@example.com");
+    expect(JSON.stringify(bobRows)).not.toContain("ghost16@example.com");
+    expect(bobRows[bobRows.length - 1]!.name).toBeNull();
+  });
+
+  test("email updates: self + mod, normalized, collision + owner guards", async () => {
+    const owner = new Client(ctx.app);
+    await owner.rpc.auth.signup({ email: "po18@example.com", password: "secret123" });
+    const conf = await owner.rpc.conferences.create({ name: "Email Edit Smoke" });
+
+    const { client: alice, identity_id: aliceId } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "alice18@example.com", "secret123", "Alice");
+    const { identity_id: bobId } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "bob18@example.com", "secret123", "Bob");
+
+    // Self update normalizes casing + whitespace (Email primitive).
+    const saved = await alice.rpc.profiles.updateMine({
+      slug: conf.slug,
+      email: " Alice18@Example.COM ",
+    });
+    expect(saved.email).toBe("alice18@example.com");
+
+    // Omitted key leaves the email alone.
+    const untouched = await alice.rpc.profiles.updateMine({ slug: conf.slug, bio: "x" });
+    expect(untouched.email).toBe("alice18@example.com");
+
+    // A moderator can fix someone else's email (the "wrong email" support
+    // scenario).
+    const modFixed = await owner.rpc.profiles.updateAny({
+      slug: conf.slug,
+      identity_id: bobId,
+      email: "bob.corrected@example.com",
+    });
+    expect(modFixed.email).toBe("bob.corrected@example.com");
+
+    // Collision within the conference → CONFLICT with an inline field error
+    // the profile editor can show.
+    const clash = await alice.rpc.profiles
+      .updateMine({ slug: conf.slug, email: "bob.corrected@example.com" })
+      .catch((e) => e);
+    expect(clash).toBeInstanceOf(ORPCError);
+    expect(clash.code).toBe("CONFLICT");
+    expect(clash.data?.fields?.email).toBeTruthy();
+
+    // Malformed email → validation error.
+    await expect(
+      alice.rpc.profiles.updateMine({ slug: conf.slug, email: "not-an-email" }),
+    ).rejects.toBeInstanceOf(ORPCError);
+
+    // The owner's auto-minted identity is protected: its email is the join
+    // key to the global account (ensureOwnerIdentity / owner_use_main_login).
+    await expect(
+      owner.rpc.profiles.updateMine({ slug: conf.slug, email: "owner.moved@example.com" }),
+    ).rejects.toBeInstanceOf(ORPCError);
+
+    // Email uniqueness is per-conference: the owner's address is fine to set
+    // on an identity in ANOTHER conference (a fresh identity there, not the
+    // owner-minted one).
+    const confB = await owner.rpc.conferences.create({ name: "Email Edit B" });
+    const { identity_id: aliceBId } =
+      await inviteAndClaim(ctx.app, owner, confB.slug, "alice.other@example.com", "secret123", "Alice B");
+    const other = await owner.rpc.profiles.updateAny({
+      slug: confB.slug,
+      identity_id: aliceBId,
+      email: "alice18@example.com",
+    });
+    expect(other.email).toBe("alice18@example.com");
+
+    // End to end: the renamed email is the new login identifier.
+    const fresh = new Client(ctx.app);
+    const loggedIn = await fresh.rpc.conferences.login({
+      slug: conf.slug, email: "alice18@example.com", password: "secret123",
+    });
+    expect(loggedIn.id).toBe(aliceId);
+  });
+
   test("non-mod fetching an unpublished other profile gets NOT_FOUND", async () => {
     const owner = new Client(ctx.app);
     await owner.rpc.auth.signup({ email: "po3@example.com", password: "secret123" });

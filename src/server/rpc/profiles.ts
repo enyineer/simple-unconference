@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/server";
-import type { PrismaClient, Prisma } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { requireConf, actorIdentityId, pageOf, parsePageInput } from "./shared";
 // Renamed at import to avoid shadowing the `profiles.deleteAvatar` handler key.
 import { deleteAvatar as deleteAvatarFile } from "../lib/avatars";
@@ -94,12 +94,20 @@ async function buildProfileOut(
 // fields on ConferenceIdentity), and replaces entries/tags wholesale when
 // those arrays are provided. Caller must have already verified the target
 // identity belongs to `conferenceId`.
+//
+// `email` is the per-conference login identifier, so it gets two extra
+// guards: edits to the owner's auto-minted identity are refused (its email
+// is the join key `ensureOwnerIdentity` and the `owner_use_main_login`
+// branch rely on), and a duplicate within the conference collapses to an
+// inline field error rather than a raw P2002.
 async function applyProfileUpdate(
   prisma: PrismaClient,
+  conferenceId: number,
   identityId: number,
   input: {
     profile_published?: boolean;
     name?: string | null;
+    email?: string;
     bio?: string | null;
     pronouns?: string | null;
     title?: string | null;
@@ -124,6 +132,40 @@ async function applyProfileUpdate(
   // schema already trims, but re-trimming here keeps the helper honest if it
   // is ever called with pre-schema data.
   if (Object.hasOwn(input, "name")) data.name = input.name?.trim() || null;
+  // Email: never clearable. The `Email` schema already trimmed + lowercased,
+  // but re-normalize so a raw caller can't store a non-canonical address that
+  // the `(conferenceId, email)` lookups would then miss.
+  if (Object.hasOwn(input, "email") && input.email !== undefined) {
+    const email = input.email.trim().toLowerCase();
+    const target = await prisma.conferenceIdentity.findUnique({
+      where: { id: identityId },
+      select: { ownerUserId: true },
+    });
+    if (target?.ownerUserId != null) {
+      throw new ORPCError("BAD_REQUEST", {
+        message: "owner_email_is_global",
+        data: {
+          fields: {
+            email: "The organizer's email is managed on their global account.",
+          },
+        },
+      });
+    }
+    const clash = await prisma.conferenceIdentity.count({
+      where: { conferenceId, email, id: { not: identityId } },
+    });
+    if (clash > 0) {
+      throw new ORPCError("CONFLICT", {
+        message: "email_taken_in_conference",
+        data: {
+          fields: {
+            email: "Another member of this conference already uses this email.",
+          },
+        },
+      });
+    }
+    data.email = email;
+  }
   if (Object.hasOwn(input, "bio")) data.bio = input.bio ?? null;
   if (Object.hasOwn(input, "pronouns")) data.pronouns = input.pronouns ?? null;
   if (Object.hasOwn(input, "title")) data.title = input.title ?? null;
@@ -135,10 +177,11 @@ async function applyProfileUpdate(
     data.profileCompletionDismissed = input.profile_completion_dismissed;
   }
 
-  await prisma.$transaction(async (tx) => {
-    if (Object.keys(data).length > 0) {
-      await tx.conferenceIdentity.update({ where: { id: identityId }, data });
-    }
+  try {
+    await prisma.$transaction(async (tx) => {
+      if (Object.keys(data).length > 0) {
+        await tx.conferenceIdentity.update({ where: { id: identityId }, data });
+      }
     if (input.entries !== undefined) {
       await tx.profileEntry.deleteMany({ where: { identityId } });
       if (input.entries.length > 0) {
@@ -172,6 +215,22 @@ async function applyProfileUpdate(
       }
     }
   });
+  } catch (e) {
+    // Backstop for the email-unique race (two writers passing the count
+    // check simultaneously): collapse the raw P2002 into the same inline
+    // field error the pre-check throws.
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      throw new ORPCError("CONFLICT", {
+        message: "email_taken_in_conference",
+        data: {
+          fields: {
+            email: "Another member of this conference already uses this email.",
+          },
+        },
+      });
+    }
+    throw e;
+  }
 }
 
 export const profilesRouter = {
@@ -217,6 +276,9 @@ export const profilesRouter = {
       ...(isMod ? {} : { profilePublished: true }),
       ...(queryFilters.length > 0 ? { AND: queryFilters } : {}),
     };
+    // Unnamed identities (name IS NULL) sort last: SQLite orders NULLs first
+    // under a plain ASC, which would float every "Unnamed" row to the top of
+    // the directory. The nulls hint is honored by the libsql connector.
     const [total, rows] = await Promise.all([
       context.prisma.conferenceIdentity.count({ where }),
       context.prisma.conferenceIdentity.findMany({
@@ -225,7 +287,10 @@ export const profilesRouter = {
           profileTags: { orderBy: { tag: "asc" } },
           expertProfile: { select: { id: true } },
         },
-        orderBy: [{ name: "asc" }, { id: "asc" }],
+        orderBy: [
+          { name: { sort: "asc", nulls: "last" } },
+          { id: "asc" },
+        ],
         skip: offset,
         take: limit,
       }),
@@ -233,6 +298,9 @@ export const profilesRouter = {
     const items = rows.map((r) => ({
       identity_id: r.id,
       name: r.name,
+      // Canonical email stays mod-only (parity with profiles.get /
+      // submissions.list). Non-mods get null so the payload never carries it.
+      email: isMod ? r.email : null,
       title: r.title,
       company: r.company,
       pronouns: r.pronouns,
@@ -254,7 +322,7 @@ export const profilesRouter = {
       select: { id: true },
     });
     if (!ident) throw new ORPCError("NOT_FOUND");
-    await applyProfileUpdate(context.prisma, ident.id, input);
+    await applyProfileUpdate(context.prisma, context.conferenceId, ident.id, input);
     const isMod = context.principal.role === "owner" || context.principal.role === "moderator";
     return buildProfileOut(
       context.prisma, context.conferenceId, ident.id, viewerIdentityId, isMod,
@@ -267,7 +335,7 @@ export const profilesRouter = {
       select: { id: true },
     });
     if (!target) throw new ORPCError("NOT_FOUND");
-    await applyProfileUpdate(context.prisma, target.id, input);
+    await applyProfileUpdate(context.prisma, context.conferenceId, target.id, input);
     const viewerIdentityId = actorIdentityId(context);
     // Mods always see everything in the response payload.
     return buildProfileOut(

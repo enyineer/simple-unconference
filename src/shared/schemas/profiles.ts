@@ -2,7 +2,7 @@
 // per-route slug-bound variants, avatar deletion).
 
 import * as v from "valibot";
-import { NonEmpty, PageInputEntries, PosInt } from "./primitives";
+import { Email, NonEmpty, PageInputEntries, PosInt } from "./primitives";
 
 // A single entry on a user's profile. Two categories:
 //   - link   — websites + social profiles. `value` is the handle/URL label,
@@ -30,6 +30,13 @@ export const ProfileUpdateSchema = v.object({
   // name. The server maps an explicit empty string to null (unnamed), same
   // rule as `conferences.updateConfMe`; an omitted key leaves it untouched.
   name: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(80, "Keep it under 80 characters."))),
+  // Canonical identity email — the per-conference login identifier. Optional:
+  // an omitted key leaves it unchanged (it can never be cleared). Normalized
+  // by the shared `Email` primitive (trim + lowercase). The server rejects
+  // duplicates within the same conference and refuses edits to the owner's
+  // auto-minted identity, whose email is the join key to the organizer's
+  // global account.
+  email: v.optional(Email),
   bio: v.optional(v.union([v.pipe(v.string(), v.maxLength(4000)), v.null()])),
   pronouns: v.optional(v.union([v.pipe(v.string(), v.maxLength(64)), v.null()])),
   title: v.optional(v.union([v.pipe(v.string(), v.maxLength(128)), v.null()])),

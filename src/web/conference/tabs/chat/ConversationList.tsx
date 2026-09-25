@@ -10,6 +10,7 @@
 
 import { useState, useEffect } from "react";
 import { api } from "../../../api";
+import { avatarUrl } from "../../helpers";
 import type { ConversationOut } from "../ChatTab";
 
 interface ConversationListProps {
@@ -164,7 +165,7 @@ function ConversationRow({
         color: "var(--fgColor-default, inherit)",
       }}
     >
-      <Avatar slug={slug} identityId={c.other_identity_id} linkable={linkable} />
+      <Avatar slug={slug} identityId={c.other_identity_id} label={c.other_name} linkable={linkable} />
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{
           display: "flex",
@@ -218,7 +219,14 @@ function ConversationRow({
   );
 }
 
-function Avatar({ slug, identityId, linkable }: { slug: string; identityId: number; linkable: boolean }) {
+function Avatar({
+  slug, identityId, label, linkable,
+}: {
+  slug: string;
+  identityId: number;
+  label: string | null;
+  linkable: boolean;
+}) {
   // Always render a 32px circle — the avatars endpoint returns an initials
   // SVG when the profile isn't visible, so it never falls back to a broken
   // image even for unpublished targets. `linkable` doesn't change the avatar
@@ -226,7 +234,7 @@ function Avatar({ slug, identityId, linkable }: { slug: string; identityId: numb
   void linkable;
   return (
     <img
-      src={`/api/avatars/${encodeURIComponent(slug)}/${identityId}`}
+      src={avatarUrl(slug, identityId, null, label)}
       alt=""
       width={32}
       height={32}
@@ -272,7 +280,7 @@ function PendingRow({ slug, targetIdentityId, name }: {
       color: "var(--fgColor-default, inherit)",
     }}>
       <img
-        src={`/api/avatars/${encodeURIComponent(slug)}/${targetIdentityId}`}
+        src={avatarUrl(slug, targetIdentityId, null, name)}
         alt=""
         width={32} height={32}
         style={{ borderRadius: "50%", flexShrink: 0 }}

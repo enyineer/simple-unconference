@@ -4,6 +4,7 @@
 
 import { useState } from "react";
 import { useNow } from "../../../useNow";
+import { avatarUrl } from "../../helpers";
 import type { MessageOut } from "./ConversationView";
 
 interface MessageRowProps {
@@ -13,6 +14,10 @@ interface MessageRowProps {
   // True when previous message is from same sender within 5 min — drops
   // the avatar + name affordance for tighter visual grouping.
   groupedWithPrev: boolean;
+  // The conversation peer's display label (names live on the conversation
+  // meta, not on MessageOut). Seeds the initials-avatar cache key so a
+  // renamed peer's fresh initials render immediately.
+  peerLabel?: string | null;
   onReport: (messageId: number) => void;
   onEdit: (messageId: number, body: string) => Promise<void>;
   onDelete: (messageId: number) => Promise<void>;
@@ -21,7 +26,7 @@ interface MessageRowProps {
 const EDIT_WINDOW_MS = 15 * 60_000;
 
 export function MessageRow({
-  message, slug, isMe, groupedWithPrev, onReport, onEdit, onDelete,
+  message, slug, isMe, groupedWithPrev, peerLabel, onReport, onEdit, onDelete,
 }: MessageRowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -46,7 +51,7 @@ export function MessageRow({
     >
       {!groupedWithPrev && !isMe && (
         <img
-          src={`/api/avatars/${encodeURIComponent(slug)}/${message.sender_identity_id}`}
+          src={avatarUrl(slug, message.sender_identity_id, null, peerLabel)}
           alt=""
           width={28} height={28}
           style={{ borderRadius: "50%", flexShrink: 0 }}

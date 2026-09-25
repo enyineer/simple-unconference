@@ -839,11 +839,14 @@ export interface ProfileOut {
   profile_completion_dismissed: boolean;
 }
 
-// Compact row for the Directory tab. No email under any role. Non-mods only
-// see published identities; mods see everyone.
+// Compact row for the Directory tab. `email` is the canonical identity
+// email and stays MOD-ONLY (null for non-mods; the payload never carries
+// it) — parity with profiles.get. Non-mods only see published identities;
+// mods see everyone. Unnamed identities (null name) sort last.
 export interface ProfileSummaryOut {
   identity_id: number;
   name: string | null;
+  email: string | null;
   title: string | null;
   company: string | null;
   pronouns: string | null;

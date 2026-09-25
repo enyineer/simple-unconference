@@ -22,6 +22,7 @@ import {
 import { useToast } from "../design-system/hooks";
 import { TagInput } from "../design-system/core/tag-input";
 import { api, errorCode, errorFields, uploadAvatar } from "../api";
+import { avatarUrl } from "./helpers";
 import { useForm } from "../useForm";
 import {
   ProfileUpdateSchema,
@@ -70,11 +71,6 @@ interface ProfileEditorProps {
 
 type EntryDraft = ProfileEntryInput;
 
-function avatarUrl(slug: string, identityId: number, hash: string | null): string {
-  if (hash) return `/api/avatars/${encodeURIComponent(slug)}/${identityId}/${hash}`;
-  return `/api/avatars/${encodeURIComponent(slug)}/${identityId}`;
-}
-
 function makeEntryDraft(category: "link" | "contact", position: number): EntryDraft {
   return {
     kind: "",
@@ -100,6 +96,8 @@ function initialValues(profile: ProfileOut): Partial<ProfileUpdateInput> {
     // Empty string (not undefined) so saving an unnamed profile still sends
     // the key and the server's "" → null rule applies.
     name: profile.name ?? "",
+    // can_edit profiles always carry their email (self or mod view).
+    email: profile.email ?? "",
     bio: profile.bio,
     pronouns: profile.pronouns,
     title: profile.title,
@@ -294,6 +292,29 @@ export function ProfileEditor({
               onChange={(e) => form.setValue("name", e.target.value)}
               error={form.fieldError("name")}
             />
+            {profile.role === "owner" ? (
+              <>
+                <TextInput
+                  label="Email"
+                  value={form.values.email ?? ""}
+                  onChange={(e) => form.setValue("email", e.target.value)}
+                  disabled
+                  error={form.fieldError("email")}
+                />
+                <Text muted>
+                  The organizer&apos;s email is managed on their global account.
+                </Text>
+              </>
+            ) : (
+              <TextInput
+                label="Email"
+                type="email"
+                placeholder="you@example.com"
+                value={form.values.email ?? ""}
+                onChange={(e) => form.setValue("email", e.target.value)}
+                error={form.fieldError("email")}
+              />
+            )}
             <TextInput
               label="Pronouns"
               placeholder="e.g. they/them"
@@ -334,7 +355,7 @@ export function ProfileEditor({
             <Heading level={3}>Avatar</Heading>
             <Stack direction="row" gap="normal" align="center">
               <img
-                src={avatarUrl(slug, profile.identity_id, avatarHash)}
+                src={avatarUrl(slug, profile.identity_id, avatarHash, profile.name)}
                 alt=""
                 width={96}
                 height={96}

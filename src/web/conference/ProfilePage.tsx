@@ -22,7 +22,7 @@ import { api, errorCode } from "../api";
 import { useRoute } from "../router";
 import { ProfileEditor } from "./ProfileEditor";
 import { CopyButton } from "./ui/CopyButton";
-import { submitterLabel } from "./helpers";
+import { submitterLabel, avatarUrl } from "./helpers";
 import type { ProfileOut, ProfileEntryOut } from "../../shared/contract";
 
 interface ProfilePageProps {
@@ -32,11 +32,6 @@ interface ProfilePageProps {
    *  (e.g. profile_published, name) propagates to other tabs after the
    *  viewer edits their own profile. Optional — only invoked on self-edit. */
   onConfMeRefresh?: () => void;
-}
-
-function avatarUrl(slug: string, identityId: number, hash: string | null): string {
-  if (hash) return `/api/avatars/${encodeURIComponent(slug)}/${identityId}/${hash}`;
-  return `/api/avatars/${encodeURIComponent(slug)}/${identityId}`;
 }
 
 // Layout CSS for the profile page. Two responsive concerns are expressed
@@ -210,7 +205,7 @@ export function ProfilePage({ slug, identityId, onConfMeRefresh }: ProfilePagePr
   const contactEntries = profile.entries.filter((e) => e.category === "contact");
 
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
-  const avatarSrc = avatarUrl(slug, profile.identity_id, profile.avatar_hash);
+  const avatarSrc = avatarUrl(slug, profile.identity_id, profile.avatar_hash, profile.name);
 
   function openExperts(): void {
     // Phase 4 v1: just navigate to the experts tab. Cross-tab focus into a

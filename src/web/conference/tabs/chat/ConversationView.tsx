@@ -9,6 +9,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { api, errorCode, ApiError } from "../../../api";
 import { realtimeBus } from "../../../realtime/realtimeBus";
 import { ProfileLink } from "../../ProfileLink";
+import { avatarUrl } from "../../helpers";
 import { Sheet } from "../../../design-system";
 import type { ConfMe } from "../../../App";
 import { Composer } from "./Composer";
@@ -310,7 +311,7 @@ export function ConversationView({
         {meta && (
           <>
             <img
-              src={`/api/avatars/${encodeURIComponent(slug)}/${meta.other_identity_id}`}
+              src={avatarUrl(slug, meta.other_identity_id, null, meta.other_name)}
               alt=""
               width={36} height={36}
               style={{ borderRadius: "50%" }}
@@ -395,6 +396,7 @@ export function ConversationView({
               slug={slug}
               isMe={isMe}
               groupedWithPrev={groupedWithPrev}
+              peerLabel={meta?.other_name}
               onReport={(id) => setReportingMessageId(id)}
               onEdit={handleEdit}
               onDelete={handleDelete}
