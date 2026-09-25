@@ -207,10 +207,12 @@ something the next session would need to know.
   [src/web/board/boardLive.ts](src/web/board/boardLive.ts)) watches ping
   activity: silence beyond 45s (proxy black-holing the stream) or `onerror`
   demotes it to POLLING mode (snapshot refetch every 10s via the existing
-  debounce) while a background probe re-opens the SSE every 30s; the first
-  open flips back to live. The header dot shows amber "Polling". Corporate
-  proxies that kill long-lived streams are the reason this exists — don't
-  revert the ping to `:ping` comment form.
+  debounce) while a background probe re-opens the SSE every 30s. Promotion
+  back to live requires the first HEARTBEAT over the fresh stream — `onopen`
+  fires on headers alone, exactly what a black-holing proxy delivers — and
+  polling continues until then. The header dot shows amber "Polling".
+  Corporate proxies that kill long-lived streams are the reason this exists —
+  don't revert the ping to `:ping` comment form.
 - **Live Board topic events** (`agenda.changed`, `board.spotlight`) are
   routed on a CONFERENCE key, not an identity: `recipientId =
   boardTopicKey(confId)` (a NEGATIVE number, so it never collides with a

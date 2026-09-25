@@ -87,22 +87,27 @@ function start(onEvent: () => void, onConn: (c: BoardConn) => void): BoardLiveHa
   return handle;
 }
 
-test("open promotes to live; real events refetch; pings only mark activity", async () => {
+test("open alone doesn't promote; the first heartbeat does", async () => {
   const events: BoardConn[] = [];
   let fetches = 0;
   const handle = start(() => { fetches++; }, (c) => events.push(c));
   const es = FakeEventSource.instances[0]!;
 
   es.open();
-  expect(events).toEqual(["live"]);
-  expect(fetches).toBe(1); // catch-up refetch on open
+  // Headers arrived — but that's exactly what a black-holing proxy delivers.
+  // The catch-up refetch still runs.
+  expect(events).toEqual([]);
+  expect(fetches).toBe(1);
 
   es.emit("ping");
+  expect(events).toEqual(["live"]); // body proven, promotion fires once
   expect(fetches).toBe(1); // heartbeat ≠ data
 
   es.emit("agenda.changed");
   es.emit("board.spotlight");
+  es.emit("ping");
   expect(fetches).toBe(3);
+  expect(events).toEqual(["live"]);
 
   handle.close();
 });
@@ -124,11 +129,12 @@ test("silent stream falls back to polling, then a healthy probe restores SSE", a
   await sleep(TIMINGS.pollMs * 3);
   expect(fetches).toBeGreaterThan(atFallback);
 
-  // The background probe re-opens; opening the NEWEST stream stops polling
-  // and goes live. (A stale unopened probe re-probes on its own stall clock,
+  // The background probe re-opens; promotion needs its heartbeat, then
+  // polling stops. (A stale unopened probe re-probes on its own stall clock,
   // so grab whichever instance is newest at that moment.)
   await waitFor(() => FakeEventSource.instances.length >= 2, 1_000);
   FakeEventSource.instances[FakeEventSource.instances.length - 1]!.open();
+  FakeEventSource.instances[FakeEventSource.instances.length - 1]!.emit("ping");
   expect(events).toContain("live");
 
   const afterLive = fetches;
@@ -136,17 +142,27 @@ test("silent stream falls back to polling, then a healthy probe restores SSE", a
   expect(fetches).toBe(afterLive); // polling stopped
 });
 
-test("onerror (SSE blocked outright) also demotes to polling and probes", async () => {
+test("onerror demotes to polling; an opened-but-silent probe keeps polling; heartbeat heals", async () => {
   const events: BoardConn[] = [];
-  start(() => {}, (c) => events.push(c));
+  let fetches = 0;
+  start(() => { fetches++; }, (c) => events.push(c));
   FakeEventSource.instances[0]!.error();
 
   expect(events).toContain("polling");
   await waitFor(() => FakeEventSource.instances.length >= 2, 1_000);
-
-  // A probe that opens heals without a watchdog stall wait.
+  // The probe "connects" (headers arrive — the proxy scenario)…
   FakeEventSource.instances[FakeEventSource.instances.length - 1]!.open();
+  expect(events).not.toContain("live");
+  // …and polling keeps the wall fresh while no heartbeat shows up.
+  await sleep(TIMINGS.pollMs * 3);
+  expect(fetches).toBeGreaterThanOrEqual(1);
+  const beforeHeal = fetches;
+
+  // First heartbeat over that stream = proof → live, polling stops.
+  FakeEventSource.instances[FakeEventSource.instances.length - 1]!.emit("ping");
   expect(events[events.length - 1]).toBe("live");
+  await sleep(TIMINGS.pollMs * 4);
+  expect(fetches).toBe(beforeHeal);
 });
 
 test("close() detaches everything: no fetches, no probes, stream closed", async () => {

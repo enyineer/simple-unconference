@@ -8,8 +8,10 @@
 // invisible to the EventSource API, so the heartbeat must be a real event),
 // and any silence beyond `stallMs` — or an `onerror` — demotes the stream to
 // POLLING mode: the snapshot is refetched on a fixed cadence while a slow
-// background probe keeps trying to re-open the SSE. The first probe that
-// opens promotes the stream back to live and stops the polling.
+// background probe keeps trying to re-open the SSE. Polling continues until
+// the fresh stream proves its body streams — the FIRST HEARTBEAT, not
+// `onopen` (headers alone arrive fine through a black-holing proxy) — and
+// that promotion stops the polling and flips the state back to live.
 //
 // Framework-free on purpose (like buildBoardPages): the React wrapper lives
 // in useBoardLive.ts. Timings are injectable so tests can run with real
@@ -49,6 +51,9 @@ export function startBoardLive(opts: {
   let lastActivity = 0;
   let closed = false;
   let conn: BoardConn = "connecting";
+  // True once the CURRENT stream has proven its body streams (first heartbeat
+  // / data event). Reset per attempt; guards the one-shot promotion.
+  let promoted = false;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let watchdog: ReturnType<typeof setInterval> | null = null;
   let probeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -94,8 +99,12 @@ export function startBoardLive(opts: {
     if (closed) return;
     clearProbe();
     closeStream();
-    setConn("connecting");
+    // While serving from polls, a probe attempt doesn't change what the room
+    // is looking at — keep the honest "Polling" label until data actually
+    // flows (promote()).
+    if (pollTimer === null) setConn("connecting");
     markActivity();
+    promoted = false;
     let es: EventSource;
     try {
       es = new EventSource(opts.streamUrl, { withCredentials: true });
@@ -112,11 +121,19 @@ export function startBoardLive(opts: {
     if (watchdog !== null) clearInterval(watchdog);
     watchdog = setInterval(checkStalled, Math.max(1, t.stallMs / 3));
 
+    // Promotion = first PROOF that the response body streams. `onopen` fires
+    // on headers alone — exactly what a black-holing proxy delivers — so it
+    // must not stop the polling. The server pings immediately at stream
+    // start, so on a healthy network promote() lands one RTT after open.
+    function promote(): void {
+      if (promoted) return;
+      promoted = true;
+      stopPolling();
+      setConn("live");
+    }
     es.onopen = () => {
       if (closed || source !== es) return;
       markActivity();
-      stopPolling();
-      setConn("live");
       // Catch-up refetch: events may have been missed while the stream was
       // down (the board SSE does no replay).
       opts.onEvent();
@@ -124,11 +141,13 @@ export function startBoardLive(opts: {
     es.addEventListener("ping", () => {
       if (closed || source !== es) return;
       markActivity();
+      promote();
     });
     for (const kind of ["agenda.changed", "board.spotlight"] as const) {
       es.addEventListener(kind, () => {
         if (closed || source !== es) return;
         markActivity();
+        promote();
         opts.onEvent();
       });
     }
