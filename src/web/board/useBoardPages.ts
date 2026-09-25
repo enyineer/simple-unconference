@@ -51,6 +51,28 @@ const PAGER_PX = 52;
 export const MAX_ROOMS_PER_PAGE = 6;
 export const MAX_SLOTS_PER_PAGE = 6;
 
+// The board's viewport-derived design unit — the single source of truth for
+// the `--bd-u` clamp interpolated in boardStyles.ts. A viewport of
+// baseW×baseH maps to a 1.0 design unit; every board length is a multiple of
+// it, so bumping these scales the whole wall (current design: ~25% larger
+// than raw CSS pixels, hence the 2048×1152 baseline).
+export const BOARD_SCALE = {
+  baseW: 2048,
+  baseH: 1152,
+  minPx: 0.8,
+  maxPx: 3,
+} as const;
+
+export function boardUnitFor(innerW: number, innerH: number): number {
+  return Math.min(
+    Math.max(
+      Math.min(innerW / BOARD_SCALE.baseW, innerH / BOARD_SCALE.baseH),
+      BOARD_SCALE.minPx,
+    ),
+    BOARD_SCALE.maxPx,
+  );
+}
+
 export interface BoardPage {
   roomSlice: BoardRoomOut[];
   slotSlice: BoardSlotOut[];
@@ -68,6 +90,11 @@ export interface BoardPageOpts {
   skipEmpty?: boolean;
   /** Whether the (slot, room) cell has a session — required for skipEmpty. */
   hasEntry?: (slotId: number, roomId: number) => boolean;
+  /** Current design-unit scale (see BOARD_SCALE). The physical-fit constants
+   *  below are design px; the builder multiplies them by this so a page
+   *  never overfills the CSS's now-larger minimums. Default 1 (design px =
+   *  screen px, i.e. a baseW×baseH viewport). */
+  unit?: number;
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -113,11 +140,12 @@ export function buildBoardPages(
   const hasEntry = skipEmpty && opts.hasEntry ? opts.hasEntry : () => true;
 
   const measured = viewport !== null && viewport.w > 0 && viewport.h > 0;
+  const unit = opts.unit ?? 1;
   const physicalRooms = measured
-    ? Math.max(1, Math.floor((viewport!.w - TIME_RAIL_PX) / MIN_COL_PX))
+    ? Math.max(1, Math.floor((viewport!.w - TIME_RAIL_PX * unit) / (MIN_COL_PX * unit)))
     : rooms.length;
   const physicalSlots = measured
-    ? Math.max(1, Math.floor((viewport!.h - ROOM_HEAD_PX - PAGER_PX) / MIN_ROW_PX))
+    ? Math.max(1, Math.floor((viewport!.h - (ROOM_HEAD_PX + PAGER_PX) * unit) / (MIN_ROW_PX * unit)))
     : slots.length;
   // The caps bind before the physical fit on anything projector-sized.
   const roomsPerPage = Math.min(physicalRooms, MAX_ROOMS_PER_PAGE, rooms.length);
@@ -207,8 +235,17 @@ export function useBoardPages(
     () => (size.w > 0 && size.h > 0 ? { w: size.w, h: size.h } : null),
     [size.w, size.h],
   );
+  // The design unit tracks the viewport exactly like the CSS clamp — the
+  // builder needs it to convert its design-px constants to screen px.
+  const [unit, setUnit] = useState(1);
+  useEffect(() => {
+    const compute = () => setUnit(boardUnitFor(window.innerWidth, window.innerHeight));
+    compute();
+    window.addEventListener("resize", compute);
+    return () => window.removeEventListener("resize", compute);
+  }, []);
   return useMemo(
-    () => buildBoardPages(rooms, slots, timezone, measured, opts),
-    [rooms, slots, timezone, measured, opts],
+    () => buildBoardPages(rooms, slots, timezone, measured, { ...opts, unit }),
+    [rooms, slots, timezone, measured, opts, unit],
   );
 }

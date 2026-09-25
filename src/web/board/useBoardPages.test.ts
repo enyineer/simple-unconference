@@ -69,6 +69,20 @@ describe("buildBoardPages", () => {
     expect(pages[0]!.slotSlice).toHaveLength(1);
   });
 
+  test("unit > 1 shrinks the physical fit so pages never overfill the scaled CSS", () => {
+    const rs = rooms(8);
+    const ss = slots(Array.from({ length: 8 }, (_, i) => ({ id: i + 1, day: 0, hour: 9 + i })));
+    // At unit 1 (design px = screen px) the caps bind on a 1920-wide region:
+    // 6 rooms per page.
+    const base = buildBoardPages(rs, ss, TZ, { w: 1920, h: 1080 });
+    expect(base[0]!.roomSlice).toHaveLength(6);
+    // At unit 1.4 the same region physically fits fewer columns — the builder
+    // must respect the now-larger CSS minimums, not the caps. (unit 1.4 is a
+    // physics check; the production scale lives in BOARD_SCALE.)
+    const scaled = buildBoardPages(rs, ss, TZ, { w: 1920, h: 1080 }, { unit: 1.4 });
+    expect(scaled[0]!.roomSlice).toHaveLength(5);
+  });
+
   test("pages never straddle a day and order day-major", () => {
     const rs = rooms(1);
     const ss = slots([

@@ -9,14 +9,18 @@
 //
 // SCALING: every length is expressed in `--bd-u` design-pixels. The wall must
 // look proportionally identical at any resolution (the same physical look off
-// a 1080p vs 1440p vs 4K projector), so --bd-u is viewport-derived with
-// 2560x1440 as the 1:1 baseline and a floor so small windowed previews stay
-// legible. The phone/stacked layout resets it to 1px (it scrolls, so
-// proportional shrink would make it unreadable).
+// a 1080p vs 1440p vs 4K projector), so --bd-u is viewport-derived. The
+// baseline lives in BOARD_SCALE (useBoardPages.ts — also consumed by the
+// page-fit physics there); the current design renders ~25% larger than raw
+// CSS pixels. A floor keeps small windowed previews legible. The phone/
+// stacked layout resets it to 1px (it scrolls, so proportional shrink would
+// make it unreadable).
+
+import { BOARD_SCALE } from "./useBoardPages";
 
 export const BOARD_STYLES = `
 :root {
-  --bd-u: clamp(0.65px, min(100vw / 2560, 100vh / 1440), 3px);
+  --bd-u: clamp(${BOARD_SCALE.minPx}px, min(100vw / ${BOARD_SCALE.baseW}, 100vh / ${BOARD_SCALE.baseH}), ${BOARD_SCALE.maxPx}px);
 }
 .board-root {
   --bd-bg: #0a0d12;
