@@ -11,7 +11,10 @@ export function useBoardLive(
   streamUrl: string | null,
   onEvent: () => void,
 ): BoardConn {
-  const [conn, setConn] = useState<BoardConn>("connecting");
+  // Poll-first: the monitor serves the wall from polls from the moment it
+  // starts, so "polling" is the accurate initial state (SSE only promotes on
+  // its first heartbeat).
+  const [conn, setConn] = useState<BoardConn>("polling");
   // The scheduler identity can change per render; the monitor must not
   // restart because of it — route calls through a "latest" ref, kept fresh by
   // an effect (writing refs during render is a lint violation).

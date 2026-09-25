@@ -1,17 +1,23 @@
-// Liveness watchdog + polling fallback for the board SSE stream.
+// Liveness watchdog + poll-first SSE promotion for the board.
 //
 // Corporate proxies sometimes accept the SSE connection (headers arrive, the
 // client's `onopen` fires) but then black-hole the body — no heartbeats, no
-// events, no error. The EventSource just sits there looking healthy while the
-// wall goes stale. This monitor watches stream ACTIVITY instead: the server
-// sends a named `ping` event immediately and every 20s (SSE comments are
-// invisible to the EventSource API, so the heartbeat must be a real event),
-// and any silence beyond `stallMs` — or an `onerror` — demotes the stream to
-// POLLING mode: the snapshot is refetched on a fixed cadence while a slow
-// background probe keeps trying to re-open the SSE. Polling continues until
-// the fresh stream proves its body streams — the FIRST HEARTBEAT, not
-// `onopen` (headers alone arrive fine through a black-holing proxy) — and
-// that promotion stops the polling and flips the state back to live.
+// events, no error. The EventSource just sits there looking healthy while
+// the wall goes stale. So POLLING IS THE STARTING STATE, not a fallback: the
+// snapshot refetches on a fixed cadence from t=0 and the wall is never
+// blank. The SSE stream opens in parallel as a PROBE, and the monitor only
+// promotes it to live when it has PROOF the response body streams — the
+// first `ping` heartbeat or data event, never `onopen` (headers alone arrive
+// fine through a black-holing proxy). Promotion stops the polling. A
+// promoted stream that then goes silent beyond `stallMs` (or errors) drops
+// back into the polling state, and a background probe keeps retrying SSE on
+// a slow cadence; the watchdog also recycles probes that open but never
+// heartbeat so black-holed connections don't pile up.
+//
+// The server sends the named `ping` event immediately at stream start and
+// every 20s (SSE comments are invisible to the EventSource API, so the
+// heartbeat must be a real event) — on a healthy network promotion lands
+// one RTT after open, before the first poll tick is even due.
 //
 // Framework-free on purpose (like buildBoardPages): the React wrapper lives
 // in useBoardLive.ts. Timings are injectable so tests can run with real
@@ -50,7 +56,9 @@ export function startBoardLive(opts: {
   let source: EventSource | null = null;
   let lastActivity = 0;
   let closed = false;
-  let conn: BoardConn = "connecting";
+  // Polling IS the initial mode (see header comment) — no callback fires for
+  // it; callers initialize their UI to "polling".
+  let conn: BoardConn = "polling";
   // True once the CURRENT stream has proven its body streams (first heartbeat
   // / data event). Reset per attempt; guards the one-shot promotion.
   let promoted = false;
@@ -99,10 +107,6 @@ export function startBoardLive(opts: {
     if (closed) return;
     clearProbe();
     closeStream();
-    // While serving from polls, a probe attempt doesn't change what the room
-    // is looking at — keep the honest "Polling" label until data actually
-    // flows (promote()).
-    if (pollTimer === null) setConn("connecting");
     markActivity();
     promoted = false;
     let es: EventSource;
@@ -174,6 +178,9 @@ export function startBoardLive(opts: {
     scheduleProbe();
   }
 
+  // Poll-first: serve the wall immediately, probe SSE in parallel. The
+  // heartbeat (not `onopen`) decides when SSE takes over — see promote().
+  startPolling();
   openStream();
 
   return {

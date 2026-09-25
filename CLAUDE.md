@@ -201,18 +201,18 @@ something the next session would need to know.
   carries the `conversationId` so per-conversation subscribers can filter
   cheaply. Drop a payload without it and ConversationView will silently
   ignore the event.
-- **Board SSE heartbeats are a named `ping` event, not an SSE comment** —
-  comments are invisible to the JS EventSource API, so a liveness watchdog
-  can't see them. The board page (`startBoardLive` in
-  [src/web/board/boardLive.ts](src/web/board/boardLive.ts)) watches ping
-  activity: silence beyond 45s (proxy black-holing the stream) or `onerror`
-  demotes it to POLLING mode (snapshot refetch every 5s via the existing
-  debounce) while a background probe re-opens the SSE every 30s. Promotion
-  back to live requires the first HEARTBEAT over the fresh stream — `onopen`
-  fires on headers alone, exactly what a black-holing proxy delivers — and
-  polling continues until then. The header dot shows amber "Polling".
-  Corporate proxies that kill long-lived streams are the reason this exists —
-  don't revert the ping to `:ping` comment form.
+- **Board SSE is POLL-FIRST.** The board page (`startBoardLive` in
+  [src/web/board/boardLive.ts](src/web/board/boardLive.ts)) starts in
+  POLLING mode (snapshot refetch every 5s via the existing debounce) and
+  opens the SSE only as a parallel probe. Promotion to live requires the
+  first HEARTBEAT over the stream — the server sends a named `ping` event
+  immediately at open + every 20s; `onopen` does NOT count (it fires on
+  headers alone, exactly what a black-holing proxy delivers). A promoted
+  stream silent beyond 45s (or erroring) drops back to polling, and the
+  watchdog also recycles probes that open but never heartbeat, re-probing
+  every 30s. The header dot shows amber "Polling" until promotion. Don't
+  revert the ping to an SSE comment — comments are invisible to the JS
+  EventSource API, so the watchdog couldn't see them.
 - **Live Board topic events** (`agenda.changed`, `board.spotlight`) are
   routed on a CONFERENCE key, not an identity: `recipientId =
   boardTopicKey(confId)` (a NEGATIVE number, so it never collides with a
