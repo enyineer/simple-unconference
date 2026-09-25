@@ -5,6 +5,8 @@ import { DEFAULT_PLUGIN_ID } from "./design-system/core/registry";
 import type { ColorMode } from "./design-system/core/contract";
 import { api, ApiError } from "./api";
 import { useRoute, matchRoute } from "./router";
+import { useSearch } from "wouter";
+import { tokenFromSearch } from "./queryToken";
 import type { Tab } from "./conference/types";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { OfflineBanner } from "./components/OfflineBanner";
@@ -43,13 +45,6 @@ const VerifyEmailWall = lazy(() =>
 const VerifyEmailTokenPage = lazy(() =>
   import("./pages/VerifyEmail").then((m) => ({ default: m.VerifyEmailTokenPage })),
 );
-
-// Pull `?token=...` out of the hash-router path (which keeps the query tail).
-function resetTokenFromPath(p: string): string {
-  const q = p.indexOf("?");
-  if (q === -1) return "";
-  return new URLSearchParams(p.slice(q + 1)).get("token") ?? "";
-}
 
 // Owner identity (global User). Only used by the owner-facing ConferencesPage
 // and the global LoginPage. No `color_mode` here — that preference lives on
@@ -235,6 +230,8 @@ function Footer() {
 
 export function App() {
   const { path, navigate } = useRoute();
+  // wouter keeps the query tail out of `path` — token links read it from here.
+  const search = useSearch();
 
   // Routes (parsed up front; some are anonymous, some require auth).
   const boardMatch = matchRoute("/board/:slug", path);
@@ -464,7 +461,7 @@ export function App() {
       return (
         <ResetPasswordPage
           scope={{ kind: "owner" }}
-          token={resetTokenFromPath(path)}
+          token={tokenFromSearch(search)}
           // Reset logs the caller in server-side; refresh owner state so the
           // home route renders the authed view instead of the login screen.
           onDone={() => { loadOwner(); navigate("/"); }}
@@ -477,7 +474,7 @@ export function App() {
     if (ownerVerifyMatch) {
       return (
         <VerifyEmailTokenPage
-          token={resetTokenFromPath(path)}
+          token={tokenFromSearch(search)}
           onDone={() => { loadOwner(); navigate("/"); }}
         />
       );
@@ -487,7 +484,7 @@ export function App() {
       return (
         <ResetPasswordPage
           scope={{ kind: "conference", slug: resetSlug }}
-          token={resetTokenFromPath(path)}
+          token={tokenFromSearch(search)}
           // Navigating to the conference re-runs the confMe fetch with the
           // freshly-set identity cookie.
           onDone={() => navigate(`/conferences/${resetSlug}`)}
