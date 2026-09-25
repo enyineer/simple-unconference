@@ -1,5 +1,35 @@
 # simple-unconference
 
+## 0.16.0
+
+### Minor Changes
+
+- [`0bd16ad`](https://github.com/enyineer/simple-unconference/commit/0bd16ade4f30279803cfa387f56693d348460d2e) Thanks [@enyineer](https://github.com/enyineer)! - Display names can now be edited in place.
+
+  - New `auth.updateMe` procedure updates the global account's display name; an inline editor in the account menu (dashboard) saves it without leaving the page.
+  - The conference profile editor gained a "Display name" field, and the in-conference account menu can rename the conference identity directly (via `conferences.updateConfMe`), so participants and moderators no longer need workarounds to fix names.
+  - Moderators can set any member's display name through `profiles.updateAny`. Names are trimmed, capped at 80 characters, and an explicit empty value clears the name (same rule as signup).
+
+- [`2dcd8e3`](https://github.com/enyineer/simple-unconference/commit/2dcd8e385340bc07151a88666030964a4a1420b7) Thanks [@enyineer](https://github.com/enyineer)! - Profile email management and identity polish.
+
+  - Members can edit their conference email from the profile editor, and moderators can fix anyone's email (e.g. a signup typo). The email is the per-conference login identifier: duplicates within a conference are rejected with an inline field error, logging in with the corrected address works immediately, and the organizer's auto-minted identity is protected (its email stays tied to the global account).
+  - The Directory now sorts unnamed profiles last and shows their email next to "Unnamed" for moderators/owners so they can tell people apart. Emails stay hidden from non-moderators.
+  - Initials avatars update immediately after a display-name change instead of showing stale initials (or "?") for up to five minutes: the fallback avatar URL carries the current name as its cache key. Applied across the profile page, editor, directory, and chat.
+
+### Patch Changes
+
+- [`0d25d6b`](https://github.com/enyineer/simple-unconference/commit/0d25d6b9433c30520e40fb60ed896a2a95e67440) Thanks [@enyineer](https://github.com/enyineer)! - Live Board pages now follow time first, rooms second.
+
+  - Page order is day-major, then time-window major: every room page of the earliest time window shows before the next window opens, so the wall never jumps back to earlier sessions mid-rotation.
+  - Each time window's pages show only the rooms that actually host one of the window's sessions, ordered by first use - the room with the earliest session leads page 1 regardless of its room id. Empty room columns and empty slot rows never render.
+  - Removed the "x of y rooms" badge from the board header; it only shows day and time window now.
+
+- [`2c3c4a4`](https://github.com/enyineer/simple-unconference/commit/2c3c4a42bc146ca33bbce362953ef092d6d8acc0) Thanks [@enyineer](https://github.com/enyineer)! - Speakers without a display name are no longer invisible.
+
+  - A registered speaker whose identity has no display name yet (and a session whose submitter has none) now resolves to the display label "Unnamed speaker" instead of an empty string.
+  - Previously every blank-name filter dropped the person, so the speaker silently vanished from session cards, the agenda, the calendar, the manual-placement warning, and the public board.
+  - Collision keys and host-duty seating are unchanged - they key on identity ids, not names.
+
 ## 0.15.0
 
 ### Minor Changes
