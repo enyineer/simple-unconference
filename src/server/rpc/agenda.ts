@@ -465,7 +465,12 @@ async function runAssignmentForSlot(
       select: {
         submissionId: true, roomId: true,
         room: { select: { capacity: true, name: true } },
-        submission: { select: { submitterId: true, priority: true, title: true } },
+        submission: {
+          select: {
+            submitterId: true, priority: true, title: true,
+            speakers: { select: { identityId: true, name: true } },
+          },
+        },
       },
     }),
   ]);
@@ -474,6 +479,7 @@ async function runAssignmentForSlot(
     room_id: p.roomId,
     capacity: p.room.capacity,
     submitter_id: p.submission.submitterId,
+    speaker_ids: effectiveSpeakerIdentityIds(p.submission),
     priority: priorityWeight(p.submission.priority),
   }));
   const fixedSubIds = new Set(manualPlacementRows.map((p) => p.submissionId));
@@ -1172,7 +1178,9 @@ async function runAssignmentForSlot(
   const input: AssignmentInput = {
     rooms: rooms.map((r) => ({ id: r.id, capacity: r.capacity })),
     submissions: topNSubs.map((s) => ({
-      id: s.id, submitter_id: s.submitterId, priority: priorityWeight(s.priority),
+      id: s.id, submitter_id: s.submitterId,
+      speaker_ids: effectiveSpeakerIdentityIds(s),
+      priority: priorityWeight(s.priority),
     })),
     stars, priorAssignments,
     // The algorithm only consults `priorAssignments` when this is true. We
@@ -1529,7 +1537,9 @@ function buildSlotBands(
 // touched. Returns `changed_user_ids` (identities whose target-slot seat set
 // changed) so the caller can notify exactly those people. See `assignAgenda`
 // (src/server/assignment-agenda.ts) for the algorithm + its guarantees.
-async function runAssignmentForAgenda(
+// Exported for simulations/scripts (e.g. replaying "Update seating" against a
+// production snapshot copy).
+export async function runAssignmentForAgenda(
   prisma: PrismaClient,
   confId: number,
   opts?: { includeUnchanged?: boolean },
@@ -1561,7 +1571,14 @@ async function runAssignmentForAgenda(
     select: {
       slotId: true, submissionId: true, roomId: true,
       room: { select: { capacity: true } },
-      submission: { select: { submitterId: true, priority: true } },
+      submission: {
+        select: {
+          submitterId: true, priority: true,
+          // Effective speakers drive host-duty seating (see assignAgenda):
+          // registered speakers, defaulting to the submitter.
+          speakers: { select: { identityId: true, name: true } },
+        },
+      },
     },
     orderBy: [{ slotId: "asc" }, { submissionId: "asc" }],
   });
@@ -1586,6 +1603,7 @@ async function runAssignmentForAgenda(
     room_id: p.roomId,
     capacity: p.room.capacity,
     submitter_id: p.submission.submitterId,
+    speaker_ids: effectiveSpeakerIdentityIds(p.submission),
     band_id: bandOf.get(p.slotId)!,
     priority: priorityWeight(p.submission.priority),
   }));

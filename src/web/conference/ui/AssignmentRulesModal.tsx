@@ -93,7 +93,8 @@ export function AssignmentRulesModal({
           </Rule>
           <Rule>
             <strong>“Required” tracks</strong> (mod-flagged keynotes /
-            opening / closing) and sessions where you&apos;re the submitter
+            opening / closing) and sessions where you&apos;re a speaker —
+            the submitter or anyone on the session&apos;s speaker list —
             land on your schedule whether you star them or not.
           </Rule>
           <Rule>
@@ -195,10 +196,16 @@ export function AssignmentRulesModal({
             overrides a manual placement or a room&apos;s capacity.
           </Rule>
           <Rule>
-            The submitter of a session is assigned to host it (when the
-            session is placed) — whenever there&apos;s room for them and
-            they&apos;re free at that time. You can&apos;t be auto-seated
-            somewhere else if you&apos;re hosting.
+            <strong>Hosting.</strong> Registered speakers of a session host it
+            whenever it&apos;s placed — the submitter hosts when the session
+            has no speaker list. Hosting is a duty seat: it never takes a
+            spot from an attendee and a full room never blocks it. If a
+            session runs more than once, its hosts host every showing. All
+            showings in one time slot are parallel, so you host at most one
+            session per slot — if you&apos;re down for several, you lead the
+            most-starred one. Sessions whose speakers are only typed
+            (unregistered) names get no auto-seated host — make sure presenters
+            are registered on the session so seating can assign them.
           </Rule>
           <Rule>
             You can override the auto-pick anytime via{" "}
@@ -259,8 +266,10 @@ export function AssignmentRulesModal({
             is always on; there&apos;s no setting to turn it off.
           </Rule>
           <Rule>
-            Leading your own session (as its submitter) always wins — hosting
-            duties are never skipped to avoid a repeat.
+            Hosting your own session is the exception: hosting duty seats
+            every host into <em>every</em> occurrence of their session —
+            hosting is work, not attendance, so the once-only rule never
+            skips it.
           </Rule>
         </Section>
         </Disclosure>

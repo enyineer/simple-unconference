@@ -371,19 +371,35 @@ something the next session would need to know.
   - **Staleness lifecycle:** any placement mutation flags the affected slot
     stale — per-slot `agenda.assign`, `placeSubmission`, `unplaceSubmission`,
     `updateSeries` orphan cleanup, and `submissions.delete` / `rooms.delete`
-    (which collect the affected slots before cascading). Mixer writes never
-    flag stale. `SlotOut.seating_stale` surfaces it to the UI.
+    (which collect the affected slots before cascading). Host-set changes
+    flag stale too: `submissions.update` when `speakers` or `submitter_id`
+    are edited, and `conferences.removeParticipant` (speaker rows cascade
+    away with the identity). Mixer writes never flag stale.
+    `SlotOut.seating_stale` surfaces it to the UI.
   - **Note:** the per-slot `unconf_avoid_repeats` / series
     `avoid_repeats_across_siblings` flags shaped the OLD per-slot seating only.
-    Global seating always enforces attend-each-submission-at-most-once and does
-    NOT consult those flags — they persist as config but no longer steer
-    seating. (Planned-track derived attendance IS honored, unconditionally — see
-    `priorAttendance` above.)
+    Global seating always enforces attend-each-submission-at-most-once for
+    ATTENDEES and does NOT consult those flags — they persist as config but no
+    longer steer seating. (Planned-track derived attendance IS honored,
+    unconditionally — see `priorAttendance` above.) HOSTS are the one exempt:
+    host duty seats every effective speaker (`speaker_ids` via
+    `effectiveSpeakerIdentityIds`, defaulting to `[submitter_id]` only when
+    the session has NO speaker rows at all; a session whose speaker rows are
+    ALL free-form names gets `[]` = explicitly unhosted — confirmed product
+    decision, the real presenters self-manage) into EVERY placed occurrence
+    of their session, in both
+    the agenda solver and the per-slot candidate seating. Host pins are
+    duty seats: capacity-free (never displace an attendee, never blocked by a
+    full/cap-0 room), exempt from attend-once/priorAttendance, but still
+    band-gated — a host is seated into at most one session per time-band
+    (parallel twin occurrence, another session's pin, or a fixed pick wins by
+    the priority→stars→id host order), and one occurrence of a parallel twin
+    can end up unhosted.
 - **Session priority** (`Submission.priority`: `high`/`normal`/`low`, mod-only
   override like `maxPlacements`): the LEADING sort key for the per-slot top-N
   placement cut (before star count), plus a routing bias so high-priority
   sessions fill first / low fill last — only among a user's starred options;
-  it never overrides manual placements, fixed picks, submitter-host pinning,
+  it never overrides manual placements, fixed picks, host-duty pinning,
   or capacity. The priority→stars→id ordering lives in TWO mirrored sorts
   that must stay in sync: `submissionsByPopularity` in `assignment.ts` and
   the route-side `subsByPopularity` in `rpc/agenda.ts`. The whole-agenda

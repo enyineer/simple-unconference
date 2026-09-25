@@ -18,15 +18,17 @@
 //    the same star / submitter / priority rules. Two extra rules layered on
 //    top of star matching:
 //
-//      1. Submitter-as-host: when a submission is placed, its submitter is
-//         force-assigned to lead it, overriding their stars entirely. If the
-//         same user submitted multiple placed submissions in this slot, they
-//         lead the most-starred (id-asc tiebreak).
+//      1. Host duty: when a submission is placed, EVERY effective speaker
+//         (registered speakers, defaulting to the submitter) is force-assigned
+//         to lead it — as a capacity-free duty seat that a full room cannot
+//         block and that never displaces an attendee. All sessions in a slot
+//         share one time-band, so a user leads at most ONE placed session per
+//         slot: hosting multiple, they lead the most-starred (id-asc tiebreak).
 //
 //      2. Avoid repeats: when `priorAssignments[userId]` includes a submission
 //         the user has already attended in an earlier slot, that submission is
-//         removed from their candidate set (toggleable per slot). Submitters
-//         are exempt — leading their own session always wins.
+//         removed from their candidate set (toggleable per slot). Hosts are
+//         exempt — leading their own session always wins.
 //
 //  - `assignMixerSlot`: capacity-aware even split of every participant across
 //    the slot's selected rooms. No submissions involved. Optionally takes a
@@ -62,8 +64,22 @@ export function priorityWeight(p: "low" | "normal" | "high" | null | undefined):
 
 export interface AssignmentSubmission {
   id: ID;
-  /** The user who submitted this. Used for the submitter-as-host rule. */
+  /** The user who submitted this. Fallback host when no speaker_ids. */
   submitter_id: ID;
+  /**
+   * Identity ids of the session's HOSTS: the effective speaker set —
+   * registered speakers when any exist, otherwise [submitter_id]. Every host
+   * is duty-pinned into the placed session (capacity-free). Free-form speaker
+   * names aren't attendees and are never included. Optional — defaults to
+   * [submitter_id] when absent.
+   *
+   * Semantics NOTE (confirmed product decision): a session whose speaker rows
+   * are ALL free-form names gets a literal `[]` — NO host duty. The real
+   * (unregistered) presenters self-manage; the submitter default only fires
+   * when the session has no speaker rows at all. The routes build this field
+   * via `effectiveSpeakerIdentityIds`, which implements exactly that.
+   */
+  speaker_ids?: ID[];
   /**
    * Priority weight (see `priorityWeight`): +1 high / 0 normal / -1 low. The
    * LEADING key for both the top-N placement cut and the user-routing bias —
@@ -126,6 +142,8 @@ export interface AssignmentInput {
     room_id: ID;
     capacity: number;
     submitter_id: ID;
+    /** Host duty set — see `AssignmentSubmission.speaker_ids`. */
+    speaker_ids?: ID[];
     priority?: number;
   }>;
 }
@@ -203,7 +221,7 @@ export function assignUnconferenceSlot(input: AssignmentInput): AssignmentResult
 
   const placedSubmissionRoom = new Map<ID, ID>(); // submission_id -> room_id
   const roomCapacity = new Map<ID, number>();     // submission_id -> capacity
-  const placedSubmitterOf = new Map<ID, ID>();    // submission_id -> submitter_id
+  const placedHostsOf = new Map<ID, ID[]>();      // submission_id -> host duty set
 
   // Pre-assignments win their rooms first — but only for submissions that
   // made the top-N cut. The route layer's conflict gate is responsible for
@@ -240,7 +258,7 @@ export function assignUnconferenceSlot(input: AssignmentInput): AssignmentResult
       reservedRoomIds.add(roomId);
       placedSubmissionRoom.set(subId, roomId);
       roomCapacity.set(subId, room.capacity);
-      placedSubmitterOf.set(subId, sub.submitter_id);
+      placedHostsOf.set(subId, sub.speaker_ids ?? [sub.submitter_id]);
     }
   }
 
@@ -255,7 +273,7 @@ export function assignUnconferenceSlot(input: AssignmentInput): AssignmentResult
     const room = remainingRooms[i]!;
     placedSubmissionRoom.set(sub.id, room.id);
     roomCapacity.set(sub.id, room.capacity);
-    placedSubmitterOf.set(sub.id, sub.submitter_id);
+    placedHostsOf.set(sub.id, sub.speaker_ids ?? [sub.submitter_id]);
   }
 
   // Merge the moderator-authored fixed placements in as first-class placed
@@ -265,7 +283,7 @@ export function assignUnconferenceSlot(input: AssignmentInput): AssignmentResult
   for (const f of fixedPlacements) {
     placedSubmissionRoom.set(f.submission_id, f.room_id);
     roomCapacity.set(f.submission_id, f.capacity);
-    placedSubmitterOf.set(f.submission_id, f.submitter_id);
+    placedHostsOf.set(f.submission_id, f.speaker_ids ?? [f.submitter_id]);
   }
 
   // ----- Phase B: assign users. -----
@@ -298,44 +316,39 @@ export function assignUnconferenceSlot(input: AssignmentInput): AssignmentResult
     }
   }
 
-  // Phase B.1: pin submitters to their own placed submissions first. They
-  // consume capacity before stars are honored — leading your own session is
-  // a hard requirement, not a preference.
-  //
-  // If one user submitted multiple placed sessions in this slot, they lead
-  // the most-starred (popularity order, id-asc tiebreak). Build per-user
-  // submitter assignments deterministically.
+  // Phase B.1: host duty. EVERY effective speaker of each placed session is
+  // force-seated into it — as a capacity-free duty seat that is not blocked
+  // by a full room (leading your own session is a hard requirement, not a
+  // preference, and the host must not displace an attendee). All sessions in
+  // one slot share a single time-band, so a user can only host ONE placed
+  // session here: if the same user hosts multiple placed sessions (or is
+  // pinned into another session by a manual pick in Phase B.0), they lead
+  // the most-starred (popularity order, id-asc tiebreak).
   //
   // Iterate auto-placed sessions in popularity order first, then fixed
-  // placements (id-asc) so the choice is deterministic; `placedSubmitterOf`
-  // carries the submitter for both kinds.
-  const placedForSubmitter: ID[] = [];
+  // placements (id-asc) so the choice is deterministic; `placedHostsOf`
+  // carries the host set for both kinds.
+  const placedForHosts: ID[] = [];
   for (const sub of submissionsByPopularity) {
-    if (placedSubmissionRoom.has(sub.id)) placedForSubmitter.push(sub.id);
+    if (placedSubmissionRoom.has(sub.id)) placedForHosts.push(sub.id);
   }
   for (const f of [...fixedPlacements].sort((a, b) => a.submission_id - b.submission_id)) {
-    placedForSubmitter.push(f.submission_id);
+    placedForHosts.push(f.submission_id);
   }
-  const submitterChoice = new Map<ID, ID>(); // user_id -> submission_id (their pick)
-  for (const subId of placedForSubmitter) {
-    const submitterId = placedSubmitterOf.get(subId)!;
-    if (!stars.has(submitterId)) continue; // not a conference member
-    if (submitterChoice.has(submitterId)) continue; // already picked
-    submitterChoice.set(submitterId, subId);
+  const hostChoice = new Map<ID, ID>(); // user_id -> submission_id (their pick)
+  for (const subId of placedForHosts) {
+    for (const hostId of placedHostsOf.get(subId) ?? []) {
+      if (!stars.has(hostId)) continue; // not a conference member
+      if (hostChoice.has(hostId)) continue; // already leading another session in this slot
+      hostChoice.set(hostId, subId);
+    }
   }
   // Apply in user-id-asc order for stable output.
   for (const uid of userIds) {
     if (assignedUsers.has(uid)) continue; // already pinned by a manual pick
-    const subId = submitterChoice.get(uid);
+    const subId = hostChoice.get(uid);
     if (subId === undefined) continue;
-    const cap = roomCapacity.get(subId)!;
-    if (currentLoad.get(subId)! >= cap) {
-      // Degenerate — room of size 0 or other capacity miss. Skip; they'll fall
-      // through to the normal loop (where they're already constrained out).
-      continue;
-    }
     userAssignments.push({ user_id: uid, submission_id: subId });
-    currentLoad.set(subId, currentLoad.get(subId)! + 1);
     assignedUsers.add(uid);
   }
 

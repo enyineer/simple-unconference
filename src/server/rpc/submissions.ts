@@ -503,6 +503,22 @@ export const submissionsRouter = {
         }));
       }
     }
+    // A host-set change (speakers replaced, or the submitter swapped) alters
+    // who host duty seats on the next "Update seating" — flag every slot this
+    // submission is placed in so the UI surfaces the staleness (mirrors the
+    // delete path below).
+    if (speakerRows !== undefined || modPatch.submitter !== undefined) {
+      const placements = await context.prisma.unconferencePlacement.findMany({
+        where: { submissionId: input.id, slot: { conferenceId: context.conferenceId } },
+        select: { slotId: true },
+      });
+      const staleSlotIds = [...new Set(placements.map((p) => p.slotId))];
+      if (staleSlotIds.length > 0) {
+        ops.push(context.prisma.agendaSlot.updateMany({
+          where: { id: { in: staleSlotIds } }, data: { seatingStale: true },
+        }));
+      }
+    }
     await context.prisma.$transaction(ops);
     return { ok: true as const };
   }),

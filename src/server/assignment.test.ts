@@ -4,18 +4,24 @@ import {
   type AssignmentInput, type AssignmentSubmission, type MixerInput,
 } from "./assignment";
 
-// Most existing tests don't care about the submitter-as-host rule, so default
-// each submission's submitter to a synthetic id that's not in the stars map.
-// Tests that care about that rule pass `submitter_id` explicitly.
+// Most existing tests don't care about the host-duty rule, so default each
+// submission's submitter to a synthetic id that's not in the stars map.
+// Tests that care about that rule pass `submitter_id` (and optionally
+// `speaker_ids`) explicitly.
 function withSubmitters(
-  subs: { id: number; submitter_id?: number; priority?: number }[],
+  subs: { id: number; submitter_id?: number; speaker_ids?: number[]; priority?: number }[],
 ): AssignmentSubmission[] {
-  return subs.map((s) => ({ id: s.id, submitter_id: s.submitter_id ?? 9999, priority: s.priority }));
+  return subs.map((s) => ({
+    id: s.id,
+    submitter_id: s.submitter_id ?? 9999,
+    speaker_ids: s.speaker_ids,
+    priority: s.priority,
+  }));
 }
 
 function input(parts: {
   rooms?: AssignmentInput["rooms"];
-  submissions?: { id: number; submitter_id?: number; priority?: number }[];
+  submissions?: { id: number; submitter_id?: number; speaker_ids?: number[]; priority?: number }[];
   stars?: AssignmentInput["stars"];
   priorAssignments?: AssignmentInput["priorAssignments"];
   avoidRepeats?: boolean;
@@ -333,6 +339,64 @@ describe("assignUnconferenceSlot — submitter-as-host rule", () => {
       result.user_assignments.find((a) => a.user_id === u)?.submission_id;
     expect(findAssign(1)).toBe(200); // most starred of their own
   });
+
+  test("ALL effective speakers host the placed session, capacity-free", () => {
+    // Room cap 1: the single attendee seat goes to the starrer, and BOTH
+    // hosts are duty-seated on top (hosts never displace attendees).
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 1 }],
+      submissions: [{ id: 100, submitter_id: 1, speaker_ids: [1, 2] }],
+      stars: new Map([
+        [1, new Set()],
+        [2, new Set()],
+        [3, new Set([100])],
+      ]),
+    }));
+    const findAssign = (u: number) =>
+      result.user_assignments.find((a) => a.user_id === u)?.submission_id;
+    expect(findAssign(1)).toBe(100);
+    expect(findAssign(2)).toBe(100);
+    expect(findAssign(3)).toBe(100); // the attendee seat survived both hosts
+    expect(result.unplaced_users).toEqual([]);
+  });
+
+  test("explicit speakers replace the submitter for host duty", () => {
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 10 }],
+      submissions: [{ id: 100, submitter_id: 1, speaker_ids: [2, 3] }],
+      stars: new Map([
+        [1, new Set()],   // submitter starred nothing and is NOT a speaker
+        [2, new Set()],
+        [3, new Set()],
+      ]),
+    }));
+    const findAssign = (u: number) =>
+      result.user_assignments.find((a) => a.user_id === u)?.submission_id;
+    expect(findAssign(1)).toBeUndefined();
+    expect(findAssign(2)).toBe(100);
+    expect(findAssign(3)).toBe(100);
+  });
+
+  test("a host manually picking another session keeps their pick; a co-host covers", () => {
+    // User 2 co-hosts 100 (with user 3) but manually picked 200. The manual
+    // pick wins; co-host 3 still hosts 100.
+    const result = assignUnconferenceSlot(input({
+      rooms: [{ id: 1, capacity: 10 }, { id: 2, capacity: 10 }],
+      submissions: [
+        { id: 100, submitter_id: 9, speaker_ids: [2, 3] },
+        { id: 200, submitter_id: 9 },
+      ],
+      stars: new Map([
+        [2, new Set([100, 200])],
+        [3, new Set()],
+      ]),
+      fixedAssignments: new Map([[2, 200]]),
+    }));
+    const findAssign = (u: number) =>
+      result.user_assignments.find((a) => a.user_id === u)?.submission_id;
+    expect(findAssign(2)).toBe(200); // manual pick wins
+    expect(findAssign(3)).toBe(100); // co-host covers the band
+  });
 });
 
 describe("assignUnconferenceSlot — avoid-repeats rule", () => {
@@ -637,9 +701,11 @@ describe("assignUnconferenceSlot — capacity edge cases", () => {
     expect(result.unplaced_users).toEqual([1, 2]);
   });
 
-  test("submitter rule respects capacity 0 — submitter falls through to general loop", () => {
+  test("host duty is capacity-free — the host leads their session even at capacity 0", () => {
     // Submitter of 100 (room cap 0) is in `stars` with another star at 200.
-    // Their own session can't fit them; they should land at 200 instead.
+    // Host duty beats both the zero-capacity room and their own stars: they
+    // lead 100. (A cap-0 placement is an authoring degenerate case, but the
+    // host must never be dropped from their own session for capacity.)
     const result = assignUnconferenceSlot(input({
       rooms: [{ id: 1, capacity: 0 }, { id: 2, capacity: 10 }],
       submissions: [{ id: 100, submitter_id: 1 }, { id: 200, submitter_id: 9 }],
@@ -649,7 +715,7 @@ describe("assignUnconferenceSlot — capacity edge cases", () => {
     }));
     const findAssign = (u: number) =>
       result.user_assignments.find((a) => a.user_id === u)?.submission_id;
-    expect(findAssign(1)).toBe(200);
+    expect(findAssign(1)).toBe(100);
   });
 
   test("ties on capacity broken by room id ascending", () => {
