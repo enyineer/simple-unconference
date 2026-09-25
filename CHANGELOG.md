@@ -1,5 +1,31 @@
 # simple-unconference
 
+## 0.14.0
+
+### Minor Changes
+
+- [`2b3ca6d`](https://github.com/enyineer/simple-unconference/commit/2b3ca6d62a48de511dd80541b7b9ad2417b84374) Thanks [@enyineer](https://github.com/enyineer)! - Moderator-managed Live Board config in the Pitch Mode sheet.
+
+  Board-link management (enable / copy / rotate) moved from the owner-only Settings tab into the Pitch Mode sheet and is now open to moderators as well as owners. New board config options, all applied live on open walls:
+
+  - **Shown-days filter**: pick which days appear on the board wall (server-side payload filter; the spotlight is deliberately not day-bound).
+  - **Skip-empty pages**: room columns and slot rows with nothing placed are pruned day-scoped before chunking, so sparse days merge into fewer, denser pages (on by default).
+  - **Density caps**: pages cap at 6 room columns / 6 slot rows - overflow becomes more pages instead of smaller cells.
+
+### Patch Changes
+
+- [`2b3ca6d`](https://github.com/enyineer/simple-unconference/commit/2b3ca6d62a48de511dd80541b7b9ad2417b84374) Thanks [@enyineer](https://github.com/enyineer)! - Fixed password-reset and magic-link verification pages rejecting valid tokens.
+
+  After the move to real path URLs, the pages still scanned the bare pathname for the `?token=` query parameter and never found it, so owner password reset, magic-link verification, and conference reset links all failed client-side with a generic "invalid or expired" message before reaching the server.
+
+- [`2b3ca6d`](https://github.com/enyineer/simple-unconference/commit/2b3ca6d62a48de511dd80541b7b9ad2417b84374) Thanks [@enyineer](https://github.com/enyineer)! - Aligned the star/seating UX with what the assignment algorithm actually does.
+
+  - The demand badge on recurring talks now compares total stars vs total seats across all occurrences instead of false-alarming against a single room.
+  - Seated-count chip is always visible; star toasts clarify interest vs seat.
+  - The rules modal now matches the implementation (star rule, global solver description, filled-up case in the unplaced rule, and more).
+  - Moderator nudges after a run point at concrete next steps; the placement toast points at "Update seating".
+  - SessionCard: title-first hierarchy, moderator-only status/room badges, clamped descriptions with a show-more toggle, star count merged into the Star button, scheduled offerings as accent chips.
+
 ## 0.13.5
 
 ### Patch Changes
