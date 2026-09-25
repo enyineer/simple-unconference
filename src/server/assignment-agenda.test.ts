@@ -14,9 +14,8 @@ function occ(
 ): AgendaOccurrence {
   occSeq += 1;
   return {
+    ...partial,
     id: partial.id ?? occSeq,
-    slot_id: partial.slot_id,
-    submission_id: partial.submission_id,
     room_id: partial.room_id ?? 1000 + occSeq,
     capacity: partial.capacity ?? 10,
     submitter_id: partial.submitter_id ?? -1, // -1: not a participant, never hosted
@@ -124,6 +123,112 @@ describe("pre-pinned assignments", () => {
       submitterHost: false,
     });
     expect(assignmentsOf(r, 9).length).toBe(0);
+  });
+
+  test("submitter hosts EVERY occurrence of a repeated session, capacity-free", () => {
+    // cap 1 each: under capacity-consuming hosting the speaker's pin in slot 1
+    // would evict an attendee. Hosts are capacity-free duty seats, so BOTH
+    // attendees get seats AND the speaker hosts both occurrences.
+    const o1 = occ({ slot_id: 1, submission_id: 100, band_id: 1, capacity: 1, submitter_id: 9 });
+    const o2 = occ({ slot_id: 2, submission_id: 100, band_id: 2, capacity: 1, submitter_id: 9 });
+    const r = assignAgenda({
+      occurrences: [o1, o2],
+      stars: stars({ 9: [], 1: [100], 2: [100] }),
+    });
+    expect(assignmentsOf(r, 9).map((x) => x.occurrence_id).sort()).toEqual([o1.id, o2.id].sort());
+    expect(assignmentsOf(r, 1).length).toBe(1);
+    expect(assignmentsOf(r, 2).length).toBe(1);
+    expect(r.unplaced_users).toEqual([]);
+  });
+
+  test("parallel twin occurrences: the host covers exactly one (band gate)", () => {
+    // Same submission placed in two OVERLAPPING slots (same band) — the host
+    // cannot be in both rooms; earliest id wins the band.
+    const o1 = occ({ slot_id: 1, submission_id: 100, band_id: 7, capacity: 5, submitter_id: 9 });
+    const o2 = occ({ slot_id: 2, submission_id: 100, band_id: 7, capacity: 5, submitter_id: 9 });
+    const r = assignAgenda({
+      occurrences: [o1, o2],
+      stars: stars({ 9: [], 1: [100] }),
+    });
+    expect(assignmentsOf(r, 9).length).toBe(1);
+    expect(assignmentsOf(r, 9)[0]?.submission_id).toBe(100);
+  });
+
+  test("host is seated even when the room is already full from a fixed pick", () => {
+    // The only seat is taken by a manual pick; the host is duty staff, not an
+    // attendee, so the full room must not drop them.
+    const o1 = occ({ slot_id: 1, submission_id: 100, capacity: 1, submitter_id: 9 });
+    const r = assignAgenda({
+      occurrences: [o1],
+      stars: stars({ 9: [], 2: [100] }),
+      fixedAssignments: [{ user_id: 2, occurrence_id: o1.id }],
+    });
+    expect(assignmentsOf(r, 2)[0]?.occurrence_id).toBe(o1.id);
+    expect(assignmentsOf(r, 9)[0]?.occurrence_id).toBe(o1.id);
+  });
+
+  test("a submitter's own pick of their session is not duplicated by the host pin", () => {
+    const o1 = occ({ slot_id: 1, submission_id: 100, band_id: 1, capacity: 5, submitter_id: 9 });
+    const r = assignAgenda({
+      occurrences: [o1],
+      stars: stars({ 9: [] }),
+      fixedAssignments: [{ user_id: 9, occurrence_id: o1.id }],
+    });
+    expect(assignmentsOf(r, 9).length).toBe(1);
+  });
+
+  test("ALL effective speakers are host-seated into every occurrence", () => {
+    // Two co-hosts (speaker_ids), one session placed in two non-overlapping
+    // slots: both hosts host BOTH occurrences.
+    const o1 = occ({
+      slot_id: 1, submission_id: 100, band_id: 1, capacity: 5,
+      submitter_id: 9, speaker_ids: [9, 10],
+    });
+    const o2 = occ({
+      slot_id: 2, submission_id: 100, band_id: 2, capacity: 5,
+      submitter_id: 9, speaker_ids: [9, 10],
+    });
+    const r = assignAgenda({ occurrences: [o1, o2], stars: stars({ 9: [], 10: [] }) });
+    expect(assignmentsOf(r, 9).map((x) => x.occurrence_id).sort()).toEqual([o1.id, o2.id].sort());
+    expect(assignmentsOf(r, 10).map((x) => x.occurrence_id).sort()).toEqual([o1.id, o2.id].sort());
+  });
+
+  test("explicit speakers replace the submitter for host duty", () => {
+    // Registered speaker rows exist → the submitter is NOT implicitly a host
+    // (mirrors `effectiveSpeakers`); only the listed speakers are pinned.
+    const o1 = occ({
+      slot_id: 1, submission_id: 100, band_id: 1, capacity: 5,
+      submitter_id: 9, speaker_ids: [10, 11],
+    });
+    const r = assignAgenda({ occurrences: [o1], stars: stars({ 9: [], 10: [], 11: [] }) });
+    expect(assignmentsOf(r, 9).length).toBe(0);
+    expect(assignmentsOf(r, 10).length).toBe(1);
+    expect(assignmentsOf(r, 11).length).toBe(1);
+  });
+
+  test("a host already pinned in a band cannot co-host a parallel occurrence there", () => {
+    // Co-host 10 hosts session 200 in band 7 (fixed pick); session 100 (also
+    // co-hosted by 10 and 9) runs a parallel twin occurrence in band 7. Host 10
+    // loses that band (already committed); host 9 still covers it.
+    const twin1 = occ({
+      slot_id: 1, submission_id: 100, band_id: 7, capacity: 5,
+      submitter_id: 9, speaker_ids: [9, 10],
+    });
+    const twin2 = occ({
+      slot_id: 2, submission_id: 100, band_id: 7, capacity: 5,
+      submitter_id: 9, speaker_ids: [9, 10],
+    });
+    const other = occ({
+      slot_id: 3, submission_id: 200, band_id: 7, capacity: 5, submitter_id: 10,
+    });
+    const r = assignAgenda({
+      occurrences: [twin1, twin2, other],
+      stars: stars({ 9: [], 10: [] }),
+      fixedAssignments: [{ user_id: 10, occurrence_id: other.id }],
+    });
+    expect(assignmentsOf(r, 10).map((x) => x.occurrence_id)).toEqual([other.id]);
+    // Host 9 covers one of the two band-7 twins (earliest id wins the band).
+    expect(assignmentsOf(r, 9).map((x) => x.occurrence_id)).toEqual([twin1.id]);
   });
 });
 

@@ -526,7 +526,27 @@ export const conferenceRouter = {
     await context.prisma.messageReport.deleteMany({
       where: { message: { senderIdentityId: target.id } },
     });
-    await context.prisma.conferenceIdentity.delete({ where: { id: target.id } });
+    // Speaker rows referencing this identity cascade away with it, which can
+    // flip host-duty resolution for their sessions (a sole registered speaker
+    // vanishing leaves the session unhosted — or flips it to the submitter
+    // when the cascade empties the list). Flag every slot those sessions are
+    // placed in so the next "Update seating" picks the change up.
+    const hostedPlacements = await context.prisma.unconferencePlacement.findMany({
+      where: {
+        slot: { conferenceId: context.conferenceId },
+        submission: { speakers: { some: { identityId: target.id } } },
+      },
+      select: { slotId: true },
+    });
+    const staleSlotIds = [...new Set(hostedPlacements.map((p) => p.slotId))];
+    await context.prisma.$transaction([
+      ...(staleSlotIds.length > 0
+        ? [context.prisma.agendaSlot.updateMany({
+            where: { id: { in: staleSlotIds } }, data: { seatingStale: true },
+          })]
+        : []),
+      context.prisma.conferenceIdentity.delete({ where: { id: target.id } }),
+    ]);
     return { ok: true as const };
   }),
 

@@ -647,7 +647,8 @@ describe("agenda.refitRooms + schedule-change notifications", () => {
     const sub = await owner.rpc.submissions.create({ slug: conf.slug, title: "Session" });
     await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
     const parts = await mintParticipants(owner, conf.slug, "place-move", 2);
-    // Both star it, but Room A holds only 1 → exactly one is seated.
+    // Both star it, but Room A holds only 1 attendee. The owner (submitter) is
+    // host-seated as a capacity-free duty seat, so 2 rows total.
     await parts[0]!.client.rpc.submissions.star({ slug: conf.slug, id: sub.id });
     await parts[1]!.client.rpc.submissions.star({ slug: conf.slug, id: sub.id });
 
@@ -658,7 +659,7 @@ describe("agenda.refitRooms + schedule-change notifications", () => {
     await owner.rpc.agenda.assignAll({ slug: conf.slug });
 
     const seats = await ctx.prisma.userAssignment.findMany({ where: { slotId: slot.id, submissionId: sub.id } });
-    expect(seats).toHaveLength(1);
+    expect(seats).toHaveLength(2);
     const seatedIds = new Set(seats.map((s) => s.userId));
 
     // Move the placement to Room B.

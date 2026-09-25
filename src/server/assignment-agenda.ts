@@ -53,6 +53,21 @@ export interface AgendaOccurrence {
   /** The user who submitted this session (submitter-as-host rule). */
   submitter_id: ID;
   /**
+   * Identity ids of the session's HOSTS: the effective speaker set —
+   * registered speakers when any exist, otherwise [submitter_id]. Every host
+   * is duty-pinned into the occurrence by the submitter-host pre-pass
+   * (capacity-free). Free-form speaker names aren't attendees and are never
+   * included. Optional — defaults to [submitter_id] when absent.
+   *
+   * Semantics NOTE (confirmed product decision): a session whose speaker rows
+   * are ALL free-form names gets a literal `[]` — NO host duty. The real
+   * (unregistered) presenters self-manage; the submitter default only fires
+   * when the session has no speaker rows at all. The routes build this field
+   * via `effectiveSpeakerIdentityIds`, which implements exactly that. A
+   * literal `[]` therefore means "explicitly unhosted".
+   */
+  speaker_ids?: ID[];
+  /**
    * Time-band id. Occurrences whose slots overlap in time share a band, so a
    * user can attend at most one of them. Non-overlapping slots get distinct
    * bands. Two occurrences in the SAME slot share that slot's band.
@@ -337,15 +352,21 @@ export function assignAgenda(input: AgendaAssignmentInput): AgendaAssignmentResu
   }
 
   // Lock a (user, occurrence) into the result, consuming a seat + the band.
-  const lockIn = (uid: ID, occ: AgendaOccurrence): boolean => {
+  // `asHost` marks DUTY seating from the submitter-host pre-pass: the host is
+  // an extra body that neither consumes room capacity nor is blocked by a
+  // full room (the host must be present), while the band gate still applies
+  // (no bi-location). Hosting still records the submission in the user's
+  // attended set so the flow never seats them into their own session as a
+  // plain attendee.
+  const lockIn = (uid: ID, occ: AgendaOccurrence, asHost = false): boolean => {
     if (!input.stars.has(uid)) return false;
     const cap = remainingCap.get(occ.id) ?? 0;
-    if (cap <= 0) return false;
+    if (!asHost && cap <= 0) return false;
     const bands = usedBands.get(uid)!;
     if (bands.has(occ.band_id)) return false;
     const subs = attendedSubs.get(uid)!;
-    if (subs.has(occ.submission_id)) return false;
-    remainingCap.set(occ.id, cap - 1);
+    if (!asHost && subs.has(occ.submission_id)) return false;
+    if (!asHost) remainingCap.set(occ.id, cap - 1);
     bands.add(occ.band_id);
     subs.add(occ.submission_id);
     forced.push({
@@ -364,8 +385,14 @@ export function assignAgenda(input: AgendaAssignmentInput): AgendaAssignmentResu
     );
   for (const f of fixedEntries) lockIn(f.user_id, occById.get(f.occurrence_id)!);
 
-  // Pre-pass 2: submitter-as-host. For each occurrence force its submitter to
-  // host it; multi-session submitters host the most-starred (id-asc tiebreak).
+  // Pre-pass 2: submitter-as-host. EVERY occurrence gets its full effective
+  // speaker set seated as hosts — a session with multiple hosts seats them
+  // all, and a session placed in multiple slots is covered in each one (duty
+  // seating: exempt from attend-once and capacity-free, see lockIn). The
+  // most-starred (priority, then stars, then id-asc) ordering only resolves
+  // same-band conflicts: an overlapping twin occurrence, another session's
+  // pin, or a fixed pick can still lock a band first, and that band's
+  // remaining host pins then fail — a host cannot be in two rooms at once.
   if (submitterHost) {
     const starCount = new Map<ID, number>();
     for (const set of input.stars.values()) {
@@ -380,7 +407,11 @@ export function assignAgenda(input: AgendaAssignmentInput): AgendaAssignmentResu
       if (sb !== sa) return sb - sa;
       return a.id - b.id;
     });
-    for (const occ of hostOrder) lockIn(occ.submitter_id, occ);
+    for (const occ of hostOrder) {
+      for (const host of occ.speaker_ids ?? [occ.submitter_id]) {
+        lockIn(host, occ, true);
+      }
+    }
   }
 
   // --- Solve one residual min-cost flow over the star-users. ---

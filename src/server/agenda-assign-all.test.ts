@@ -21,7 +21,7 @@ describe("global agenda assignment", () => {
     const r2 = await owner.rpc.rooms.create({ slug: conf.slug, name: "R2", capacity: 100 });
 
     // A speaker submits the recurring session.
-    const { client: speaker } = await inviteAndClaim(ctx.app, owner, conf.slug, "ga-speaker@example.com");
+    const { client: speaker, identity_id: speakerId } = await inviteAndClaim(ctx.app, owner, conf.slug, "ga-speaker@example.com");
     const sub = await speaker.rpc.submissions.create({ slug: conf.slug, title: "Recurring" });
     await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
     // Allow it to run in (non-overlapping) multiple slots.
@@ -58,15 +58,56 @@ describe("global agenda assignment", () => {
     // Every participant attends exactly one occurrence; the crowd splits ~evenly.
     const a1 = await ctx.prisma.userAssignment.count({ where: { slotId: slot1.id } });
     const a2 = await ctx.prisma.userAssignment.count({ where: { slotId: slot2.id } });
-    // 10 participants + the speaker (auto-hosted in one slot).
+    // 10 participants + the speaker (auto-hosted in BOTH slots, capacity-free).
     expect(a1 + a2).toBeGreaterThanOrEqual(10);
     expect(Math.abs(a1 - a2)).toBeLessThanOrEqual(3);
+    // Host duty covers every occurrence of the speaker's recurring session.
+    const speakerSeats = await ctx.prisma.userAssignment.count({ where: { userId: speakerId } });
+    expect(speakerSeats).toBe(2);
 
     // No participant is double-booked (one assignment total each, since the
     // session recurs and avoid-duplicate is enforced).
     for (const uid of partIds) {
       const mine = await ctx.prisma.userAssignment.count({ where: { userId: uid } });
       expect(mine).toBe(1);
+    }
+  });
+
+  test("every effective speaker is host-seated into every occurrence", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "ga-hosts-owner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "CoHosts" });
+    const r1 = await owner.rpc.rooms.create({ slug: conf.slug, name: "R1", capacity: 50 });
+    const r2 = await owner.rpc.rooms.create({ slug: conf.slug, name: "R2", capacity: 50 });
+
+    // A speaker + an explicit co-host (registered speaker rows REPLACE the
+    // submitter-as-sole-speaker default — both are hosts here).
+    const { client: speaker, identity_id: speakerId } = await inviteAndClaim(ctx.app, owner, conf.slug, "ga-hosts-sp@example.com");
+    const { identity_id: coHostId } = await inviteAndClaim(ctx.app, owner, conf.slug, "ga-hosts-co@example.com");
+    const sub = await speaker.rpc.submissions.create({ slug: conf.slug, title: "Duo" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+    await owner.rpc.submissions.update({
+      slug: conf.slug, id: sub.id, allow_overlapping_placements: true,
+      speakers: [{ identity_id: speakerId }, { identity_id: coHostId }],
+    });
+
+    const t0 = Date.now() + 24 * 60 * 60 * 1000;
+    const slot1 = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", starts_at: t0, ends_at: t0 + 3_600_000,
+    });
+    const slot2 = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", starts_at: t0 + 7_200_000, ends_at: t0 + 10_800_000,
+    });
+    await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: slot1.id, submission_id: sub.id, room_id: r1.id });
+    await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: slot2.id, submission_id: sub.id, room_id: r2.id });
+
+    await owner.rpc.agenda.assignAll({ slug: conf.slug });
+
+    // Host duty seats BOTH speakers into BOTH occurrences (capacity-free).
+    for (const hostId of [speakerId, coHostId]) {
+      const seats = await ctx.prisma.userAssignment.findMany({ where: { userId: hostId } });
+      expect(seats.map((s) => s.slotId).sort()).toEqual([slot1.id, slot2.id].sort());
+      for (const s of seats) expect(s.submissionId).toBe(sub.id);
     }
   });
 
@@ -731,11 +772,13 @@ describe("seating model: placement vs stale-slots-only Update seating", () => {
     expect((after?.unreadCount ?? 0)).toBeGreaterThanOrEqual(2);
   });
 
-  test("planned-track attendance is never re-seated as an unconference occurrence of the same session", async () => {
-    // The FIX: a user who attends submission X as a planned (normal-slot) track
-    // — via a star or as its submitter — must never be seated into an
-    // unconference occurrence of X. Non-overlapping slots isolate this to
-    // `priorAttendance` (not a band conflict).
+  test("planned-track attendance keeps a STARER out of the unconf occurrence; the submitter still hosts it", async () => {
+    // A user who attends submission X as a planned (normal-slot) track — via a
+    // star — must never be seated into an unconference occurrence of X. The
+    // SUBMITTER is host duty: they attend the planned version AND host the
+    // unconf occurrence (capacity-free), because every placed occurrence must
+    // have its host. Non-overlapping slots isolate this to `priorAttendance`
+    // (not a band conflict).
     const owner = new Client(ctx.app);
     await signupAndLogin(owner, "sm15-owner@example.com");
     const conf = await owner.rpc.conferences.create({ name: "SM15" });
@@ -771,12 +814,76 @@ describe("seating model: placement vs stale-slots-only Update seating", () => {
     await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: unconf.id, submission_id: subY.id, room_id: rY.id });
 
     await owner.rpc.agenda.assignAll({ slug: conf.slug });
-    // Nobody attends unconf X: pX (starrer) and the owner (submitter) both attend
-    // it as the planned track already.
-    expect(await ctx.prisma.userAssignment.count({ where: { slotId: unconf.id, submissionId: subX.id } })).toBe(0);
+    // pX (starrer) attends subX as the planned track → no unconf-X seat.
     expect(await ctx.prisma.userAssignment.count({ where: { slotId: unconf.id, userId: pXId } })).toBe(0);
+    // The ONLY unconf-X seat is the owner's host pin (duty, capacity-free):
+    // every placed occurrence must have its host, planned-track attendance
+    // notwithstanding.
+    const xSeats = await ctx.prisma.userAssignment.findMany({ where: { slotId: unconf.id, submissionId: subX.id } });
+    expect(xSeats).toHaveLength(1);
+    const ownerIdentity = await ctx.prisma.conferenceIdentity.findFirstOrThrow({
+      where: { conferenceId: conf.id, ownerUserId: { not: null } },
+    });
+    expect(xSeats[0]!.userId).toBe(ownerIdentity.id);
     // The slot otherwise seats normally: pY lands in subY.
     const pYSeat = await ctx.prisma.userAssignment.findFirst({ where: { slotId: unconf.id, userId: pYId } });
     expect(pYSeat?.submissionId).toBe(subY.id);
+  });
+
+  test("editing a placed submission's speakers flags the slot seating-stale", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "ga-stale-owner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "StaleSpeakers" });
+    const r1 = await owner.rpc.rooms.create({ slug: conf.slug, name: "R1", capacity: 50 });
+    const { client: sp } = await inviteAndClaim(ctx.app, owner, conf.slug, "ga-stale-sp@example.com");
+    const sub = await sp.rpc.submissions.create({ slug: conf.slug, title: "Talk" });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+
+    const t0 = Date.now() + 24 * 60 * 60 * 1000;
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", starts_at: t0, ends_at: t0 + 3_600_000,
+    });
+    await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: slot.id, submission_id: sub.id, room_id: r1.id });
+    await owner.rpc.agenda.assignAll({ slug: conf.slug });
+    // A completed seating run leaves the slot clean.
+    expect((await ctx.prisma.agendaSlot.findUniqueOrThrow({ where: { id: slot.id } })).seatingStale).toBe(false);
+
+    // Replacing the speaker set changes host-duty resolution → the slot must
+    // surface as stale so the next "Update seating" picks it up.
+    await owner.rpc.submissions.update({ slug: conf.slug, id: sub.id, speakers: [{ name: "Guest Host" }] });
+    expect((await ctx.prisma.agendaSlot.findUniqueOrThrow({ where: { id: slot.id } })).seatingStale).toBe(true);
+
+    // A submitter swap flips host resolution too.
+    const { identity_id: otherId } = await inviteAndClaim(ctx.app, owner, conf.slug, "ga-stale-other@example.com");
+    await owner.rpc.agenda.assignAll({ slug: conf.slug });
+    expect((await ctx.prisma.agendaSlot.findUniqueOrThrow({ where: { id: slot.id } })).seatingStale).toBe(false);
+    await owner.rpc.submissions.update({ slug: conf.slug, id: sub.id, submitter_id: otherId });
+    expect((await ctx.prisma.agendaSlot.findUniqueOrThrow({ where: { id: slot.id } })).seatingStale).toBe(true);
+  });
+
+  test("removing a member who speaks on placed sessions flags those slots stale", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "ga-rm-host-owner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "RmHost" });
+    const r1 = await owner.rpc.rooms.create({ slug: conf.slug, name: "R1", capacity: 50 });
+    // Submitter (the owner, since speaker lists are mod-only); registered
+    // speaker B on the session. Removing B cascades the speaker row away,
+    // flipping host resolution (sole registered speaker → unhosted).
+    const { identity_id: spBId } = await inviteAndClaim(ctx.app, owner, conf.slug, "ga-rm-host-b@example.com");
+    const sub = await owner.rpc.submissions.create({
+      slug: conf.slug, title: "Talk", speakers: [{ identity_id: spBId }],
+    });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: sub.id });
+
+    const t0 = Date.now() + 24 * 60 * 60 * 1000;
+    const slot = await owner.rpc.agenda.createSlot({
+      slug: conf.slug, type: "unconference", starts_at: t0, ends_at: t0 + 3_600_000,
+    });
+    await owner.rpc.agenda.placeSubmission({ slug: conf.slug, slot_id: slot.id, submission_id: sub.id, room_id: r1.id });
+    await owner.rpc.agenda.assignAll({ slug: conf.slug });
+    expect((await ctx.prisma.agendaSlot.findUniqueOrThrow({ where: { id: slot.id } })).seatingStale).toBe(false);
+
+    await owner.rpc.conferences.removeParticipant({ slug: conf.slug, user_id: spBId });
+    expect((await ctx.prisma.agendaSlot.findUniqueOrThrow({ where: { id: slot.id } })).seatingStale).toBe(true);
   });
 });
