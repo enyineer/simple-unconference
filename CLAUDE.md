@@ -206,7 +206,7 @@ something the next session would need to know.
   can't see them. The board page (`startBoardLive` in
   [src/web/board/boardLive.ts](src/web/board/boardLive.ts)) watches ping
   activity: silence beyond 45s (proxy black-holing the stream) or `onerror`
-  demotes it to POLLING mode (snapshot refetch every 10s via the existing
+  demotes it to POLLING mode (snapshot refetch every 5s via the existing
   debounce) while a background probe re-opens the SSE every 30s. Promotion
   back to live requires the first HEARTBEAT over the fresh stream — `onopen`
   fires on headers alone, exactly what a black-holing proxy delivers — and

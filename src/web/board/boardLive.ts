@@ -30,7 +30,7 @@ export interface BoardLiveTimings {
 
 export const DEFAULT_BOARD_LIVE_TIMINGS: BoardLiveTimings = {
   stallMs: 45_000,
-  pollMs: 10_000,
+  pollMs: 5_000,
   retryMs: 30_000,
 };
 
