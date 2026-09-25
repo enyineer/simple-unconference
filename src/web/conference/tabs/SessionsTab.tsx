@@ -112,10 +112,11 @@ export function SessionsTab({
   const pinned = pinnedFetch.key === pinnedKey ? pinnedFetch.sub : null;
 
   const highlightActive = highlightId !== null && !highlightDismissed;
-  // In-place when the current page happens to contain it (avoids rendering
-  // the session twice); pinned otherwise.
-  const pinnedVisible =
-    highlightActive && pinned !== null && !subs.items.some((s) => s.id === highlightId);
+  // The highlighted session ALWAYS renders pinned at the top and is filtered
+  // out of the paginated list below, so it can never appear twice. While the
+  // pinned copy is still loading (or if its fetch failed), the in-list row
+  // stays put with the highlight styling as a graceful fallback.
+  const pinnedShown = highlightActive && pinned !== null;
 
   function clearHighlight() {
     setHighlightDismissed(true);
@@ -370,11 +371,10 @@ export function SessionsTab({
         onClear={clearFilters}
       />
 
-      {/* A shared/highlighted session that isn't on the current page renders
-          pinned above the list — the link must surface its session no matter
-          where cursor pagination sits. In-page targets highlight in place
-          instead (below), so the session never renders twice. */}
-      {pinnedVisible && pinned && (
+      {/* A shared/highlighted session always renders pinned at the top and
+          is filtered out of the list below, so the link surfaces its session
+          no matter where cursor pagination sits and it never renders twice. */}
+      {pinnedShown && pinned && (
         <Stack gap="condensed">
           <Stack direction="row" justify="end">
             <Button size="small" onClick={clearHighlight}>
@@ -425,7 +425,9 @@ export function SessionsTab({
         />
       ) : (
         <Stack gap="condensed">
-          {subs.items.map((s) => (
+          {subs.items
+            .filter((s) => !(pinnedShown && s.id === highlightId))
+            .map((s) => (
             <SessionCard
               key={s.id}
               slug={slug}
@@ -434,7 +436,7 @@ export function SessionsTab({
               canDelete={canEdit(s)}
               isMod={isMod}
               timeZone={timeZone}
-              highlight={highlightActive && s.id === highlightId}
+              highlight={highlightActive && !pinnedShown && s.id === highlightId}
               roomName={
                 s.pre_assigned_room_id === null
                   ? null
