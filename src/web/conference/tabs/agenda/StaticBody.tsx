@@ -500,6 +500,7 @@ export function TrackEditor({
         try {
           await api.submissions.star({ slug, id: track.submission_id });
           await onChange();
+          toast.success("Starred — this planned session is on your schedule.");
         } catch (e) {
           toast.error(errorCode(e));
         }
@@ -760,7 +761,7 @@ export function TrackEditor({
                 letterSpacing: 0.4,
               }}
             >
-              ⚠ Room may be full
+              ⚠ More stars than seats
             </span>
           )}
           {track && display && !track.mandatory && (

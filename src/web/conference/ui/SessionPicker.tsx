@@ -96,7 +96,8 @@ export function SessionPicker({
     <Sheet open={open} onClose={onClose} title="Pick a session">
       <Tip>
         Your pick is locked in — moderators re-running assignment won&apos;t move you out.
-        Sessions that are already full are dimmed.
+        Sessions that are already full are dimmed. A pick is a real seat — a star is
+        only interest.
       </Tip>
       <Stack gap="condensed">
         {items.length === 0 ? (

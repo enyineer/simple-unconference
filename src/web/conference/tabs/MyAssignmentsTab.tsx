@@ -150,7 +150,7 @@ export function MyAssignmentsTab({
       )}
 
       {sorted.length === 0 ? (
-        <EmptyState message="Nothing on your schedule yet. Star sessions on the Sessions tab or the Agenda to add them here — one star covers both the unconference algorithm and any planned-slot offering of that session." />
+        <EmptyState message="Nothing on your schedule yet. Star sessions to signal interest — planned offerings land here right away; unconference seats appear after moderators run seating." />
       ) : (
         <Stack gap="spacious">
           {[...groups.entries()].map(([day, items]) => (

@@ -48,7 +48,7 @@ export function UnplacedCard({
           {slotIds.length === 1 ? "Pick a session" : `Pick a session for ${slotIds.length} slots`}
         </div>
         <div style={{ fontSize: 13, color: muted, marginTop: 2 }}>
-          Your starred sessions filled up. Switch into any non-full session below.
+          Your starred sessions filled up before you were seated. Pick any non-full session below.
         </div>
 
         <div style={{

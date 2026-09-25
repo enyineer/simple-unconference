@@ -231,7 +231,7 @@ function UpNextBlock({
         </div>
       ) : (
         <div style={{ fontSize: 13, color: muted }}>
-          {slot.title ?? "Nothing on your plan yet — star sessions to fill it."}
+          {slot.title ?? "Nothing on your plan yet — star sessions to flag interest."}
         </div>
       )}
     </div>

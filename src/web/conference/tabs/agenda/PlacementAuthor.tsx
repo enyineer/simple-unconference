@@ -74,7 +74,7 @@ export function PlacementAuthor({
         toast.error(conflictMessage(r));
         return;
       }
-      toast.success(`Placed in ${r.room_name}`);
+      toast.success(`Placed in ${r.room_name} — run Update seating to seat its starrers.`);
       if (r.speaker_warning) toast.warning(speakerWarningMessage(r.speaker_warning));
       setSubId("");
       setRoomId("");

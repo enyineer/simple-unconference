@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Badge, Button } from "../../../design-system";
 import type { Submission } from "../../types";
 import {
@@ -36,6 +37,7 @@ export function SessionCard({
   onDelete: () => void;
   onStatus: (action: "publish" | "unpublish" | "reject") => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
   const statusVariant =
     s.status === "published"
@@ -43,13 +45,42 @@ export function SessionCard({
       : s.status === "rejected"
         ? "danger"
         : "default";
+  const multiDay = spansMultipleDays(
+    s.scheduled_in.map((sch) => sch.starts_at),
+    timeZone,
+  );
+  // Long descriptions get line-clamped with a Show more toggle so the list
+  // stays scannable; short ones render in full with no toggle.
+  const longDescription = (s.description?.length ?? 0) > 240;
+
+  // Quiet "label · label" meta fragments. Everything placement-logistical
+  // (status, room requirements, overlap allowance) is mod-only — participants
+  // only ever see published sessions, so those badges were pure noise for
+  // them (see sessions/types.ts on the participant filter).
+  const metaBits: React.ReactNode[] = [];
+  if (isMod) {
+    metaBits.push(
+      <Badge key="status" variant={statusVariant}>{s.status}</Badge>,
+    );
+  }
+  if (speakerLabel(s)) {
+    metaBits.push(
+      <span key="by">
+        by{" "}
+        <span style={{ fontWeight: 500 }}>
+          <SpeakerList slug={slug} speakers={s.speakers} isMod={isMod} />
+        </span>
+      </span>,
+    );
+  }
+  if (isMod && roomName) metaBits.push(<span key="pin">pinned: {roomName}</span>);
 
   return (
     <div
       style={{
-        display: "grid",
-        gridTemplateColumns: "1fr auto",
-        gap: "8px 12px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
         padding: 16,
         borderRadius: 8,
         border:
@@ -57,94 +88,10 @@ export function SessionCard({
         background: "var(--bgColor-default, var(--uncon-bg, transparent))",
       }}
     >
+      {/* Title — the visual anchor of the card. */}
       <div
         style={{
-          gridColumn: 1,
-          gridRow: 1,
-          display: "flex",
-          gap: 6,
-          flexWrap: "wrap",
-          alignItems: "center",
-        }}
-      >
-        <Badge variant={statusVariant}>{s.status}</Badge>
-        {s.is_finished && (
-          // Informational only under Path C: the badge tells everyone the
-          // session is excluded from future unconference placement, but
-          // doesn't gate stars or visibility.
-          <Badge variant="default">
-            {s.manually_finished ? "Marked complete" : "Fully scheduled"}
-          </Badge>
-        )}
-        {roomName && (
-          <Badge variant="attention">pinned: {roomName}</Badge>
-        )}
-        {s.priority !== "normal" && (
-          <Badge variant={s.priority === "high" ? "attention" : "default"}>
-            {s.priority === "high" ? "High priority" : "Low priority"}
-          </Badge>
-        )}
-        {s.room_requirements.length > 0 && (
-          <Badge variant="default">
-            needs: {s.room_requirements.join(", ")}
-          </Badge>
-        )}
-        {s.allow_overlapping_placements && (
-          <Badge variant="default">allows overlap</Badge>
-        )}
-        <Pill>★ {s.star_count}</Pill>
-        {speakerLabel(s) && (
-          <span style={{ color: muted, fontSize: 12 }}>
-            by{" "}
-            <span style={{ fontWeight: 500 }}>
-              <SpeakerList slug={slug} speakers={s.speakers} isMod={isMod} />
-            </span>
-          </span>
-        )}
-      </div>
-
-      {s.scheduled_in.length > 0 && (() => {
-        // Path C cause-and-effect surface: "you star this session, it
-        // shows up on your schedule at these times." Listing every linked
-        // TrackAssignment with its time + room makes the connection
-        // explicit at the moment the user is deciding whether to star.
-        //
-        // When the scheduled offerings span more than one conference-local
-        // day, prefix every time with the short day so users can tell
-        // "20:07" tomorrow from "20:07" today — same rule the My schedule
-        // tab uses for repeat-offering alternates.
-        const multiDay = spansMultipleDays(
-          s.scheduled_in.map((sch) => sch.starts_at),
-          timeZone,
-        );
-        return (
-          <div
-            style={{
-              gridColumn: "1 / -1",
-              gridRow: 4,
-              fontSize: 12,
-              color: muted,
-            }}
-          >
-            Scheduled at:{" "}
-            {s.scheduled_in.map((sch, i) => (
-              <span key={sch.slot_id}>
-                {i > 0 ? " · " : ""}
-                <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 500 }}>
-                  {fmtTimeMaybeDay(sch.starts_at, timeZone, multiDay)}
-                </span>{" "}
-                <span>{sch.room_name}</span>
-              </span>
-            ))}
-          </div>
-        );
-      })()}
-
-      <div
-        style={{
-          gridColumn: "1 / -1",
-          gridRow: 2,
-          fontSize: 18,
+          fontSize: 17,
           fontWeight: 600,
           lineHeight: "24px",
           wordBreak: "break-word",
@@ -153,31 +100,132 @@ export function SessionCard({
         {s.title}
       </div>
 
-      {s.description && (
+      {/* Meta line: quiet fragments + the few badges that earn attention. */}
+      {(metaBits.length > 0 || s.priority !== "normal" || s.is_finished) && (
         <div
           style={{
-            gridColumn: "1 / -1",
-            gridRow: 3,
-            fontSize: 14,
-            lineHeight: "20px",
-            color: "var(--fgColor-default, var(--uncon-fg, inherit))",
-            whiteSpace: "pre-wrap",
+            display: "flex",
+            gap: 8,
+            flexWrap: "wrap",
+            alignItems: "center",
+            fontSize: 12,
+            color: muted,
           }}
         >
-          {s.description}
+          {metaBits.map((bit, i) => (
+            <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+              {i > 0 && <span aria-hidden style={{ opacity: 0.6 }}>·</span>}
+              {bit}
+            </span>
+          ))}
+          {s.priority !== "normal" && (
+            <Badge variant={s.priority === "high" ? "attention" : "default"}>
+              {s.priority === "high" ? "High priority" : "Low priority"}
+            </Badge>
+          )}
+          {s.is_finished && (
+            // Informational only under Path C: the badge tells everyone the
+            // session is excluded from future unconference placement, but
+            // doesn't gate stars or visibility.
+            <Badge variant="default">
+              {s.manually_finished ? "Marked complete" : "Fully scheduled"}
+            </Badge>
+          )}
         </div>
       )}
 
-      {s.tags.length > 0 && (
+      {/* Scheduled offerings as chips — the "you star this, it shows up here"
+          cause-and-effect surface (Path C). */}
+      {s.scheduled_in.length > 0 && (
         <div
           style={{
-            gridColumn: "1 / -1",
-            gridRow: 5,
             display: "flex",
             gap: 6,
             flexWrap: "wrap",
+            alignItems: "center",
+            fontSize: 12,
+            color: muted,
           }}
         >
+          <span
+            style={{
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: 0.4,
+            }}
+          >
+            Scheduled
+          </span>
+          {s.scheduled_in.map((sch) => (
+            <span
+              key={sch.slot_id}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "2px 8px",
+                borderRadius: 999,
+                background:
+                  "var(--bgColor-accent-muted, rgba(64,132,246,0.12))",
+                color: "var(--fgColor-accent, #2563eb)",
+                fontSize: 11,
+                fontWeight: 600,
+                whiteSpace: "nowrap",
+              }}
+            >
+              <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                {fmtTimeMaybeDay(sch.starts_at, timeZone, multiDay)}
+              </span>
+              <span aria-hidden style={{ opacity: 0.6 }}>·</span>
+              <span>{sch.room_name}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {s.description && (
+        <>
+          <div
+            style={{
+              fontSize: 14,
+              lineHeight: "20px",
+              color: "var(--fgColor-default, var(--uncon-fg, inherit))",
+              whiteSpace: "pre-wrap",
+              ...(longDescription && !expanded
+                ? {
+                    display: "-webkit-box",
+                    WebkitBoxOrient: "vertical",
+                    WebkitLineClamp: 4,
+                    overflow: "hidden",
+                  }
+                : {}),
+            }}
+          >
+            {s.description}
+          </div>
+          {longDescription && (
+            <button
+              type="button"
+              onClick={() => setExpanded(!expanded)}
+              style={{
+                alignSelf: "flex-start",
+                border: "none",
+                background: "none",
+                padding: 0,
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 600,
+                color: "var(--fgColor-accent, #2563eb)",
+              }}
+            >
+              {expanded ? "Show less" : "Show more"}
+            </button>
+          )}
+        </>
+      )}
+
+      {s.tags.length > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {s.tags.map((t) => (
             <Pill key={t} variant="primary">
               {t}
@@ -189,8 +237,6 @@ export function SessionCard({
       {s.requirements.length > 0 && (
         <div
           style={{
-            gridColumn: "1 / -1",
-            gridRow: 6,
             fontSize: 12,
             color: muted,
             display: "flex",
@@ -214,6 +260,24 @@ export function SessionCard({
         </div>
       )}
 
+      {isMod && (s.room_requirements.length > 0 || s.allow_overlapping_placements) && (
+        <div
+          style={{
+            fontSize: 12,
+            color: muted,
+            display: "flex",
+            gap: 6,
+            flexWrap: "wrap",
+            alignItems: "center",
+          }}
+        >
+          {s.room_requirements.length > 0 && (
+            <Pill>needs: {s.room_requirements.join(", ")}</Pill>
+          )}
+          {s.allow_overlapping_placements && <Pill>allows overlap</Pill>}
+        </div>
+      )}
+
       {/* Action row. Two clusters separated by an auto-margin gap:
             • Left: engage / author / workflow (Star, Edit, Publish/Unpublish).
             • Right: destructive (Reject, then Delete — most-final last).
@@ -222,14 +286,11 @@ export function SessionCard({
           stays together and right-aligns to its own line. */}
       <div
         style={{
-          gridColumn: "1 / -1",
-          gridRow: 7,
           display: "flex",
           gap: 6,
           flexWrap: "wrap",
           alignItems: "center",
-          marginTop: 4,
-          paddingTop: 8,
+          paddingTop: 10,
           borderTop:
             "1px solid var(--borderColor-muted, var(--uncon-border-muted, #eef0f3))",
         }}
@@ -240,9 +301,11 @@ export function SessionCard({
             onClick={onStar}
             variant={s.starred_by_me ? "primary" : "default"}
           >
-            {s.starred_by_me ? "★ Starred" : "☆ Star"}
+            {s.starred_by_me ? "★ Starred" : "☆ Star"} · {s.star_count}
           </Button>
         )}
+        {/* Star count for sessions without a Star button (drafts — mod view). */}
+        {s.status !== "published" && <Pill>★ {s.star_count}</Pill>}
         {canEdit && (
           <Button size="small" onClick={onEdit}>
             Edit
@@ -293,14 +356,12 @@ export function SessionCard({
       </div>
 
       {s.status === "published" && (
-        <div style={{ gridColumn: "1 / -1", gridRow: 8 }}>
-          <TakeawaysPanel
-            slug={slug}
-            submissionId={s.id}
-            isMod={isMod}
-            timeZone={timeZone}
-          />
-        </div>
+        <TakeawaysPanel
+          slug={slug}
+          submissionId={s.id}
+          isMod={isMod}
+          timeZone={timeZone}
+        />
       )}
     </div>
   );

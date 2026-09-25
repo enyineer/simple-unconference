@@ -31,6 +31,7 @@ export function UnconferenceBody({
     attendee_count: number;
     star_count: number;
     room_capacity: number;
+    submission_total_capacity: number;
     manual: boolean;
   }[];
   /** Per-submission start times of OTHER slots the same session is placed in.
@@ -343,9 +344,27 @@ export function UnconferenceBody({
                   >
                     {p.manual ? "placed by you" : "by stars"}
                   </span>
-                  {p.star_count > p.room_capacity && (
+                  <span
+                    title={`${p.attendee_count} of ${p.room_capacity} seats are taken in this occurrence — from the last seating run. Others who starred are waiting or picked another session.`}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      padding: "2px 8px",
+                      borderRadius: 999,
+                      background:
+                        "var(--bgColor-muted, var(--uncon-bg-subtle, rgba(0,0,0,0.05)))",
+                      color: muted,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      textTransform: "uppercase",
+                      letterSpacing: 0.4,
+                    }}
+                  >
+                    {p.attendee_count}/{p.room_capacity} seated
+                  </span>
+                  {p.star_count > p.submission_total_capacity && (
                     <span
-                      title={`${p.star_count} people starred this session — the room holds ${p.room_capacity}. The algorithm placed ${p.attendee_count}; the remaining ${p.star_count - p.attendee_count} starrers are unplaced or in another starred session.`}
+                      title={`${p.star_count} people starred this session. Its occurrences hold ${p.submission_total_capacity} seats in total, so at least ${p.star_count - p.submission_total_capacity} starrer(s) cannot be seated anywhere. Consider adding another occurrence or moving one to a bigger room.`}
                       style={{
                         display: "inline-flex",
                         alignItems: "center",
@@ -361,7 +380,7 @@ export function UnconferenceBody({
                         letterSpacing: 0.4,
                       }}
                     >
-                      ⚠ Room may be full ({p.star_count}/{p.room_capacity})
+                      ⚠ More stars than seats ({p.star_count}/{p.submission_total_capacity})
                     </span>
                   )}
                   {sub && sub.priority !== "normal" && (

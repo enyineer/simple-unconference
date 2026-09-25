@@ -142,6 +142,7 @@ export function SessionsTab({
         try {
           await api.submissions.star({ slug, id: s.id });
           subs.refresh();
+          toast.success("Starred — interest signal. Seats are assigned when moderators run seating.");
         } catch (e) {
           toast.error(errorCode(e));
         }

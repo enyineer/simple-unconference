@@ -153,11 +153,13 @@ export function AgendaTab({
       const n = r.slot_ids.length;
       const unplaced = r.unplaced_user_ids.length;
       if (n === 0) {
-        toast.success("Nothing needed updating.");
+        toast.success("Seating is already up to date.");
       } else {
         toast.success(
           `Seated attendees across ${n} slot${n === 1 ? "" : "s"}.` +
-            (unplaced > 0 ? ` ${unplaced} could not be seated.` : ""),
+            (unplaced > 0
+              ? ` ${unplaced} ${unplaced === 1 ? "person has" : "people have"} no seat yet — they starred sessions but none had room. They can pick a session themselves, or you can add capacity.`
+              : ""),
         );
       }
       await refresh();
@@ -204,6 +206,7 @@ export function AgendaTab({
         try {
           await api.submissions.star({ slug, id: full.submission_id });
           await refresh();
+          toast.success("Starred — this planned session is on your schedule.");
         } catch (e) {
           toast.error(errorCode(e));
         }
@@ -232,6 +235,7 @@ export function AgendaTab({
         try {
           await api.submissions.star({ slug, id: sub.id });
           await refresh();
+          toast.success("Starred — interest signal. Seats are assigned when moderators run seating.");
         } catch (e) {
           toast.error(errorCode(e));
         }
@@ -327,10 +331,10 @@ export function AgendaTab({
                 !hasPlacements
                   ? "Place at least one session first."
                   : staleFutureCount > 0
-                    ? `${staleFutureCount} slot${staleFutureCount === 1 ? "" : "s"} changed since ${staleFutureCount === 1 ? "its" : "their"} last seating - Update seating re-seats just ${staleFutureCount === 1 ? "it" : "those"}.`
+                    ? `${staleFutureCount} slot${staleFutureCount === 1 ? "" : "s"} changed since ${staleFutureCount === 1 ? "its" : "their"} last seating. Run Update seating to seat everyone waiting in ${staleFutureCount === 1 ? "it" : "those"}.`
                     : seatedCount === 0
-                      ? "No one seated yet."
-                      : "Seating is up to date."
+                      ? "No one seated yet — run Update seating to seat everyone who starred."
+                      : "Seating has run. Check the ⚠ badges for sessions with more stars than seats."
               }
             />
           </Stack>
@@ -345,8 +349,8 @@ export function AgendaTab({
         <Stack gap="condensed">
           <Tip>
             {alsoUnchanged
-              ? "Re-seats every future unconference slot that has placements. Slots that have already started, and each person's own session picks, are never touched. Only people whose seat changes are notified."
-              : `Re-seats only the ${staleFutureCount} future slot${staleFutureCount === 1 ? "" : "s"} whose placements changed since ${staleFutureCount === 1 ? "it was" : "they were"} last seated. Slots that have already started, and each person's own session picks, are never touched. Only people whose seat changes are notified.`}
+              ? "Seats people into the sessions they starred, across every future unconference slot that has placements. Slots that have already started, and each person's own session picks, are never touched. Only people whose seat changes are notified."
+              : `Seats people into the sessions they starred, across the ${staleFutureCount} future slot${staleFutureCount === 1 ? "" : "s"} whose placements changed since ${staleFutureCount === 1 ? "it was" : "they were"} last seated. Slots that have already started, and each person's own session picks, are never touched. Only people whose seat changes are notified.`}
           </Tip>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
             <input

@@ -1789,7 +1789,7 @@ export const agendaRouter = {
         where: { slot: { conferenceId: confId } },
         include: {
           // Demand vs supply signal: total stars on the submission and the
-          // assigned room's capacity. Surfaces a "Room may be full" warning
+          // assigned room's capacity. Surfaces a "More stars than seats" warning
           // when stars exceed capacity (clients render the badge).
           submission: { select: { _count: { select: { stars: true } } } },
           room: { select: { capacity: true } },
@@ -1822,6 +1822,16 @@ export const agendaRouter = {
     const siblingsBySeries = new Map<number, number[]>(
       series.map((s) => [s.id, s.slots.map((x) => x.id)]),
     );
+    // Total supply across ALL occurrences of a submission: the client compares
+    // TOTAL star demand against TOTAL seats so a talk repeated over several
+    // slots doesn't false-alarm against a single room's capacity.
+    const totalCapBySub = new Map<number, number>();
+    for (const p of placements) {
+      totalCapBySub.set(
+        p.submissionId,
+        (totalCapBySub.get(p.submissionId) ?? 0) + p.room.capacity,
+      );
+    }
     return {
       slots: slots.map((s) => {
         const eff = effectiveSlotConfig(s);
@@ -1875,6 +1885,7 @@ export const agendaRouter = {
           attendee_count: count,
           star_count: p.submission._count.stars,
           room_capacity: p.room.capacity,
+          submission_total_capacity: totalCapBySub.get(p.submissionId) ?? 0,
           // True when a moderator placed this session by hand; false when the
           // per-slot star-ranked auto-fill created it. Drives the
           // "placed by you" vs "by stars" badge in UnconferenceBody.

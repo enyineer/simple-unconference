@@ -140,8 +140,8 @@ export function SubEventCard({
           }}
           title={
             star.starredByMe
-              ? "Starred — on your schedule. Tap to unstar."
-              : "Star this session — adds it to your schedule and signals interest for unconference."
+              ? "Starred — tap to unstar."
+              : "Star this session — signals interest for seating and planning."
           }
         >
           {star.starredByMe ? "★" : "☆"} {star.count}

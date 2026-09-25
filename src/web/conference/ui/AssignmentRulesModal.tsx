@@ -68,11 +68,12 @@ export function AssignmentRulesModal({
         <Disclosure summary="What does “star” mean?" defaultOpen>
         <Section title="What does “star” mean?">
           <Rule>
-            <strong>Star = “I want this on my schedule.”</strong> One
-            action, two effects: the unconference algorithm uses your
-            stars to decide which sessions get a room and which one to
-            assign you to, AND every planned-slot track linked to a
-            session you starred lands on your schedule automatically.
+            <strong>Star = “I’m interested.”</strong> Stars feed the
+            unconference ranking, and every planned-slot track linked to a
+            session you starred lands on your schedule right away. A star
+            is not a seat: for unconference sessions you get a seat only
+            after a moderator runs <em>Update seating</em> — and only if
+            the room has space.
           </Rule>
           <Rule>
             <strong>Where you star matters less than what you star.</strong>{" "}
@@ -83,10 +84,12 @@ export function AssignmentRulesModal({
           <Rule>
             <strong>Repeated offerings.</strong> When a mod duplicates a
             slot or schedules the same session in multiple slots, your
-            single star yields a schedule entry per offering. The
-            schedule view groups them with a “same session also at HH:MM”
-            caption so you know they&apos;re the same content and can pick
-            which one(s) to actually attend.
+            single star covers every offering: planned-slot showings all
+            land on your schedule, while for unconference sessions
+            you&apos;re seated at just one showing. The schedule view
+            groups repeats with a “same session also at HH:MM” caption so
+            you know they&apos;re the same content and can pick which
+            one(s) to actually attend.
           </Rule>
           <Rule>
             <strong>“Required” tracks</strong> (mod-flagged keynotes /
@@ -178,11 +181,11 @@ export function AssignmentRulesModal({
         <Disclosure summary="How participants are placed">
         <Section index={3} title="How participants are placed">
           <Rule>
-            Each participant is assigned to one of <strong>their starred
-            sessions</strong> that got a room. The system balances
-            attendance across rooms — when several of your starred
-            sessions are running, you go to the one with the most
-            remaining capacity.
+            In each time block you&apos;re seated in one of <strong>your
+            starred sessions</strong> that got a room. Seating runs across
+            the whole agenda at once: it spreads attendees evenly across
+            repeat showings and tries to give as many people as possible
+            a seat in something they starred.
           </Rule>
           <Rule>
             <strong>Priority tips the balance.</strong> Among your starred
@@ -192,9 +195,10 @@ export function AssignmentRulesModal({
             overrides a manual placement or a room&apos;s capacity.
           </Rule>
           <Rule>
-            The submitter of a session is always assigned to host it (when
-            the session is placed). You can&apos;t be auto-placed somewhere
-            else if you&apos;re hosting.
+            The submitter of a session is assigned to host it (when the
+            session is placed) — whenever there&apos;s room for them and
+            they&apos;re free at that time. You can&apos;t be auto-seated
+            somewhere else if you&apos;re hosting.
           </Rule>
           <Rule>
             You can override the auto-pick anytime via{" "}
@@ -202,8 +206,9 @@ export function AssignmentRulesModal({
             pick is preserved if a mod re-runs the assignment.
           </Rule>
           <Rule>
-            If you didn&apos;t star any sessions that got a room, you&apos;ll be
-            listed as <em>unplaced</em> until you pick one.
+            If you didn&apos;t star any sessions that got a room — or the
+            ones you starred filled up — you&apos;ll be listed
+            as <em>unplaced</em> until you pick one.
           </Rule>
         </Section>
         </Disclosure>
@@ -273,12 +278,15 @@ export function AssignmentRulesModal({
             planned track than the room holds, the row shows a{" "}
             <em>room may be crowded</em> badge — advisory only. Not
             everyone who stars necessarily shows up, but it&apos;s a hint to
-            arrive early or watch for an upgrade.
+            arrive early or watch for an upgrade. For sessions running
+            several times, the badge compares stars against a single
+            showing&apos;s room — it doesn&apos;t add up capacity across
+            showings.
           </Rule>
           {isMod && (
             <Rule modOnly>
               The track editor surfaces the same warning to you (
-              <em>Room may be full</em>) when stars exceed capacity.
+              <em>More stars than seats</em>) when stars exceed capacity.
               Consider moving the session to a bigger room or duplicating
               the slot as a sibling offering.
             </Rule>
@@ -380,7 +388,8 @@ export function AssignmentRulesModal({
               session and <em>Place sessions from stars</em> only decide which
               session runs in which room. Nobody is seated until you run{" "}
               <em>Update seating</em> — until then the slot shows a{" "}
-              <em>Seating out of date</em> flag.
+              <em>Seating out of date</em> flag, and attendees who starred a
+              newly placed session stay unseated until you run it.
             </Rule>
           </Section>
           </Disclosure>
@@ -393,7 +402,8 @@ export function AssignmentRulesModal({
             tab) seats everyone across the unconference slots whose placements
             changed since they were last seated. Because it sees the whole
             agenda at once, it makes smarter choices than seating one slot at a
-            time.
+            time. Anyone left without a seat keeps waiting until the next run —
+            or picks a session themselves via <em>Change session</em>.
           </Rule>
           <Rule>
             <strong>Only changed slots move.</strong> A slot whose placements
@@ -415,7 +425,8 @@ export function AssignmentRulesModal({
             <strong>Look-ahead.</strong> If you starred two sessions in the
             same time and one of them also runs later, you&apos;ll be sent to the
             one that <em>doesn&apos;t</em> repeat now and caught up with the
-            other one at its later showing — so you don&apos;t miss either.
+            other one at its later showing, when there&apos;s room — so you
+            don&apos;t miss either.
           </Rule>
           <Rule>
             The hard rules still hold: never two sessions at once, never over a

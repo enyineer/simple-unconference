@@ -2863,7 +2863,7 @@ describe("manual session switching", () => {
   });
 
   test("GET /agenda exposes attendee_count for each placement", async () => {
-    const { owner, conf, subA, parts, slot } = await buildSlot({
+    const { owner, conf, subA, parts, slot, roomB } = await buildSlot({
       capA: 5, capB: 5, participants: 3, tag: "counts",
     });
     for (const p of parts) {
@@ -2879,6 +2879,23 @@ describe("manual session switching", () => {
     });
     expect(pA!.attendee_count).toBe(seatsA);
     expect(seatsA).toBeGreaterThanOrEqual(3);
+
+    // submission_total_capacity sums supply across ALL occurrences of the
+    // talk, so the client can compare total demand vs total supply instead
+    // of false-alarming against a single room.
+    const slot2 = await owner.rpc.agenda.createSlot({
+      slug: conf.slug,
+      type: "unconference", starts_at: soon(7200_000), ends_at: soon(10800_000),
+    });
+    await owner.rpc.agenda.placeSubmission({
+      slug: conf.slug, slot_id: slot2.id, submission_id: subA.id, room_id: roomB.id,
+    });
+    const agenda2 = await owner.rpc.agenda.get({ slug: conf.slug });
+    const occA = agenda2.placements.filter((p) => p.submission_id === subA.id);
+    expect(occA.length).toBe(2);
+    for (const p of occA) {
+      expect(p.submission_total_capacity).toBe(10);
+    }
   });
 });
 

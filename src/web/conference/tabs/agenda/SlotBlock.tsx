@@ -74,6 +74,7 @@ export interface SlotBlockProps {
     attendee_count: number;
     star_count: number;
     room_capacity: number;
+    submission_total_capacity: number;
     manual: boolean;
   }[];
   /** Per-submission start times of OTHER slots the same session is placed in,
@@ -238,7 +239,7 @@ export function SlotBlock({
         const n = r.placements.length;
         const staleNote =
           n > 0
-            ? " Seating not updated yet - use Update seating in the Assign panel."
+            ? " Seating not updated yet - use Update seating in the Assign panel to seat the people who starred."
             : "";
         toast.success(
           `Placed ${n} session${n === 1 ? "" : "s"} into rooms.` +
@@ -379,7 +380,7 @@ export function SlotBlock({
           under the meta row so it reads as a status on the slot. */}
       {isUnconf && slot.seating_stale && placements.length > 0 && (
         <span
-          title="This slot's placements changed since it was last seated. Run Update seating in the Assign panel to re-seat it."
+          title="This slot's placements changed since it was last seated. Run Update seating in the Assign panel to re-seat it. Until then, new placements have no seats."
           style={{
             alignSelf: "flex-start",
             display: "inline-flex",

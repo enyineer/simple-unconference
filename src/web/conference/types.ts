@@ -100,10 +100,12 @@ export interface AgendaData {
   slot_series: SlotSeries[];
   tracks: Track[];
   /** Unconference placements; `attendee_count` is the number of users
-   * currently assigned to that submission in that slot (used to compute
-   * remaining capacity for manual session-switching). `star_count` and
-   * `room_capacity` power the "Room may be full" warning — when stars
-   * exceed capacity, demand outstripped the room. */
+    * currently assigned to that submission in that slot (used to compute
+    * remaining capacity for manual session-switching). `star_count` vs
+    * `submission_total_capacity` power the "More stars than seats" warning —
+    * total demand compared against total supply across ALL occurrences, so a
+    * talk repeated over several slots isn't flagged against one room.
+    * `room_capacity` is this occurrence's own room size. */
   placements: {
     slot_id: number;
     submission_id: number;
@@ -111,6 +113,7 @@ export interface AgendaData {
     attendee_count: number;
     star_count: number;
     room_capacity: number;
+    submission_total_capacity: number;
     /** True when a moderator placed this session by hand; false when the
      *  per-slot star-ranked auto-fill created it. */
     manual: boolean;

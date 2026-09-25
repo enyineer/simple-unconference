@@ -40,8 +40,8 @@ export const SLOT_TYPE_GUIDES: SlotTypeGuide[] = [
   {
     key: "unconference",
     label: "Unconference",
-    tagline: "Attendees star sessions; the app fills the rooms and seats people.",
-    whenToUse: "Use when the crowd decides what runs and you want auto-assignment.",
+    tagline: "Attendees star sessions; you place the top ones, then run Update seating.",
+    whenToUse: "Use when the crowd decides what runs — you place the sessions, the seating run fills them.",
     glyph: "✨",
     accentVar: "var(--fgColor-accent, #2563eb)",
   },
@@ -67,8 +67,8 @@ export const SLOT_TYPE_DETAIL: Record<SlotKind, string> = {
     "You pick which session runs in each room. Attendees star a session to add it to their " +
     "schedule; mark one \"required\" to put it on everyone's schedule (keynotes, opening, closing).",
   unconference:
-    "The app ranks sessions by how many people starred them, places the top ones into your rooms, " +
-    "and seats each attendee in one of their starred sessions. Re-run anytime as stars change.",
+    "The app ranks sessions by how many people starred them and places the top ones into your rooms. " +
+    "Update seating then seats each attendee across their starred sessions — re-run it whenever stars or placements change.",
   mixer:
     "No sessions — everyone is split evenly across the rooms you pick. \"Exclusive\" avoids re-pairing " +
     "people across mixers; \"fresh shuffle\" ignores past mixers. The default is set in Settings.",
@@ -118,8 +118,9 @@ export const ASSIGN_STEPS = {
   assign: {
     title: "2 · Update seating",
     blurb:
-      "Seat people across the slots whose placements changed since their last seating. Unchanged and " +
-      "already-started slots keep their seats. Run it whenever the panel says seating is out of date.",
+      "Seat people into the sessions they starred, across the slots whose placements changed since their last " +
+      "seating. Unchanged and already-started slots keep their seats. Run it whenever the panel says seating is " +
+      "out of date — anyone starred but unseated waits until you do.",
   },
 } as const;
 
@@ -134,11 +135,11 @@ export const GLOSSARY: GlossaryTerm[] = [
   { term: "Slot", definition: "A block of time on the agenda. Every slot is one of three types: Planned, Unconference, or Mixer." },
   { term: "Session", definition: "A talk or topic someone proposes. Attendees star sessions; moderators schedule or place them." },
   { term: "Planned slot", definition: "A slot where you, the moderator, hand-pick which session runs in each room." },
-  { term: "Unconference slot", definition: "A slot where sessions are ranked by stars and the app auto-assigns rooms and attendees." },
+  { term: "Unconference slot", definition: "A slot where sessions are ranked by stars and the app auto-assigns rooms; Update seating assigns attendees to their starred sessions." },
   { term: "Mixer slot", definition: "A slot with no sessions — everyone is shuffled evenly across rooms to meet people." },
   { term: "Track", definition: "On a Planned slot, one session scheduled into one room. A slot can have several tracks running in parallel." },
   { term: "Place / placement", definition: "On an Unconference slot, putting a session into a specific room. Place the same session on several slots to make it recurring." },
-  { term: "Star", definition: "An attendee marking a session \"I want this\". One star both signals interest for the unconference ranking and adds the session to their schedule." },
+  { term: "Star", definition: "An attendee marking a session \"I want this\". A star signals interest for the unconference ranking and puts planned-slot offerings on their schedule — unconference seats need a moderator seating run." },
   { term: "Required", definition: "A session flagged to land on everyone's schedule regardless of stars — for keynotes, opening, and closing." },
   { term: "Reserved room (pinning)", definition: "Holding a specific room for a session so assignment always puts it there, ignoring stars and features. Set on the Sessions tab." },
   { term: "Re-fit rooms", definition: "On a Planned slot, a repair pass that moves only talks whose room no longer fits - overfilled, clashing with an overlapping slot, or missing required features - into the best-fitting free room. Talks that already fit (and any with a reserved room) stay put; anyone who starred a moved talk is notified." },

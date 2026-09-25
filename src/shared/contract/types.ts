@@ -340,6 +340,12 @@ export interface PlacementOut {
   /** Capacity of the assigned room, denormalized so the client can compute
    *  `star_count > room_capacity` without a join. */
   room_capacity: number;
+  /** Sum of room capacities over EVERY placement of this submission — total
+   *  supply across all its occurrences. The "demand exceeds seats" warning
+   *  fires on `star_count > submission_total_capacity`, not against a single
+   *  room, so a recurring talk isn't flagged when its starrers fit when
+   *  spread over its occurrences. */
+  submission_total_capacity: number;
   /** True when a moderator placed this session by hand; false when the
    *  per-slot star-ranked auto-fill created it. Lets the UI distinguish a
    *  deliberate "placed by you" occurrence from a "by stars" one. */
