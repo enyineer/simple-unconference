@@ -204,6 +204,11 @@ export const submissionsRouter = {
     if (input.starred_only) {
       filters.push({ stars: { some: { userId: myIdentityId } } });
     }
+    if (input.ids && input.ids.length > 0) {
+      // ANDed with baseWhere below, so the visibility gate still decides what
+      // an ids filter can surface — invisible ids just come back empty.
+      filters.push({ id: { in: input.ids } });
+    }
     const where: Prisma.SubmissionWhereInput = filters.length === 0
       ? baseWhere
       : { AND: [baseWhere, ...filters] };

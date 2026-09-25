@@ -548,6 +548,55 @@ describe("submissions + stars + publish", () => {
     })).rejects.toBeInstanceOf(ORPCError);
   });
 
+  test("ids pinpoint filter surfaces shared/highlight sessions but never leaks invisible ones", async () => {
+    const owner = new Client(ctx.app);
+    await signupAndLogin(owner, "highlightowner@example.com");
+    const conf = await owner.rpc.conferences.create({ name: "Highlight Test" });
+
+    const { client: part } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "highlightpart@example.com");
+
+    const published = await part.rpc.submissions.create({
+      slug: conf.slug, title: "Shared spotlight talk",
+    });
+    await owner.rpc.submissions.publish({ slug: conf.slug, id: published.id });
+
+    // Share-link flow: the exact id comes back regardless of star order,
+    // with full card payload (star state etc.).
+    const hit = await part.rpc.submissions.list({
+      slug: conf.slug, ids: [published.id], limit: 5,
+    });
+    expect(hit.total).toBe(1);
+    expect(hit.items[0]!.id).toBe(published.id);
+    expect(hit.items[0]!.title).toBe("Shared spotlight talk");
+
+    // Invisible to the viewer: another participant's still-unpublished draft
+    // → empty result, NOT an error — no existence leak.
+    const { client: other } =
+      await inviteAndClaim(ctx.app, owner, conf.slug, "highlightother@example.com");
+    const otherDraft = await other.rpc.submissions.create({
+      slug: conf.slug, title: "Someone else's draft",
+    });
+    const miss = await part.rpc.submissions.list({
+      slug: conf.slug, ids: [otherDraft.id, 999999], limit: 5,
+    });
+    expect(miss.total).toBe(0);
+    expect(miss.items).toHaveLength(0);
+
+    // Mods see drafts through the same filter (visibility gate decides).
+    const modView = await owner.rpc.submissions.list({
+      slug: conf.slug, ids: [otherDraft.id], limit: 5,
+    });
+    expect(modView.total).toBe(1);
+
+    // AND semantics with other filters still apply.
+    await part.rpc.submissions.star({ slug: conf.slug, id: published.id });
+    const starFiltered = await part.rpc.submissions.list({
+      slug: conf.slug, ids: [published.id], q: "nonexistent", limit: 5,
+    });
+    expect(starFiltered.total).toBe(0);
+  });
+
   test("mod can reassign a submission's submitter to another conference identity", async () => {
     const owner = new Client(ctx.app);
     await signupAndLogin(owner, "reassignowner@example.com");

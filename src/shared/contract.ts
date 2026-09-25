@@ -331,6 +331,13 @@ export const contract = {
           v.array(v.pipe(v.string(), v.maxLength(48))),
           v.maxLength(20),
         )),
+        // Exact-id pinpoint filter — powers the share-link highlight
+        // (?highlight=<id>) so one specific session can be surfaced
+        // regardless of where cursor pagination currently sits. ANDed with
+        // the visibility gate: ids outside the viewer's visibility return
+        // empty (never an existence leak). Capped — it's a pinpoint, not a
+        // batch loader.
+        ids: v.optional(v.pipe(v.array(Id), v.maxLength(10))),
         ...PageInputEntries,
       }))
       .output(type<Page<SubmissionOut>>()),

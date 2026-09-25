@@ -18,6 +18,7 @@ export function SessionCard({
   isMod,
   timeZone,
   roomName,
+  highlight = false,
   onStar,
   onEdit,
   onDelete,
@@ -32,12 +33,16 @@ export function SessionCard({
   /** Pre-assigned room name when set, used to render the pinned badge.
    * Null when the submission isn't pinned or the room isn't loaded. */
   roomName: string | null;
+  /** Deep-link highlight (?highlight=<id> share links, board spotlight QR).
+   * Accent ring + tint so the targeted card pops out of the list. */
+  highlight?: boolean;
   onStar: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onStatus: (action: "publish" | "unpublish" | "reject") => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
   const statusVariant =
     s.status === "published"
@@ -83,9 +88,12 @@ export function SessionCard({
         gap: 10,
         padding: 16,
         borderRadius: 8,
-        border:
-          "1px solid var(--borderColor-muted, var(--uncon-border-muted, #e5e7eb))",
-        background: "var(--bgColor-default, var(--uncon-bg, transparent))",
+        border: highlight
+          ? "2px solid var(--borderColor-accent-emphasis, var(--uncon-accent, #0969da))"
+          : "1px solid var(--borderColor-muted, var(--uncon-border-muted, #e5e7eb))",
+        background: highlight
+          ? "var(--bgColor-accent-muted, var(--uncon-badge-primary-bg, rgba(64,132,246,0.08)))"
+          : "var(--bgColor-default, var(--uncon-bg, transparent))",
       }}
     >
       {/* Title — the visual anchor of the card. */}
@@ -302,6 +310,23 @@ export function SessionCard({
             variant={s.starred_by_me ? "primary" : "default"}
           >
             {s.starred_by_me ? "★ Starred" : "☆ Star"} · {s.star_count}
+          </Button>
+        )}
+        {/* Share: copies a ?highlight=<id> deep link so recipients land on
+            this session highlighted, wherever list pagination currently
+            sits. Published-only — drafts aren't visible to recipients. */}
+        {s.status === "published" && (
+          <Button
+            size="small"
+            onClick={() => {
+              const url = `${window.location.origin}/conferences/${encodeURIComponent(slug)}/?highlight=${s.id}`;
+              void navigator.clipboard?.writeText(url).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              }).catch(() => { /* clipboard unavailable — no-op */ });
+            }}
+          >
+            {copied ? "Copied ✓" : "Copy link"}
           </Button>
         )}
         {/* Star count for sessions without a Star button (drafts — mod view). */}

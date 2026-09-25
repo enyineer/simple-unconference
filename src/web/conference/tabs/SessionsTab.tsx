@@ -21,7 +21,6 @@ import { SessionCard } from "./sessions/SessionCard";
 import { SessionForm } from "./sessions/SessionForm";
 import { MySessionQuotaHint } from "./sessions/MySessionQuotaHint";
 import { WelcomeRail } from "./sessions/WelcomeRail";
-
 export function SessionsTab({
   slug,
   role,
@@ -73,6 +72,66 @@ export function SessionsTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter, starredOnly, selectedTags.join("|")]);
 
+  // Deep-link highlight (?highlight=<id>): share links ("Copy link" on a
+  // card) and the board's spotlight QR land here. The list is cursor-
+  // paginated, so the target may sit on any page or be filtered out — when
+  // it's not among the current page's items, a separately-fetched copy is
+  // pinned above the list, so the link always surfaces its session no matter
+  // what pagination state the viewer happens to be in.
+  const highlightId = useMemo(() => {
+    const raw = new URLSearchParams(window.location.search).get("highlight");
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }, []);
+  const [highlightDismissed, setHighlightDismissed] = useState(false);
+  // Key-tagged fetch result (the usePaginatedList pattern): a change to any
+  // input produces a new key, and stale results for old keys render as null
+  // — no reset-setState needed, staleness is impossible by construction.
+  const [pinnedFetch, setPinnedFetch] = useState<{ key: string; sub: Submission | null }>({
+    key: "",
+    sub: null,
+  });
+  const [pinnedTick, setPinnedTick] = useState(0);
+  const pinnedKey = `${slug}|${highlightId ?? ""}|${highlightDismissed}|${pinnedTick}`;
+  useEffect(() => {
+    if (highlightId === null || highlightDismissed) return;
+    let cancelled = false;
+    api.submissions.list({ slug, ids: [highlightId], limit: 1 })
+      .then((p) => {
+        if (!cancelled) setPinnedFetch({ key: pinnedKey, sub: p.items[0] ?? null });
+      })
+      .catch(() => {
+        if (!cancelled) setPinnedFetch({ key: pinnedKey, sub: null });
+      });
+    return () => { cancelled = true; };
+    // pinnedKey encodes slug + target id + dismissal + refresh tick, so it
+    // fully drives effect identity (same reasoning as usePaginatedList).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinnedKey]);
+  const pinned = pinnedFetch.key === pinnedKey ? pinnedFetch.sub : null;
+
+  const highlightActive = highlightId !== null && !highlightDismissed;
+  // In-place when the current page happens to contain it (avoids rendering
+  // the session twice); pinned otherwise.
+  const pinnedVisible =
+    highlightActive && pinned !== null && !subs.items.some((s) => s.id === highlightId);
+
+  function clearHighlight() {
+    setHighlightDismissed(true);
+    setPinnedTick((t) => t + 1);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("highlight");
+    window.history.replaceState(null, "", url);
+  }
+
+  // List mutations refresh the pinned copy too, so a starred/deleted/edited
+  // highlighted session never shows stale state.
+  const refreshSubs = () => {
+    subs.refresh();
+    setPinnedTick((t) => t + 1);
+  };
+
   // Rooms / participants needed by the create + edit forms. These use the
   // unpaginated `listAll` because the form's room picker and submitter
   // dropdown must enumerate every row.
@@ -117,7 +176,7 @@ export function SessionsTab({
     if (!confirm(msg)) return;
     try {
       await api.submissions.delete({ slug, id: s.id });
-      subs.refresh();
+      refreshSubs();
       onSessionMutated();
       toast.success(isMod ? `Deleted "${s.title}".` : `Withdrew "${s.title}".`);
     } catch (e) {
@@ -129,7 +188,7 @@ export function SessionsTab({
     if (s.starred_by_me) {
       try {
         await api.submissions.unstar({ slug, id: s.id });
-        subs.refresh();
+        refreshSubs();
       } catch (e) {
         toast.error(errorCode(e));
       }
@@ -141,7 +200,7 @@ export function SessionsTab({
       onConfirm: async () => {
         try {
           await api.submissions.star({ slug, id: s.id });
-          subs.refresh();
+          refreshSubs();
           toast.success("Starred — interest signal. Seats are assigned when moderators run seating.");
         } catch (e) {
           toast.error(errorCode(e));
@@ -158,7 +217,7 @@ export function SessionsTab({
       else if (action === "unpublish")
         await api.submissions.unpublish({ slug, id: s.id });
       else await api.submissions.reject({ slug, id: s.id });
-      subs.refresh();
+      refreshSubs();
       toast.success(
         action === "publish" ? `Published "${s.title}".` :
         action === "unpublish" ? `Unpublished "${s.title}".` :
@@ -206,7 +265,7 @@ export function SessionsTab({
     subs.q.trim().length > 0 || selectedTags.length > 0 || starredOnly;
 
   const editingSub = editingId
-    ? (subs.items.find((s) => s.id === editingId) ?? null)
+    ? (subs.items.find((s) => s.id === editingId) ?? (pinned?.id === editingId ? pinned : null))
     : null;
 
   return (
@@ -269,7 +328,7 @@ export function SessionsTab({
                   ? "Session created."
                   : "Submitted. A moderator will review it before others can see it.",
               );
-              subs.refresh();
+              refreshSubs();
               onSessionMutated();
             }}
           />
@@ -311,6 +370,38 @@ export function SessionsTab({
         onClear={clearFilters}
       />
 
+      {/* A shared/highlighted session that isn't on the current page renders
+          pinned above the list — the link must surface its session no matter
+          where cursor pagination sits. In-page targets highlight in place
+          instead (below), so the session never renders twice. */}
+      {pinnedVisible && pinned && (
+        <Stack gap="condensed">
+          <Stack direction="row" justify="end">
+            <Button size="small" onClick={clearHighlight}>
+              Clear highlight
+            </Button>
+          </Stack>
+          <SessionCard
+            slug={slug}
+            s={pinned}
+            canEdit={canEdit(pinned)}
+            canDelete={canEdit(pinned)}
+            isMod={isMod}
+            timeZone={timeZone}
+            roomName={
+              pinned.pre_assigned_room_id === null
+                ? null
+                : rooms.find((r) => r.id === pinned.pre_assigned_room_id)?.name ?? null
+            }
+            highlight
+            onStar={() => toggleStar(pinned)}
+            onEdit={() => setEditingId(pinned.id)}
+            onDelete={() => deleteSubmission(pinned)}
+            onStatus={(action) => setStatus(pinned, action)}
+          />
+        </Stack>
+      )}
+
       {subs.loading && subs.items.length === 0 ? (
         <Spinner label="Loading…" />
       ) : subs.items.length === 0 ? (
@@ -343,6 +434,7 @@ export function SessionsTab({
               canDelete={canEdit(s)}
               isMod={isMod}
               timeZone={timeZone}
+              highlight={highlightActive && s.id === highlightId}
               roomName={
                 s.pre_assigned_room_id === null
                   ? null
@@ -387,7 +479,7 @@ export function SessionsTab({
             onCancel={() => setEditingId(null)}
             onSaved={async () => {
               setEditingId(null);
-              subs.refresh();
+              refreshSubs();
               onSessionMutated();
             }}
           />

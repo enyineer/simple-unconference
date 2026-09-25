@@ -52,8 +52,15 @@ export function BoardSpotlight({
         </div>
         <div className="board-spot-hint">
           {/* 2× the header QR — it must scan from the back of the room off a
-              projected wall, not from a desk. */}
-          <QrBlock value={joinUrl} label="Star it on your phone" size={152} />
+              projected wall, not from a desk. The link carries a generic
+              ?highlight=<id> deep link: the conference page highlights that
+              session regardless of list pagination. Encoded per spotlight,
+              so a changed spotlight regenerates a fresh QR. */}
+          <QrBlock
+            value={`${joinUrl}?highlight=${shown.submission_id}`}
+            label="Star it on your phone"
+            size={152}
+          />
         </div>
       </div>
     </div>
