@@ -1,5 +1,17 @@
 # simple-unconference
 
+## 0.17.0
+
+### Minor Changes
+
+- [`b3644b8`](https://github.com/enyineer/simple-unconference/commit/b3644b8d3e456cc0b756a4803cdfe0e83562a6bb) Thanks [@enyineer](https://github.com/enyineer)! - Add a "My profile" item to the account menu (top-right avatar) linking straight to the signed-in identity's profile page, where display name, email, avatar and the rest of the profile are edited. Menu links render as real anchors, so open-in-new-tab and middle-click work.
+
+### Patch Changes
+
+- [`7517822`](https://github.com/enyineer/simple-unconference/commit/7517822727e1fbed7875641bf82104f023fa2595) Thanks [@enyineer](https://github.com/enyineer)! - Keep the Live Board updating when the network kills SSE. The board stream now sends an observable `ping` heartbeat event, and the page watches it: a silently stalled or blocked stream (corporate proxies black-holing long-lived responses) demotes to polling mode — snapshot refetch every 5s — while a background probe keeps retrying SSE. Promotion back to live requires the first heartbeat over the fresh stream (`onopen` fires on headers alone, which is exactly what a black-holing proxy delivers), so polling continues until data is proven to flow. The header indicator shows amber "Polling" so the room knows the wall is no longer streaming.
+
+- [`078e241`](https://github.com/enyineer/simple-unconference/commit/078e2417f658866d898c6e0ae41dcc27deacfee1) Thanks [@enyineer](https://github.com/enyineer)! - Scale the Live Board proportionally with the viewport. Board typography, spacing and grid tracks now ride a viewport-derived unit (1440p fullscreen is the 1:1 baseline) instead of fixed pixel sizes, so a 1080p projector no longer renders crammed text and 4K walls get appropriately larger type. Phones keep real pixel sizes on the scrolling stacked layout.
+
 ## 0.16.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "simple-unconference",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "module": "src/server/index.ts",
   "type": "module",
   "private": true,
