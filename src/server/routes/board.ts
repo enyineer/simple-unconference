@@ -141,6 +141,9 @@ export function boardRoutes(prisma: PrismaClient) {
       if (closed || !controller) return;
       try { controller.enqueue(encoder.encode(chunk)); } catch { teardown(); }
     }
+    function sendPing(): void {
+      send("event: ping\ndata: {}\n\n");
+    }
 
     const stream = new ReadableStream<Uint8Array>({
       start(ctrl) {
@@ -155,7 +158,13 @@ export function boardRoutes(prisma: PrismaClient) {
             send(`event: ${ev.kind}\ndata: ${JSON.stringify(ev)}\n\n`);
           }
         });
-        heartbeat = setInterval(() => send(":ping\n\n"), HEARTBEAT_INTERVAL_MS);
+        // Heartbeat as a real NAMED event, not an SSE comment: comments are
+        // swallowed by the EventSource parser, so the client could never
+        // observe them. The named `ping` is the liveness signal the board
+        // page's watchdog watches — silence beyond its stall window means a
+        // proxy is black-holing the stream and it falls back to polling.
+        sendPing();
+        heartbeat = setInterval(sendPing, HEARTBEAT_INTERVAL_MS);
       },
       cancel() { teardown(); },
     });

@@ -132,7 +132,9 @@ export const BOARD_STYLES = `
   box-shadow: 0 0 0 0 rgba(63,185,80,0.5);
   animation: boardPulseDot 2.4s ease-out infinite;
 }
-.board-conn.is-reconnecting .board-conn-dot { background: var(--bd-star); }
+/* Polling fallback (SSE black-holed by the network): amber, steady — the wall
+   is still updating, just not over the live stream. */
+.board-conn.is-polling .board-conn-dot { background: var(--bd-star); }
 @keyframes boardPulseDot {
   0% { box-shadow: 0 0 0 0 rgba(63,185,80,0.45); }
   70% { box-shadow: 0 0 0 calc(7 * var(--bd-u)) rgba(63,185,80,0); }

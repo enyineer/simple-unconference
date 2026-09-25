@@ -8,19 +8,19 @@
 // `agenda.changed` / `board.spotlight` (IDs only) and we refetch the snapshot
 // debounced (1.5s). The payload is strictly public-safe (names, never emails).
 
-import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { BoardPayloadOut } from "../../shared/contract/types";
 import { boardStreamUrl, fetchBoardPayload, type BoardFetchResult } from "../board/boardApi";
 import { BOARD_STYLES } from "../board/boardStyles";
 import { BoardGrid, type BoardNav } from "../board/BoardGrid";
 import { BoardSpotlight } from "../board/BoardSpotlight";
 import { QrBlock } from "../board/QrBlock";
+import { useBoardLive, type BoardConn } from "../board/useBoardLive";
 import { makeClockFmt, makeTimeFmt, timezoneLabel } from "../board/boardFormat";
 
 const REFETCH_DEBOUNCE_MS = 1500;
 const SLOT_TICK_MS = 30_000;
 
-type Conn = "connecting" | "live" | "reconnecting";
 type State =
   | { kind: "loading" }
   | { kind: "ok"; payload: BoardPayloadOut }
@@ -48,7 +48,6 @@ export function BoardPage({ slug }: { slug: string }) {
   const [state, setState] = useState<State>(() =>
     readToken() ? { kind: "loading" } : { kind: "not_active" },
   );
-  const [conn, setConn] = useState<Conn>("connecting");
   const [now, setNow] = useState(() => Date.now());
 
   // Fetch WITHOUT touching state — setState lives only in the `.then` callbacks
@@ -66,30 +65,32 @@ export function BoardPage({ slug }: { slug: string }) {
     return () => { cancelled = true; };
   }, [load]);
 
+  // Coalesces live-update bursts (and poll ticks) into one refetch — the
+  // debounce the stream monitor's onEvent points at.
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const schedule = useCallback(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      load().then((res) => applyResult(setState, res));
+    }, REFETCH_DEBOUNCE_MS);
+  }, [load]);
+  useEffect(() => () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+  }, []);
+
+  // SSE with a heartbeat watchdog + polling fallback (see boardLive.ts): a
+  // proxy that black-holes the stream silently can't stale out the wall.
+  const streamUrl = useMemo(
+    () => (token ? boardStreamUrl(slug, token) : null),
+    [slug, token],
+  );
+  const conn = useBoardLive(streamUrl, schedule);
+
   // Slot-now tick (coarse — the wall clock re-renders on its own every second).
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), SLOT_TICK_MS);
     return () => clearInterval(id);
   }, []);
-
-  // SSE stream — debounced refetch on any forwarded event; connection dot.
-  useEffect(() => {
-    if (!token) return;
-    let debounce: ReturnType<typeof setTimeout> | null = null;
-    const schedule = () => {
-      if (debounce) clearTimeout(debounce);
-      debounce = setTimeout(() => { load().then((res) => applyResult(setState, res)); }, REFETCH_DEBOUNCE_MS);
-    };
-    const es = new EventSource(boardStreamUrl(slug, token), { withCredentials: true });
-    es.onopen = () => setConn("live");
-    es.onerror = () => setConn("reconnecting");
-    es.addEventListener("agenda.changed", schedule);
-    es.addEventListener("board.spotlight", schedule);
-    return () => {
-      if (debounce) clearTimeout(debounce);
-      es.close();
-    };
-  }, [slug, token, load]);
 
   if (state.kind === "loading") {
     return (
@@ -130,12 +131,12 @@ function BoardView({
 }: {
   payload: BoardPayloadOut;
   slug: string;
-  conn: Conn;
+  conn: BoardConn;
   now: number;
 }) {
   const timeFmt = useMemo(() => makeTimeFmt(payload.timezone), [payload.timezone]);
   const joinUrl = `${window.location.origin}/conferences/${slug}/`;
-  const connLabel = conn === "live" ? "Live" : conn === "reconnecting" ? "Reconnecting" : "Connecting";
+  const connLabel = conn === "live" ? "Live" : conn === "polling" ? "Polling" : "Connecting";
   // The visible page's day / rooms / time, reported up from the grid so it can
   // headline the header — the wayfinding a projector audience actually needs.
   const [nav, setNav] = useState<BoardNav | null>(null);

@@ -201,6 +201,16 @@ something the next session would need to know.
   carries the `conversationId` so per-conversation subscribers can filter
   cheaply. Drop a payload without it and ConversationView will silently
   ignore the event.
+- **Board SSE heartbeats are a named `ping` event, not an SSE comment** —
+  comments are invisible to the JS EventSource API, so a liveness watchdog
+  can't see them. The board page (`startBoardLive` in
+  [src/web/board/boardLive.ts](src/web/board/boardLive.ts)) watches ping
+  activity: silence beyond 45s (proxy black-holing the stream) or `onerror`
+  demotes it to POLLING mode (snapshot refetch every 10s via the existing
+  debounce) while a background probe re-opens the SSE every 30s; the first
+  open flips back to live. The header dot shows amber "Polling". Corporate
+  proxies that kill long-lived streams are the reason this exists — don't
+  revert the ping to `:ping` comment form.
 - **Live Board topic events** (`agenda.changed`, `board.spotlight`) are
   routed on a CONFERENCE key, not an identity: `recipientId =
   boardTopicKey(confId)` (a NEGATIVE number, so it never collides with a

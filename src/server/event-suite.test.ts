@@ -417,9 +417,14 @@ describe("Live Board SSE stream", () => {
 
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
-    // First chunk is the immediate `:hello` comment.
+    // First chunk is the immediate `:hello` comment (proxy flush)…
     const hello = await reader.read();
     expect(decoder.decode(hello.value)).toContain(":hello");
+    // …the second the first observable `ping` event — the liveness signal the
+    // board page's polling-fallback watchdog watches (sent immediately, then
+    // every HEARTBEAT_INTERVAL_MS).
+    const ping = await reader.read();
+    expect(decoder.decode(ping.value)).toContain("event: ping");
 
     // Publish an agenda change and confirm it's forwarded on the stream.
     publishAgendaChanged(conf.id);
