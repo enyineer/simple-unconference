@@ -240,8 +240,10 @@ function BoardMatrix({
   const { roomSlice, slotSlice } = page;
   // A FIXED first track (a single clamp length, not a content-sized minmax) so
   // the head grid and the body rows — two separate grids — resolve their
-  // columns to identical widths and stay aligned.
-  const template = `clamp(150px, 16vw, 210px) repeat(${roomSlice.length}, minmax(210px, 1fr))`;
+  // columns to identical widths and stay aligned. Lengths ride the board's
+  // --bd-u design-px so the matrix scales with the viewport like the CSS.
+  const u = "var(--bd-u)";
+  const template = `clamp(calc(150 * ${u}), 16vw, calc(210 * ${u})) repeat(${roomSlice.length}, minmax(calc(210 * ${u}), 1fr))`;
 
   return (
     <div className="board-page-anim">
@@ -254,7 +256,7 @@ function BoardMatrix({
           </div>
         ))}
       </div>
-      <div className="board-grid" style={{ gridAutoRows: "minmax(84px, 1fr)" }}>
+      <div className="board-grid" style={{ gridAutoRows: `minmax(calc(84 * ${u}), 1fr)` }}>
         {slotSlice.map((slot) => {
           const nowSlot = isSlotNow(slot, now);
           const meta = slotKindMeta(slot.type);

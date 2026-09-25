@@ -33,9 +33,9 @@ export function QrBlock({
   return (
     <div className="board-qr">
       {dataUrl ? (
-        <img src={dataUrl} alt={label} width={size} height={size} style={{ width: size, height: size }} />
+        <img src={dataUrl} alt={label} width={size} height={size} style={{ width: `calc(${size} * var(--bd-u))`, height: `calc(${size} * var(--bd-u))` }} />
       ) : (
-        <div style={{ width: size, height: size }} />
+        <div style={{ width: `calc(${size} * var(--bd-u))`, height: `calc(${size} * var(--bd-u))` }} />
       )}
       <span className="board-qr-label">{label}</span>
     </div>
