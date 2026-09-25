@@ -376,6 +376,10 @@ export const BOARD_STYLES = `
   font-size: calc(15 * var(--bd-u)); color: var(--bd-fg-muted);
 }
 .board-spot-hint .board-qr { background: var(--bd-surface-2); }
+/* The spotlight QR is a scan-from-across-the-room target: its caption scales
+   with it instead of inheriting the tiny header-QR sizes. */
+.board-spot-hint .board-qr img { border-radius: calc(10 * var(--bd-u)); }
+.board-spot-hint .board-qr-label { font-size: calc(15 * var(--bd-u)); max-width: calc(170 * var(--bd-u)); }
 
 /* Phone-class viewports: the stacked layout scrolls and reads like a normal
    web page, so pin the unit to real px (also covers the QR/card sizes). */

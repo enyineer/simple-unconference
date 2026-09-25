@@ -51,7 +51,9 @@ export function BoardSpotlight({
           <StarCount value={shown.star_count} />
         </div>
         <div className="board-spot-hint">
-          <QrBlock value={joinUrl} label="Star it on your phone" size={76} />
+          {/* 2× the header QR — it must scan from the back of the room off a
+              projected wall, not from a desk. */}
+          <QrBlock value={joinUrl} label="Star it on your phone" size={152} />
         </div>
       </div>
     </div>
