@@ -1,5 +1,11 @@
 # simple-unconference
 
+## 0.17.4
+
+### Patch Changes
+
+- [`dc51046`](https://github.com/enyineer/simple-unconference/commit/dc510466c02ebf5a0a9dbf3ade6f808b222a3c9d) Thanks [@enyineer](https://github.com/enyineer)! - On mobile, "My Schedule" cards no longer squeeze the session title into a single-letter-per-line column: the room chip drops out of its fixed right-hand column below 640px and wraps onto its own line inside the pill row instead (it stays a right-aligned column on wider screens).
+
 ## 0.17.3
 
 ### Patch Changes
