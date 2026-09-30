@@ -247,9 +247,11 @@ export interface SubmissionOut {
   // it does NOT hide the session or disable starring under Path C.
   is_finished: boolean;
   /** Planned-slot TrackAssignments this submission is scheduled in.
-   *  The Sessions tab uses this for the "Scheduled at: 10:00 Hall · 14:00
-   *  Hall" inline hint with jump-links to the calendar. Empty when the
-   *  submission isn't on the planned agenda. */
+   *  The Sessions tab uses this for the "Scheduled at: Sat 23 May 10:00
+   *  Hall · Sun 24 May 14:00 Hall" inline hint with jump-links to the
+   *  calendar (the day label is always rendered so a single offering
+   *  still shows its date). Empty when the submission isn't on the
+   *  planned agenda. */
   scheduled_in: {
     slot_id: number;
     starts_at: number;

@@ -1,14 +1,11 @@
 import { useState } from "react";
 import { Badge, Button } from "../../../design-system";
 import type { Submission } from "../../types";
-import {
-  fmtTimeMaybeDay,
-  spansMultipleDays,
-  speakerLabel,
-} from "../../helpers";
+import { speakerLabel } from "../../helpers";
 import { SpeakerList } from "../../SpeakerList";
 import { Pill } from "../../ui/Pill";
 import { TakeawaysPanel } from "../../ui/TakeawaysPanel";
+import { ScheduledChips } from "./ScheduledChips";
 
 export function SessionCard({
   slug,
@@ -50,10 +47,6 @@ export function SessionCard({
       : s.status === "rejected"
         ? "danger"
         : "default";
-  const multiDay = spansMultipleDays(
-    s.scheduled_in.map((sch) => sch.starts_at),
-    timeZone,
-  );
   // Long descriptions get line-clamped with a Show more toggle so the list
   // stays scannable; short ones render in full with no toggle.
   const longDescription = (s.description?.length ?? 0) > 240;
@@ -142,54 +135,12 @@ export function SessionCard({
         </div>
       )}
 
-      {/* Scheduled offerings as chips — the "you star this, it shows up here"
-          cause-and-effect surface (Path C). */}
-      {s.scheduled_in.length > 0 && (
-        <div
-          style={{
-            display: "flex",
-            gap: 6,
-            flexWrap: "wrap",
-            alignItems: "center",
-            fontSize: 12,
-            color: muted,
-          }}
-        >
-          <span
-            style={{
-              fontWeight: 600,
-              textTransform: "uppercase",
-              letterSpacing: 0.4,
-            }}
-          >
-            Scheduled
-          </span>
-          {s.scheduled_in.map((sch) => (
-            <span
-              key={sch.slot_id}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "2px 8px",
-                borderRadius: 999,
-                background:
-                  "var(--bgColor-accent-muted, rgba(64,132,246,0.12))",
-                color: "var(--fgColor-accent, #2563eb)",
-                fontSize: 11,
-                fontWeight: 600,
-                whiteSpace: "nowrap",
-              }}
-            >
-              <span style={{ fontVariantNumeric: "tabular-nums" }}>
-                {fmtTimeMaybeDay(sch.starts_at, timeZone, multiDay)}
-              </span>
-              <span aria-hidden style={{ opacity: 0.6 }}>·</span>
-              <span>{sch.room_name}</span>
-            </span>
-          ))}
-        </div>
-      )}
+      {/* Scheduled offerings — the "you star this, it shows up here"
+          cause-and-effect surface (Path C). The day label is always shown:
+          a single-offering session would otherwise render a bare "14:00"
+          with no date anywhere on the card. The row stays on one line and
+          gains a chevron toggle only when the chips overflow. */}
+      <ScheduledChips items={s.scheduled_in} timeZone={timeZone} />
 
       {s.description && (
         <>
