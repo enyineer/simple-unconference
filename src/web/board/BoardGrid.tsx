@@ -17,6 +17,7 @@ import type {
   BoardRoomOut,
   BoardSlotOut,
 } from "../../shared/contract/types";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { formatSlotRange, isSlotNow, slotKindMeta } from "./boardFormat";
 import { useBoardPages, type BoardPage } from "./useBoardPages";
 
@@ -36,19 +37,6 @@ function navForPage(page: BoardPage, timeFmt: Intl.DateTimeFormat): BoardNav {
     day: page.dayLabel,
     time: `${timeFmt.format(page.rangeStart)}–${timeFmt.format(page.rangeEnd)}`,
   };
-}
-
-function useNarrow(query = "(max-width: 720px)"): boolean {
-  const [narrow, setNarrow] = useState(
-    () => typeof window !== "undefined" && window.matchMedia(query).matches,
-  );
-  useEffect(() => {
-    const mq = window.matchMedia(query);
-    const onChange = () => setNarrow(mq.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, [query]);
-  return narrow;
 }
 
 function entryKey(slotId: number, roomId: number): string {
@@ -101,7 +89,7 @@ export function BoardGrid({
   // stacked layout / empty board (nothing to page through).
   onNav: (nav: BoardNav | null) => void;
 }) {
-  const narrow = useNarrow();
+  const narrow = useMediaQuery("(max-width: 720px)");
   const { rooms, slots, entries } = payload;
 
   const byCell = new Map<string, BoardEntryOut>();

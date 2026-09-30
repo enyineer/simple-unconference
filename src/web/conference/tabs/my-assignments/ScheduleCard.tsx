@@ -4,6 +4,7 @@ import {
   spansMultipleDays,
 } from "../../helpers";
 import type { Room } from "../../types";
+import { useMediaQuery } from "../../../hooks/useMediaQuery";
 import { Pill } from "../../ui/Pill";
 import { SOURCE_LABEL, type ScheduleSource } from "./types";
 
@@ -51,6 +52,10 @@ export function ScheduleCard({
     && expectedAttendance !== null && roomCapacity !== null
     && expectedAttendance > roomCapacity;
   const muted = "var(--fgColor-muted, var(--uncon-fg-muted, #6e7781))";
+  // On phones the room chip drops out of the fixed third grid column and
+  // flows into the wrapping pill row instead — otherwise a long room name
+  // squeezes the title column down to one letter per line.
+  const narrow = useMediaQuery("(max-width: 640px)");
   // Accent stripe per source: unconference = accent (blue), mixer = success
   // (green), expert = done (purple), planned = neutral.
   const accent = source === "unconference"
@@ -61,10 +66,56 @@ export function ScheduleCard({
         ? "var(--borderColor-done-emphasis, #8250df)"
         : "var(--borderColor-neutral-emphasis, #6e7781)";
 
+  const chipBase = {
+    display: "inline-flex", alignItems: "center", gap: 6,
+    padding: "2px 10px", borderRadius: 999,
+    background: "var(--bgColor-muted, var(--uncon-bg-subtle, rgba(0,0,0,0.05)))",
+    color: muted,
+    fontSize: 11, fontWeight: 600,
+    textTransform: "uppercase", letterSpacing: 0.4,
+    whiteSpace: "nowrap",
+  } as const;
+  const roomChip = room ? (
+    onRoomClick ? (
+      <button
+        type="button"
+        onClick={() => onRoomClick(room)}
+        title={`View info for ${room.name}`}
+        style={{
+          ...chipBase,
+          border: "1px solid transparent",
+          cursor: "pointer",
+          fontFamily: "inherit",
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.borderColor = "var(--borderColor-default, var(--uncon-border, #d0d7de))";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.borderColor = "transparent";
+        }}
+      >
+        <span style={{
+          display: "inline-block", width: 6, height: 6, borderRadius: "50%",
+          background: "var(--borderColor-neutral-emphasis, var(--uncon-fg-muted, #6e7781))",
+        }} />
+        {room.name}
+        <span style={{ opacity: 0.55, fontWeight: 400, fontSize: 10 }}>›</span>
+      </button>
+    ) : (
+      <span style={chipBase}>
+        <span style={{
+          display: "inline-block", width: 6, height: 6, borderRadius: "50%",
+          background: "var(--borderColor-neutral-emphasis, var(--uncon-fg-muted, #6e7781))",
+        }} />
+        {room.name}
+      </span>
+    )
+  ) : null;
+
   return (
     <div style={{
       display: "grid",
-      gridTemplateColumns: "auto 1fr auto",
+      gridTemplateColumns: narrow ? "auto 1fr" : "auto 1fr auto",
       gap: 16,
       alignItems: "center",
       padding: "12px 16px",
@@ -129,6 +180,7 @@ export function ScheduleCard({
               Change session
             </button>
           )}
+          {narrow && roomChip}
         </div>
         {alternates.length > 0 && (() => {
           // Path C: same Submission scheduled in multiple offerings (e.g.
@@ -158,56 +210,7 @@ export function ScheduleCard({
         })()}
       </div>
 
-      {room && (
-        onRoomClick ? (
-          <button
-            type="button"
-            onClick={() => onRoomClick(room)}
-            title={`View info for ${room.name}`}
-            style={{
-              display: "inline-flex", alignItems: "center", gap: 6,
-              padding: "2px 10px", borderRadius: 999,
-              background: "var(--bgColor-muted, var(--uncon-bg-subtle, rgba(0,0,0,0.05)))",
-              color: muted,
-              fontSize: 11, fontWeight: 600,
-              textTransform: "uppercase", letterSpacing: 0.4,
-              whiteSpace: "nowrap",
-              border: "1px solid transparent",
-              cursor: "pointer",
-              fontFamily: "inherit",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.borderColor = "var(--borderColor-default, var(--uncon-border, #d0d7de))";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.borderColor = "transparent";
-            }}
-          >
-            <span style={{
-              display: "inline-block", width: 6, height: 6, borderRadius: "50%",
-              background: "var(--borderColor-neutral-emphasis, var(--uncon-fg-muted, #6e7781))",
-            }} />
-            {room.name}
-            <span style={{ opacity: 0.55, fontWeight: 400, fontSize: 10 }}>›</span>
-          </button>
-        ) : (
-          <span style={{
-            display: "inline-flex", alignItems: "center", gap: 6,
-            padding: "2px 10px", borderRadius: 999,
-            background: "var(--bgColor-muted, var(--uncon-bg-subtle, rgba(0,0,0,0.05)))",
-            color: muted,
-            fontSize: 11, fontWeight: 600,
-            textTransform: "uppercase", letterSpacing: 0.4,
-            whiteSpace: "nowrap",
-          }}>
-            <span style={{
-              display: "inline-block", width: 6, height: 6, borderRadius: "50%",
-              background: "var(--borderColor-neutral-emphasis, var(--uncon-fg-muted, #6e7781))",
-            }} />
-            {room.name}
-          </span>
-        )
-      )}
+      {!narrow && roomChip}
     </div>
   );
 }
