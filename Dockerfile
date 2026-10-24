@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM oven/bun:1.4.4-alpine AS base
+FROM oven/bun:1-alpine AS base
 WORKDIR /app
 
 # Full install (incl. devDeps) so Vite + plugins are available for the
