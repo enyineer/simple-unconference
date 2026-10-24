@@ -1,5 +1,11 @@
 # simple-unconference
 
+## 0.17.5
+
+### Patch Changes
+
+- [`c155884`](https://github.com/enyineer/simple-unconference/commit/c155884ea5b96cf28e4dba34aec3e452b1dd0ac0) Thanks [@enyineer](https://github.com/enyineer)! - Rebuild runtime on Bun 1.4.4: bundles the brotli decoder fix for CVE-2026-111497 (GHSA-663w-cv8g-jj2p).
+
 ## 0.17.4
 
 ### Patch Changes
