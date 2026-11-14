@@ -1,5 +1,11 @@
 # simple-unconference
 
+## 0.17.6
+
+### Patch Changes
+
+- [`fbc8c1a`](https://github.com/enyineer/simple-unconference/commit/fbc8c1a83d5665fadbb96019ad49157ae5acbfc6) - Refresh dependencies (security refresh wave: transitive highs in brace-expansion/minimatch/fast-uri et al).
+
 ## 0.17.5
 
 ### Patch Changes
